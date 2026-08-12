@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# Vite
+*.local
+
+# Logs
+*.log
+src-tauri/logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Runtime data
+public/models/*.psd
+!public/models/sample.psd
+!public/models/deepseek.psd
