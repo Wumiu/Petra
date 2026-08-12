@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
@@ -10,12 +10,23 @@ import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
 import { toast } from "./ui/Toast";
-import { loadSettings, saveSettings, type Settings } from "./utils/settings";
+import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
+import { openAssistant } from "./assistant/AssistantPanel";
+import { setLifecycle } from "./assistant/AssistantPanel";
+import { listModels } from "./assistant/AssistantClient";
 
 const WIN = 300;
 const PSD_KEY = "live2d-pet-psd";
+
+// 启动标记：模块求值成功即置位（诊断/探测器判据）
+declare global {
+  interface Window {
+    __BOOT__?: boolean;
+  }
+}
+window.__BOOT__ = true;
 
 import * as PIXI from "pixi.js";
 
@@ -38,6 +49,12 @@ class PIXIApp {
 const app = new PIXIApp();
 let view: PetView;
 let settings: Settings = loadSettings();
+let engine: BehaviorEngine;
+let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
+// 当前实际模型来源（面板高亮用）
+let currentModel: { type: "import" | "manifest" | "live2d" | "placeholder"; name?: string } = {
+  type: "placeholder",
+};
 
 function attachView(v: PetView) {
   const stage = document.getElementById("stage")!;
@@ -56,6 +73,7 @@ async function createView(): Promise<PetView> {
   if (imported) {
     try {
       const bytes = await invoke<number[]>("read_psd", { name: imported });
+      currentModel = { type: "import", name: imported };
       return await makePsdView(new Uint8Array(bytes));
     } catch {
       localStorage.removeItem(PSD_KEY);
@@ -67,6 +85,7 @@ async function createView(): Promise<PetView> {
     if (m?.type === "psd" && m.file) {
       const res = await fetch(`/models/${m.file}`);
       if (res.ok) {
+        currentModel = { type: "manifest", name: m.file };
         return await makePsdView(new Uint8Array(await res.arrayBuffer()));
       }
     }
@@ -74,7 +93,10 @@ async function createView(): Promise<PetView> {
       // 动态 import：pixi-live2d-display 有模块级 runtime 检查，隔离避免拖垮主链
       const { Live2DController } = await import("./live2d/Live2DController");
       const v = await Live2DController.create();
-      if (v) return v;
+      if (v) {
+        currentModel = { type: "live2d", name: m.active };
+        return v;
+      }
     }
   } catch {
     /* 无 manifest 或不是 PSD 模式 */
@@ -83,11 +105,15 @@ async function createView(): Promise<PetView> {
   try {
     const { Live2DController } = await import("./live2d/Live2DController");
     const l2d = await Live2DController.create();
-    if (l2d) return l2d;
+    if (l2d) {
+      currentModel = { type: "live2d", name: "model3" };
+      return l2d;
+    }
   } catch (err) {
     console.error(`live2d 加载失败: ${err}`);
   }
   // 4) 占位角色兜底
+  currentModel = { type: "placeholder" };
   return new PlaceholderRenderer();
 }
 
@@ -129,11 +155,23 @@ async function boot() {
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
 
   const win = getCurrentWindow();
+  scaleFactor = await win.scaleFactor().catch(() => 1);
   const pos = await currentLogicalPos(win);
 
-  const engine = new BehaviorEngine(pos);
+  engine = new BehaviorEngine(pos);
+  engine.setScale(scaleFactor);
   engine.setActivityFactor({ low: 3.5, mid: 1.8, high: 1 }[settings.activity]);
   engine.setTracking(settings.mouseTrack);
+  // 小助手对话期间桌宠静止，关闭后恢复漫游
+  setLifecycle(
+    () => engine.suspend(3600_000),
+    () => engine.suspend(1500),
+  );
+  // 启动一律正常站立（不自动恢复待机）
+  if (settings.idleMode) {
+    settings.idleMode = false;
+    saveSettings(settings);
+  }
   // 延迟首次漫游，让主人先在屏幕中央看到桌宠
   setTimeout(() => void engine.teleportRandom(), 5000);
 
@@ -156,17 +194,24 @@ async function boot() {
 
   // ---------- 交互 ----------
   setupTrashDrop(() => view, win, (path) => void importPsdFromPath(path));
-  setupContextMenu(() => buildMenu(engine), onMenuOpen);
+  setupContextMenu(() => buildMenu(engine), onMenuOpen, () => {
+    // 待机时窗口部分在屏外，菜单限制在可见区
+    if (!settings.idleMode) return { top: 0, height: 300 };
+    if (engine.isIdleTop) return { top: 150, height: 150 }; // 顶部待机：可见窗口下部
+    return { top: 0, height: 95 }; // 底部待机：可见窗口上部
+  });
 
-  // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应
-  let drag: { sx: number; sy: number; wx: number; wy: number; moved: boolean } | null = null;
+  // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应或打开小助手。
+  // 非待机：拖动走 Rust 原生跟随线程（GetCursorPos → SetWindowPos，8ms，零每帧 IPC）。
+  // 待机中：拖动沿边缘水平滑动（Rust 锁 y 跟随，只移动待机位置，不退出；退出仅靠右键菜单）。
+  let drag: { sx: number; sy: number; wx: number; wy: number; moved: boolean; mode: "idleSlide" | "free" } | null = null;
   let dragLastMove = 0;
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
     if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest?.("#menu, #toasts")) return;
+    if ((e.target as HTMLElement).closest?.("#menu, #toasts, #assistant-panel")) return;
     const p = engine.position;
-    drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false };
+    drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
     engine.suspend(30000); // 先停自主漫游，拖动结束再恢复
   });
   document.addEventListener("pointermove", (e) => {
@@ -174,21 +219,44 @@ async function boot() {
     const dx = e.clientX - drag.sx;
     const dy = e.clientY - drag.sy;
     if (!drag.moved && Math.hypot(dx, dy) < 6) return;
-    drag.moved = true;
+    if (!drag.moved) {
+      drag.moved = true;
+      if (settings.idleMode) {
+        // 待机中：沿边缘水平滑动（Rust 锁 y 跟随，8ms 原生流畅）
+        drag.mode = "idleSlide";
+        void invoke("drag_start", { lockedY: Math.round(engine.idleTarget.y * scaleFactor) });
+      } else {
+        drag.mode = "free";
+        // 一次性启动 Rust 原生拖动（此后窗口由 8ms 线程直接跟随鼠标）
+        void invoke("drag_start", {});
+      }
+    }
     const now = performance.now();
     if (now - dragLastMove < 16) return;
     dragLastMove = now;
-    const nx = Math.round(drag.wx + dx);
-    const ny = Math.round(drag.wy + dy);
-    engine.setPos(nx, ny);
-    // 拖动时即时跟随：speed 足够大让 mover 直接跳到目标（step=min(speed*dt, dist)=dist）
-    void invoke("set_pet_target_speed", { x: nx, y: ny, speed: 99999 });
+    if (drag.mode === "idleSlide") {
+      // 本地同步：x 跟随鼠标，y 锁待机边缘（窗口由 Rust 线程跟随）
+      const edgeY = engine.idleTarget.y;
+      const nx = Math.max(4, Math.min(screen.availWidth - 300 - 4, Math.round(drag.wx + dx)));
+      engine.setPos(nx, edgeY);
+    } else {
+      // 本地位置同步（逻辑坐标：CSS 增量即逻辑增量；窗口实际由 Rust 线程跟随）
+      engine.setPos(Math.round(drag.wx + dx), Math.round(drag.wy + dy));
+    }
   });
   const endDrag = () => {
     if (!drag) return;
     const clicked = !drag.moved;
+    if (drag.moved) void invoke("drag_end");
     drag = null;
-    if (clicked) view.playClick();
+    if (clicked) {
+      // 小助手开启时轻点打开对话框，否则摸头
+      if (settings.assistant.enabled) {
+        openAssistant();
+      } else {
+        view.playClick();
+      }
+    }
     engine.suspend(1500); // 拖完原地歇一会再乱逛
   };
   document.addEventListener("pointerup", endDrag);
@@ -222,7 +290,11 @@ async function boot() {
       driver.vx = engine.vx;
       driver.cursorDx = engine.cursorDx;
       driver.cursorDy = engine.cursorDy;
-      driver.breathing = (now / 1000) * Math.PI * 2 * 0.42;
+      // 待机时呼吸放缓
+      driver.breathing = (now / 1000) * Math.PI * 2 * (engine.isIdle ? 0.18 : 0.42);
+      driver.excited = engine.excitementValue;
+      driver.idleTop = engine.isIdleTop;
+      driver.idle = engine.isIdle;
       // 临时调试：音频数据是否到达角色（每2秒输出一次）
       if (Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
         console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
@@ -236,6 +308,7 @@ async function currentLogicalPos(win: Awaited<ReturnType<typeof getCurrentWindow
   try {
     const scale = await win.scaleFactor();
     const p = await win.outerPosition();
+    // outerPosition 返回物理像素 → 转逻辑（引擎内部全逻辑坐标）
     return { x: p.x / scale, y: p.y / scale };
   } catch {
     return { x: 100, y: 100 };
@@ -282,8 +355,15 @@ async function toggleModelPanel() {
   } catch {
     /* 忽略 */
   }
-  const current = localStorage.getItem(PSD_KEY);
-  const curType = current ? "psd" : "builtin";
+  // 内置模型名（manifest 配置）
+  let builtinName: string | null = null;
+  try {
+    const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json());
+    if (m?.type === "psd" && m.file) builtinName = m.file;
+    else if (m?.active) builtinName = m.active;
+  } catch {
+    /* 无 manifest */
+  }
 
   const render = (host: HTMLElement) => {
     host.innerHTML = "";
@@ -292,7 +372,7 @@ async function toggleModelPanel() {
     title.textContent = "模型设置";
     host.appendChild(title);
 
-    const mk = (label: string, type: string, name: string | null, active: boolean) => {
+    const mk = (label: string, apply: () => void, active: boolean) => {
       const row = document.createElement("div");
       row.className = `mp-item${active ? " active" : ""}`;
       const span = document.createElement("span");
@@ -304,28 +384,45 @@ async function toggleModelPanel() {
         row.appendChild(tag);
       }
       row.addEventListener("click", async () => {
-        if (type === "builtin") localStorage.removeItem(PSD_KEY);
-        else if (name) localStorage.setItem(PSD_KEY, name);
+        apply();
         host.classList.add("hidden");
         await reloadView();
       });
       host.appendChild(row);
     };
 
-    mk("内置模型（打包/默认）", "builtin", null, curType === "builtin");
+    // 内置模型（manifest / 打包）
+    if (builtinName) {
+      mk(`内置 · ${builtinName}`, () => localStorage.removeItem(PSD_KEY), currentModel.type === "manifest" && currentModel.name === builtinName);
+    }
+    // 已导入 PSD
     for (const m of models) {
-      mk(m.replace(/\.psd$/i, ""), "psd", m, curType === "psd" && current === m);
+      const label = m.replace(/\.psd$/i, "");
+      mk(`已导入 · ${label}`, () => localStorage.setItem(PSD_KEY, m), currentModel.type === "import" && currentModel.name === m);
     }
     if (!models.length) {
       const empty = document.createElement("div");
       empty.className = "mp-empty";
-      empty.textContent = "（无已导入模型，拖 PSD 给桌宠或右键导入）";
+      empty.textContent = "（无已导入模型）";
       host.appendChild(empty);
     }
-    const hint = document.createElement("div");
-    hint.className = "mp-hint";
-    hint.textContent = "拖 PSD 文件到桌宠身上即可导入新模型";
-    host.appendChild(hint);
+    if (currentModel.type === "placeholder") {
+      const ph = document.createElement("div");
+      ph.className = "mp-item active";
+      ph.innerHTML = "<span>占位角色</span><b>使用中</b>";
+      host.appendChild(ph);
+    }
+    // 导入入口
+    const importRow = document.createElement("div");
+    importRow.className = "mp-item";
+    const imp = document.createElement("span");
+    imp.textContent = "＋ 导入 PSD 模型";
+    importRow.appendChild(imp);
+    importRow.addEventListener("click", () => {
+      host.classList.add("hidden");
+      hiddenPsdInput().click();
+    });
+    host.appendChild(importRow);
   };
 
   if (panel) {
@@ -343,11 +440,6 @@ async function toggleModelPanel() {
 
 function buildMenu(engine: BehaviorEngine) {
   return [
-    {
-      id: "import",
-      label: "导入 PSD 模型",
-      onPick: () => hiddenPsdInput().click(),
-    },
     {
       id: "audio",
       label: "跟随音乐",
@@ -382,9 +474,30 @@ function buildMenu(engine: BehaviorEngine) {
       },
     },
     {
+      id: "idle",
+      label: "待机模式",
+      state: settings.idleMode ? "开" : "关",
+      onPick: () => void toggleIdle(),
+    },
+    {
       id: "models",
       label: "模型设置",
       onPick: () => void toggleModelPanel(),
+    },
+    {
+      id: "assistant",
+      label: "小助手模式",
+      state: settings.assistant.enabled ? "开" : "关",
+      onPick: () => {
+        settings.assistant.enabled = !settings.assistant.enabled;
+        saveSettings(settings);
+        toast(settings.assistant.enabled ? "小助手已开启（点我对话）" : "小助手已关闭");
+      },
+    },
+    {
+      id: "assistant-settings",
+      label: "小助手设置",
+      onPick: () => void toggleAssistantSettings(),
     },
     {
       id: "hide",
@@ -411,6 +524,13 @@ function buildMenu(engine: BehaviorEngine) {
     },
     { id: "sep", separator: true },
     {
+      id: "restart",
+      label: "重启",
+      onPick: () => {
+        void invoke("restart_app");
+      },
+    },
+    {
       id: "quit",
       label: "退出",
       danger: true,
@@ -419,6 +539,148 @@ function buildMenu(engine: BehaviorEngine) {
       },
     },
   ];
+}
+
+async function toggleIdle() {
+  settings.idleMode = !settings.idleMode;
+  saveSettings(settings);
+  if (settings.idleMode) {
+    // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
+    const p = await getCurrentWindow().outerPosition();
+    engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
+  }
+  await engine.setIdle(settings.idleMode);
+  // 仅进入待机时定位到边缘；退出时保持当前位置
+  if (settings.idleMode) {
+    const t = engine.idleTarget;
+    // 引擎与 setPosition 都是逻辑坐标
+    void getCurrentWindow().setPosition(new LogicalPosition(t.x, t.y));
+  }
+  toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
+}
+
+// 诊断钩子（CDP 验证待机位置用）
+declare global {
+  interface Window {
+    __pet?: {
+      toggleIdle: () => Promise<void>;
+      info: () => { idle: boolean; idleTop: boolean; idleTarget: { x: number; y: number }; pos: { x: number; y: number } };
+      winPos: () => Promise<{ x: number; y: number }>;
+      setPos: (x: number, y: number) => Promise<void>;
+    };
+  }
+}
+window.__pet = {
+  toggleIdle: () => toggleIdle(),
+  info: () => ({
+    idle: engine.isIdle,
+    idleTop: engine.isIdleTop,
+    idleTarget: engine.idleTarget,
+    pos: engine.position,
+  }),
+  winPos: async () => {
+    const p = await getCurrentWindow().outerPosition();
+    return { x: p.x, y: p.y };
+  },
+  setPos: async (x: number, y: number) => {
+    await getCurrentWindow().setPosition(new LogicalPosition(x, y));
+    engine.setPos(x, y);
+  },
+};
+
+// ---------- 小助手设置面板 ----------
+async function toggleAssistantSettings() {
+  const panel = document.getElementById("assistant-settings") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const render = (host: HTMLElement) => {
+    host.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "mp-title";
+    title.textContent = "小助手设置";
+    host.appendChild(title);
+
+    const mkRow = (label: string, el: HTMLElement) => {
+      const row = document.createElement("div");
+      row.className = "as-set-row";
+      const l = document.createElement("span");
+      l.className = "as-set-label";
+      l.textContent = label;
+      row.append(l, el);
+      host.appendChild(row);
+    };
+
+    const provider = document.createElement("select");
+    provider.className = "as-input as-select";
+    provider.innerHTML = `<option value="deepseek">DeepSeek</option><option value="mimo">MiniMax (mimo)</option>`;
+    provider.value = settings.assistant.provider;
+    mkRow("提供商", provider);
+
+    const key = document.createElement("input");
+    key.className = "as-input";
+    key.type = "password";
+    key.placeholder = "API Key";
+    key.value = settings.assistant.apiKey;
+    mkRow("API Key", key);
+
+    const model = document.createElement("input");
+    model.className = "as-input";
+    model.placeholder = "模型名（可自动获取）";
+    model.value = settings.assistant.model;
+    mkRow("模型", model);
+
+    const persona = document.createElement("textarea");
+    persona.className = "as-input as-persona";
+    persona.rows = 3;
+    persona.placeholder = "人格设定，如：你是一只爱撒娇的猫娘，说话带波浪号～（留空则默认）";
+    persona.value = settings.assistant.persona;
+    mkRow("人格设定", persona);
+
+    const fetchBtn = document.createElement("button");
+    fetchBtn.className = "as-btn";
+    fetchBtn.textContent = "自动获取模型";
+    fetchBtn.addEventListener("click", async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "获取中…";
+      const models = await listModels(provider.value as AssistantProvider, key.value.trim());
+      fetchBtn.disabled = false;
+      if (models.length) {
+        model.value = models[0];
+        toast(`获取到 ${models.length} 个模型，已填入第一个（可在输入框改）`);
+      } else {
+        toast("未获取到模型列表（可能接口不支持），请手填", "warn");
+      }
+    });
+    mkRow("", fetchBtn);
+
+    const save = document.createElement("button");
+    save.className = "as-btn as-btn-primary";
+    save.textContent = "保存";
+    save.addEventListener("click", () => {
+      settings.assistant.provider = provider.value as AssistantProvider;
+      settings.assistant.apiKey = key.value.trim();
+      settings.assistant.model = model.value.trim();
+      settings.assistant.persona = persona.value.trim();
+      saveSettings(settings);
+      host.classList.add("hidden");
+      toast("小助手设置已保存");
+    });
+    host.appendChild(save);
+  };
+
+  if (panel) {
+    render(panel);
+    panel.classList.remove("hidden");
+  } else {
+    const p = document.createElement("div");
+    p.id = "assistant-settings";
+    p.className = "model-panel hidden";
+    p.addEventListener("pointerdown", (e) => e.stopPropagation());
+    render(p);
+    document.body.appendChild(p);
+  }
 }
 
 function toggleAudio(on: boolean) {

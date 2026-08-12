@@ -41,6 +41,7 @@ export class PlaceholderRenderer implements PetView {
   private exprDur = 1.8;
   private exprNext = 0;
   private exprKind = 0; // 0 无 1 winkL 2 winkR 3 眯眼 4 嘟嘴 5 惊讶
+  private rotSmooth = 0; // 待机倒挂旋转插值
 
   constructor() {
     this.body = new PIXI.Graphics();
@@ -189,6 +190,7 @@ export class PlaceholderRenderer implements PetView {
     this.clickPulse = click;
 
     const pulse = (breathe + music + beatPulse) * (1 - gob - click);
+    const exc = d.excited ?? 0; // 逗猫棒兴奋度：眼神更跟手、瞳孔聚焦、微张嘴
 
     // 眨眼
     if (this.t > this.blinkAt) {
@@ -197,9 +199,13 @@ export class PlaceholderRenderer implements PetView {
     }
     this.blinkPhase = Math.max(0, this.blinkPhase - dt * 7);
 
-    // 随机表情：间隔随活动因子拉长
+    // 随机表情：间隔随活动因子拉长；待机时安静
     this.exprT += dt;
-    if (this.t > this.exprNext) {
+    if (d.idle) {
+      this.exprKind = 0;
+      this.exprT = 0;
+      this.exprNext = this.t + 60000;
+    } else if (this.t > this.exprNext) {
       this.exprKind = 1 + Math.floor(Math.random() * 5);
       this.exprT = 0;
       this.exprDur = 1.4 + Math.random() * 0.9;
@@ -210,9 +216,9 @@ export class PlaceholderRenderer implements PetView {
     const exprDone = this.exprT > this.exprDur;
     const wk = exprDone ? 0 : ew;
 
-    // 眼睛追光标
-    const lookX = Math.max(-1, Math.min(1, d.cursorDx)) * 11 * s;
-    const lookY = Math.max(-1, Math.min(1, d.cursorDy)) * 8 * s;
+    // 眼睛追光标（兴奋时更跟手）
+    const lookX = Math.max(-1, Math.min(1, d.cursorDx)) * (11 + exc * 4) * s;
+    const lookY = Math.max(-1, Math.min(1, d.cursorDy)) * (8 + exc * 3) * s;
 
     this.eyeLP.position.set(lookX, lookY);
     this.eyeRP.position.set(lookX, lookY);
@@ -230,12 +236,12 @@ export class PlaceholderRenderer implements PetView {
     this.eyeLP.scale.set(1, Math.min(1.3, eyeWScale * pupilGrow));
     this.eyeRP.scale.set(1, Math.min(1.3, eyeRScale * pupilGrow));
 
-    // 嘴：音乐开合 + 吞咽 + 表情（嘟嘴/惊讶张嘴）
+    // 嘴：音乐开合 + 吞咽 + 表情（嘟嘴/惊讶张嘴）+ 兴奋微张嘴
     const mouthOpen = this.swayEnabled ? d.mid * 1.4 + d.beat * 0.8 : 0;
     const pout = this.exprKind === 4 ? wk : 0;
     const surpriseMouth = this.exprKind === 5 ? 0.9 * wk : 0;
-    const mouthScale = 1 + mouthOpen + gob * 2.2 + pout * 0.7 + surpriseMouth;
-    this.mouth.scale.set(mouthScale, 1 + gob * 1.4 + pout * 0.25);
+    const mouthScale = 1 + mouthOpen + gob * 2.2 + pout * 0.7 + surpriseMouth + exc * 0.4;
+    this.mouth.scale.set(mouthScale, 1 + gob * 1.4 + pout * 0.25 + exc * 0.2);
 
     // 顺风耳：随节奏小幅摆耳
     const earSway = this.swayEnabled ? d.treble * 0.35 : 0;
@@ -244,10 +250,11 @@ export class PlaceholderRenderer implements PetView {
     this.earL.pivot.set(-120 * s, -50 * s);
     this.earR.pivot.set(120 * s, -50 * s);
 
-    // 主体：投影+蹦跶+摇摆+瞄准鼠标
+    // 主体：投影+蹦跶+摇摆+瞄准鼠标（待机顶部 → 平滑倒挂 180°）
     const bounceY = (breathe + pulse + bobAmt * 0.5) * 18;
     const lean = d.vx * 0.12 + (this.swayEnabled ? d.treble * 0.18 : 0) * Math.sin(this.t * 3.1);
-    container.rotation = lean;
+    this.rotSmooth += ((d.idleTop ? Math.PI : 0) - this.rotSmooth) * Math.min(1, dt * 5);
+    container.rotation = this.rotSmooth + lean;
     container.scale.set(
       1 + pulse * 0.4 - bobAmt * 0.12,
       1 - pulse * 0.4 + bobAmt * 0.12,

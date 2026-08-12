@@ -1,17 +1,36 @@
 const KEY = "live2d-pet-settings";
 
 export type ActivityLevel = "low" | "mid" | "high";
+export type AssistantProvider = "deepseek" | "mimo";
+
+export interface AssistantSettings {
+  enabled: boolean;
+  provider: AssistantProvider;
+  apiKey: string;
+  model: string;
+  persona: string;
+}
 
 export interface Settings {
   audioEnabled: boolean;
   activity: ActivityLevel;
   mouseTrack: boolean;
+  idleMode: boolean;
+  assistant: AssistantSettings;
 }
 
 const DEFAULTS: Settings = {
   audioEnabled: true,
   activity: "low",
   mouseTrack: false,
+  idleMode: false,
+  assistant: {
+    enabled: false,
+    provider: "deepseek",
+    apiKey: "",
+    model: "",
+    persona: "",
+  },
 };
 
 /** 活动频率因子：越大活动越少（表情间隔/漫游小憩/移动半径都受它影响） */

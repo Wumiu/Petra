@@ -150,6 +150,138 @@ body {
   line-height: 1.5;
 }
 
+/* ---------- 小助手：脚下输入条 + 左上角气泡 ---------- */
+.as-inputbar {
+  position: fixed;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 130;
+  display: flex;
+  gap: 6px;
+  width: 236px;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: 0 8px 26px rgba(40, 20, 60, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+.as-inputbar.hidden {
+  display: none;
+}
+.as-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(90, 60, 110, 0.25);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  background: #fff;
+  color: #3a2a45;
+  outline: none;
+}
+.as-input:focus {
+  border-color: #d06a9a;
+}
+.as-send {
+  border: none;
+  border-radius: 999px;
+  padding: 0 16px;
+  background: #d06a9a;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+.as-send:hover {
+  opacity: 0.9;
+}
+
+/* 左上角气泡区 */
+.as-bubbles {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 214px;
+  pointer-events: none;
+}
+.as-bubble {
+  pointer-events: auto;
+  padding: 7px 11px;
+  border-radius: 12px;
+  line-height: 1.5;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: toast-in 0.25s ease;
+  box-shadow: 0 4px 14px rgba(40, 20, 60, 0.18);
+}
+.as-ai {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.94);
+  color: #3a2a45;
+  border-bottom-left-radius: 4px;
+}
+.as-sys {
+  align-self: flex-start;
+  background: rgba(90, 60, 110, 0.72);
+  color: #fff;
+  font-size: 12px;
+}
+.as-confirm {
+  align-self: flex-start;
+  background: rgba(255, 214, 214, 0.95);
+  border: 1px solid rgba(200, 90, 90, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 12px;
+}
+.as-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  background: #262939;
+  color: #fff;
+}
+.as-btn:hover {
+  opacity: 0.9;
+}
+.as-btn-no {
+  background: rgba(150, 60, 60, 0.85);
+}
+.as-btn-primary {
+  background: #a01030;
+}
+/* 小助手设置面板 */
+.as-set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 2px;
+}
+.as-set-label {
+  width: 64px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: #6a5a78;
+}
+.as-select {
+  height: 32px;
+}
+.as-persona {
+  border-radius: 10px;
+  resize: none;
+  line-height: 1.5;
+}
+
 /* ---------- Toast ---------- */
 #toasts {
   position: fixed;

@@ -23,6 +23,7 @@ export class Live2DController implements PetView {
   private t = 0;
   private mirror = 1;
   private lastVx = 0;
+  private rotSmooth = 0; // 待机倒挂旋转插值
   private exprT = 0;
   private exprDur = 1.8;
   private exprNext = 0;
@@ -103,6 +104,10 @@ export class Live2DController implements PetView {
       m.scale.x *= -1;
     }
 
+    // 待机顶部 → 平滑倒挂 180°
+    this.rotSmooth += ((d.idleTop ? Math.PI : 0) - this.rotSmooth) * Math.min(1, dt * 5);
+    m.rotation = this.rotSmooth;
+
     const sway = this.swayEnabled ? 1 : 0;
     const breathePhase = Math.sin(d.breathing);
     const id = m.internalModel as unknown as {
@@ -132,9 +137,13 @@ export class Live2DController implements PetView {
     set("ParamBodyAngleY", musicY);
     set("ParamBodyAngleZ", d.treble * 4 * sway * Math.sin(this.t * 3.3));
 
-    // 随机表情：间隔随活动因子拉长，正弦包络淡入淡出
+    // 随机表情：间隔随活动因子拉长，正弦包络淡入淡出；待机时安静
     this.exprT += dt;
-    if (this.t > this.exprNext) {
+    if (d.idle) {
+      this.exprKind = 0;
+      this.exprT = 0;
+      this.exprNext = this.t + 60000;
+    } else if (this.t > this.exprNext) {
       this.exprKind = 1 + Math.floor(Math.random() * 6);
       this.exprT = 0;
       this.exprDur = 1.6 + Math.random() * 0.9;
@@ -152,23 +161,24 @@ export class Live2DController implements PetView {
     set("ParamAngleX", Math.max(-25, Math.min(25, d.cursorDx * 22)));
     set("ParamAngleY", Math.max(-15, Math.min(15, d.cursorDy * 12)));
     set("ParamAngleZ", Math.max(-10, Math.min(10, d.vx * 6)));
-    // 眼球跟随（标准 Cubism 参数，范围 ±30）
-    set("ParamEyeBallX", Math.max(-30, Math.min(30, d.cursorDx * 26)));
-    set("ParamEyeBallY", Math.max(-30, Math.min(30, -d.cursorDy * 18)));
+    // 眼球跟随（标准 Cubism 参数，范围 ±30；兴奋时更跟手）
+    const exc = d.excited ?? 0;
+    set("ParamEyeBallX", Math.max(-30, Math.min(30, d.cursorDx * (26 + exc * 14))));
+    set("ParamEyeBallY", Math.max(-30, Math.min(30, -d.cursorDy * (18 + exc * 10))));
 
     set("ParamBreath", 0.5 + breathePhase * 0.5);
-    // 眼睛：中频能量 + 表情（眯眼/眨眼收敛）
+    // 眼睛：中频能量 + 表情（眯眼/眨眼收敛）+ 兴奋睁大
     const baseEye = 1 - d.mid * 0.06 * sway;
-    set("ParamEyeLOpen", Math.max(0, Math.min(1.1, baseEye * eEyeL)));
-    set("ParamEyeROpen", Math.max(0, Math.min(1.1, baseEye * eEyeR)));
+    set("ParamEyeLOpen", Math.max(0, Math.min(1.1, baseEye * eEyeL + exc * 0.06)));
+    set("ParamEyeROpen", Math.max(0, Math.min(1.1, baseEye * eEyeR + exc * 0.06)));
     set("ParamCheek", Math.max(0, d.bass * 0.7 * sway + (k === 1 ? 0.5 * ew : 0)));
     set("ParamBrowL", Math.max(-1, Math.min(1, d.treble * 0.4 * sway + eBrow)));
     set("ParamBrowR", Math.max(-1, Math.min(1, d.treble * 0.4 * sway + eBrow)));
 
-    // 嘴：中频 + 节拍 + 吞咽/点击 + 表情
+    // 嘴：中频 + 节拍 + 吞咽/点击 + 表情 + 兴奋微张嘴
     const mouth = Math.min(
       1.5,
-      d.mid * 1.2 * sway + d.beat * 0.6 * sway + this.gobble + this.click * 0.8 + eMouth,
+      d.mid * 1.2 * sway + d.beat * 0.6 * sway + this.gobble + this.click * 0.8 + eMouth + exc * 0.18,
     );
     set("ParamMouthOpenY", mouth);
     set("ParamMouthForm", Math.max(-1, Math.min(1, 0.5 + d.mid * 0.3 + eForm)));

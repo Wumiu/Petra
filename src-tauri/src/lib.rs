@@ -20,6 +20,14 @@ pub struct PetMotion {
     pub target: std::sync::Mutex<Option<(f64, f64, f64)>>,
 }
 
+/// 拖动状态：开始后由 8ms 线程直接 GetCursorPos 跟随（零每帧 IPC）。
+/// locked_y 为待机边缘滑动：y 锁定在该值（物理），只随鼠标水平移动。
+pub struct DragState {
+    pub active: std::sync::atomic::AtomicBool,
+    pub offset: std::sync::Mutex<(i32, i32)>,
+    pub locked_y: std::sync::Mutex<Option<i32>>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct WorkArea {
     pub left: i32,
@@ -177,6 +185,11 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 fn sanitize_psd_name(name: &str) -> String {
     const MAX_NAME_LEN: usize = 64;
     let base = std::path::Path::new(name)
@@ -271,6 +284,111 @@ fn set_pet_target_speed(state: State<'_, PetMotion>, x: f64, y: f64, speed: f64)
     *state.target.lock().unwrap() = Some((x, y, speed.max(100.0)));
 }
 
+/// 拖动开始：记录抓取偏移（鼠标 - 窗口左上角），进入跟随模式。
+/// locked_y（可选）：待机边缘滑动，y 锁定该值（物理），只随鼠标水平移动。
+#[tauri::command]
+fn drag_start(app: AppHandle, state: State<'_, DragState>, locked_y: Option<i32>) {
+    if let Some(win) = app.get_webview_window("main") {
+        if let Some(off) = screen::drag_offset(&win) {
+            *state.offset.lock().unwrap() = off;
+            *state.locked_y.lock().unwrap() = locked_y;
+            state.active.store(true, Ordering::SeqCst);
+            log_line(&format!(
+                "drag:start locked_y={}",
+                locked_y.map(|v| v.to_string()).unwrap_or_else(|| "none".into())
+            ));
+        }
+    }
+}
+
+/// 拖动结束：退出跟随模式。
+#[tauri::command]
+fn drag_end(state: State<'_, DragState>) {
+    if state.active.swap(false, Ordering::SeqCst) {
+        *state.locked_y.lock().unwrap() = None;
+        log_line("drag:end");
+    }
+}
+
+/// 8ms 循环：拖动中直接 GetCursorPos → SetWindowPos 跟随鼠标（像素级、无 IPC 每帧延迟）。
+fn spawn_drag_follower(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        let Some(drag) = app.try_state::<DragState>() else {
+            continue;
+        };
+        if !drag.active.load(Ordering::SeqCst) {
+            continue;
+        }
+        let Some(win) = app.get_webview_window("main") else {
+            continue;
+        };
+        let off = *drag.offset.lock().unwrap();
+        let locked = *drag.locked_y.lock().unwrap();
+        screen::drag_follow(&win, off.0, off.1, locked);
+    });
+}
+
+/// 小助手 shell 调用：执行命令（cmd /U /C，UTF-16 输出避免中文乱码），返回输出；
+/// 15s 超时并强制终止子进程。仅由前端在用户确认气泡允许后调用。
+#[tauri::command]
+fn run_shell(command: String) -> Result<String, String> {
+    use std::io::Read;
+    use std::time::Duration;
+
+    log_line(&format!("run_shell: {command}"));
+    // chcp 65001 切 UTF-8 代码页，避免 cmd 内置命令 GBK 输出乱码
+    let full = format!("chcp 65001>nul & {command}");
+    let mut child = std::process::Command::new("cmd")
+        .args(["/C", &full])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动失败: {e}"))?;
+
+    // 后台线程读 stdout/stderr，避免大输出阻塞
+    let (otx, orx) = std::sync::mpsc::channel();
+    let mut out = child.stdout.take().ok_or("无输出")?;
+    std::thread::spawn(move || {
+        let mut v: Vec<u8> = Vec::new();
+        let _ = out.read_to_end(&mut v);
+        let _ = otx.send(v);
+    });
+    let (etx, erx) = std::sync::mpsc::channel();
+    let mut err = child.stderr.take().ok_or("无输出")?;
+    std::thread::spawn(move || {
+        let mut v: Vec<u8> = Vec::new();
+        let _ = err.read_to_end(&mut v);
+        let _ = etx.send(v);
+    });
+
+    // 轮询结束，超时 kill
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() > Duration::from_secs(15) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("命令执行超时（15s）已终止".into());
+                }
+                std::thread::sleep(Duration::from_millis(80));
+            }
+            Err(e) => return Err(format!("等待失败: {e}")),
+        }
+    }
+
+    let ob = orx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    let eb = erx.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+
+    let mut s = String::from_utf8_lossy(&ob).to_string();
+    if !eb.is_empty() {
+        s.push_str(&String::from_utf8_lossy(&eb));
+    }
+    Ok(s.trim().to_string())
+}
+
 /// 清除移动目标（拖动/停止漫游时）。
 #[tauri::command]
 fn clear_pet_target(state: State<'_, PetMotion>) {
@@ -317,9 +435,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .accelerator("Alt+P")
         .build(app)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
+    let restart = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_label = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&toggle, &separator, &quit_label])
+        .items(&[&toggle, &separator, &restart, &quit_label])
         .build()?;
 
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -331,6 +450,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => toggle_window(app),
+            "restart" => {
+                app.restart();
+            }
             "quit" => {
                 app.exit(0);
             }
@@ -396,6 +518,11 @@ pub fn run() {
         .manage(PetMotion {
             target: std::sync::Mutex::new(None),
         })
+        .manage(DragState {
+            active: std::sync::atomic::AtomicBool::new(false),
+            offset: std::sync::Mutex::new((0, 0)),
+            locked_y: std::sync::Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
             trash_files,
             work_area_at,
@@ -403,6 +530,7 @@ pub fn run() {
             hide_pet,
             show_pet,
             quit_app,
+            restart_app,
             debug_mark,
             read_file_bytes,
             save_psd,
@@ -412,6 +540,9 @@ pub fn run() {
             set_pet_target,
             set_pet_target_speed,
             clear_pet_target,
+            drag_start,
+            drag_end,
+            run_shell,
             get_autostart,
             set_autostart,
         ])
@@ -432,6 +563,7 @@ pub fn run() {
             setup_tray(app)?;
             spawn_clickthrough_watcher(handle.clone());
             spawn_pet_mover(handle.clone());
+            spawn_drag_follower(handle.clone());
 
             if let Some(win) = app.get_webview_window("main") {
                 spawn_diag_probe(win);

@@ -96,10 +96,17 @@ export class Rigged2DView implements PetView {
     this.clickPulse = Math.max(0, this.clickPulse - dt * 6);
     this.scalePulse = Math.max(0, this.scalePulse - dt * 5);
 
-    // ---- 表情节奏：间隔随活动因子拉长，播放 1.6~2.4 秒（正弦包络淡入淡出）----
+    // ---- 表情节奏：间隔随活动因子拉长，播放 1.6~2.4 秒（正弦包络淡入淡出）。
+    //      待机时安静：不触发新表情，回到中性。
     const nowMs = performance.now();
     this.exprT += dt;
-    if (nowMs > this.exprNext) {
+    if (d.idle) {
+      if (this.exprT > this.exprDur || this.exprT === 0) {
+        this.expr = EXPRESSIONS[0];
+        this.exprT = 0;
+      }
+      this.exprNext = nowMs + 60000;
+    } else if (nowMs > this.exprNext) {
       this.expr = pickExpression(Rigged2DView.rand);
       this.exprT = 0;
       this.exprDur = 1.6 + Rigged2DView.rand() * 0.8;
@@ -109,24 +116,27 @@ export class Rigged2DView implements PetView {
     const ew = Math.sin(Math.PI * eProg); // 0→1→0
     const e = this.expr;
 
+    const exc = d.excited ?? 0; // 逗猫棒兴奋度：眼神更跟手、微前倾、瞳孔聚焦
+
     const o: Partial<RigParams> = {
-      // 头部轻微跟随（眼神为主）：头微动、眼明显
-      angleX: clamp(d.cursorDx * 0.7 + d.vx * 0.25, -1, 1),
-      angleY: clamp(d.cursorDy * 0.55, -1, 1),
-      eyeX: clamp(d.cursorDx * 1.8 + e.eyeX * ew, -1, 1),
-      eyeY: clamp(-d.cursorDy * 1.2 + e.eyeY * ew, -1, 1),
+      // 头部轻微跟随（眼神为主）：头微动、眼明显；兴奋时微前倾
+      angleX: clamp(d.cursorDx * 0.7 + d.vx * 0.25 + exc * 0.12, -1, 1),
+      angleY: clamp(d.cursorDy * 0.55 + exc * 0.06, -1, 1),
+      eyeX: clamp(d.cursorDx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
+      eyeY: clamp(-d.cursorDy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
       // 音乐 → 身体律动
       body: clamp(d.bass * 0.55 * sway + d.vx * 0.3 + d.beat * 0.2 * sway, -1, 1),
       angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway + e.tilt * ew, -0.5, 0.5),
-      // 音乐 → 嘴型（中频 + 节拍 + 吞咽/点击脉冲），表情叠加
-      mouthOpen: clamp(d.mid * 0.9 * sway + d.beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew, 0, 1.3),
+      // 音乐 → 嘴型（中频 + 节拍 + 吞咽/点击脉冲），表情叠加，兴奋时微张嘴
+      mouthOpen: clamp(d.mid * 0.9 * sway + d.beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew + exc * 0.12, 0, 1.3),
       mouthForm: clamp(d.mid * 0.4 * sway + e.mouthForm * ew, -1, 1),
       // 眉毛：音乐驱动 + 表情偏移
       brow: clamp(d.treble * 0.5 * sway - d.bass * 0.3 + e.brow * ew, -1, 1),
-      // 眼睛开合：音乐微动 + 表情（wink/眯眼用乘法收敛）
-      eyeOpenL: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeL * ew), 0, 1),
-      eyeOpenR: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeR * ew), 0, 1),
-      irisScale: clamp(1 + e.irisScale * ew, 0.5, 1.3),
+      // 眼睛开合：音乐微动 + 表情（wink/眯眼用乘法收敛），兴奋时睁大
+      eyeOpenL: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeL * ew) + exc * 0.05, 0, 1.08),
+      eyeOpenR: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeR * ew) + exc * 0.05, 0, 1.08),
+      // 瞳孔聚焦微缩
+      irisScale: clamp(1 + e.irisScale * ew - exc * 0.06, 0.5, 1.3),
       // 发丝物理加成
       fhAmp: 2 + d.mid * 2.5 * sway,
       physAmp: 2 + d.bass * 2 * sway,
@@ -136,12 +146,15 @@ export class Rigged2DView implements PetView {
 
     this.runtime.update(dt, o);
 
+    // 待机顶部 → 整体旋转 180°（露出头顶+眼睛）
+    const rot = d.idleTop ? " rotate(180deg)" : "";
+
     // 吞咽/点击时 canvas 缩放脉冲
     if (this.scalePulse > 0) {
       const s = 1 + this.scalePulse * 0.15 * (this.gobblePulse > 0 ? 1.2 : 0.6);
-      this.canvas.style.transform = `translate(-50%, -50%) scale(${s})`;
+      this.canvas.style.transform = `translate(-50%, -50%)${rot} scale(${s})`;
     } else {
-      this.canvas.style.transform = "translate(-50%, -50%)";
+      this.canvas.style.transform = `translate(-50%, -50%)${rot}`;
     }
   }
 

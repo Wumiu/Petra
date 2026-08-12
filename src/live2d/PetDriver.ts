@@ -8,6 +8,9 @@ export interface PetDriver {
   cursorDx: number; // -1..1 鼠标相对窗口中心的横向偏移
   cursorDy: number; // -1..1 鼠标相对窗口中心的纵向偏移
   breathing: number; // 呼吸相位 0..2π
+  excited: number; // 0..1 逗猫棒兴奋度（越高越投入）
+  idleTop: boolean; // 待机且倒挂（顶部待机 → 渲染旋转 180°）
+  idle: boolean; // 待机模式（暂停随机表情、安静）
 }
 
 import type { Container } from "pixi.js";
@@ -34,5 +37,8 @@ export function idleDriver(): PetDriver {
     cursorDx: 0,
     cursorDy: 0,
     breathing: 0,
+    excited: 0,
+    idleTop: false,
+    idle: false,
   };
 }

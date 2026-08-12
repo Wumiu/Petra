@@ -125,12 +125,13 @@ pub fn move_window_toward(
         let nx = (rect.left as f64 + dx / dist * step).round() as i32;
         let ny = (rect.top as f64 + dy / dist * step).round() as i32;
 
-        // 安全夹紧：确保整个 300×300 窗口都在显示器工作区内
-        const WIN_SIZE: i32 = 300;
+        // 安全夹紧：按窗口实际尺寸确保窗口都在显示器工作区内
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
         const EDGE_PAD: i32 = 4;
         let area = crate::screen::work_area_at(nx, ny);
-        let clamped_x = nx.max(area.left + EDGE_PAD).min(area.left + area.width - WIN_SIZE - EDGE_PAD);
-        let clamped_y = ny.max(area.top + EDGE_PAD).min(area.top + area.height - WIN_SIZE - EDGE_PAD);
+        let clamped_x = nx.max(area.left + EDGE_PAD).min(area.left + area.width - w - EDGE_PAD);
+        let clamped_y = ny.max(area.top + EDGE_PAD).min(area.top + area.height - h - EDGE_PAD);
 
         let _ = SetWindowPos(
             hwnd,
@@ -142,5 +143,65 @@ pub fn move_window_toward(
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
         );
         false
+    }
+}
+
+/// 拖动抓取偏移：当前鼠标 - 窗口左上角（物理像素）。
+/// 拖动开始调用一次，之后窗口跟随"当前鼠标 - 偏移"。
+pub fn drag_offset(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
+    let hwnd = hwnd_of(win)?;
+    unsafe {
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        Some((pt.x - rect.left, pt.y - rect.top))
+    }
+}
+
+/// 拖动跟随一步：窗口移到"当前鼠标 - 抓取偏移"。
+/// locked_y 为待机边缘滑动：y 锁定该值（物理），只随鼠标水平移动；锁定时不 clamp y（边缘可能在屏外）。
+/// 由 8ms 线程调用，无每帧 IPC 延迟，像素级连续跟随。
+pub fn drag_follow(win: &tauri::WebviewWindow, off_x: i32, off_y: i32, locked_y: Option<i32>) {
+    let Some(hwnd) = hwnd_of(win) else {
+        return;
+    };
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() {
+            return;
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let nx = pt.x - off_x;
+        let ny = locked_y.unwrap_or(pt.y - off_y);
+        // 夹紧到工作区：非锁定按窗口实际尺寸，避免拖出屏幕；锁定 y 时不夹 y（待机边缘在屏外）
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return;
+        }
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        const EDGE_PAD: i32 = 4;
+        let area = crate::screen::work_area_at(nx, ny);
+        let cx = nx
+            .max(area.left + EDGE_PAD)
+            .min(area.left + area.width - w - EDGE_PAD);
+        let cy = if locked_y.is_some() {
+            ny
+        } else {
+            ny.max(area.top + EDGE_PAD)
+                .min(area.top + area.height - h - EDGE_PAD)
+        };
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            cx,
+            cy,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+        );
     }
 }
