@@ -265,6 +265,7 @@ async function send(text: string) {
         history,
         s.assistant.persona,
         memory,
+        s.assistant.customBaseUrl,
         (delta) => {
           streamed = true;
           loading.textContent += delta;
@@ -413,7 +414,7 @@ export async function triggerProactive() {
   lifecycleOnOpen?.(); // 主动说话时桌宠静止
   const bubble = addBubble("ai", "");
   try {
-    await chatStream(s.assistant.provider, apiKey, s.assistant.model, history, s.assistant.persona, memory, (d) => {
+    await chatStream(s.assistant.provider, apiKey, s.assistant.model, history, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       bubble.textContent += d;
     });
     history.push({ role: "assistant", content: bubble.textContent });

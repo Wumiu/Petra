@@ -1,13 +1,14 @@
 const KEY = "live2d-pet-settings";
 
 export type ActivityLevel = "low" | "mid" | "high";
-export type AssistantProvider = "deepseek" | "mimo";
+export type AssistantProvider = "deepseek" | "custom";
 
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
   model: string;
   persona: string;
+  customBaseUrl: string;
 }
 
 export interface Settings {
@@ -28,6 +29,7 @@ const DEFAULTS: Settings = {
     provider: "deepseek",
     model: "",
     persona: "",
+    customBaseUrl: "",
   },
 };
 

@@ -20,8 +20,17 @@ export interface ToolCall {
 
 const PROVIDERS: Record<AssistantProvider, { base: string; defaultModel: string }> = {
   deepseek: { base: "https://api.deepseek.com", defaultModel: "deepseek-chat" },
-  mimo: { base: "https://api.minimax.chat/v1", defaultModel: "" },
+  custom: { base: "", defaultModel: "" },
 };
+
+function resolveBase(provider: AssistantProvider, customBaseUrl: string): string {
+  if (provider === "custom") {
+    const b = (customBaseUrl || "").trim().replace(/\/+$/, "");
+    if (!b) throw new Error("未设置自定义 API 端点 URL");
+    return b;
+  }
+  return PROVIDERS[provider].base;
+}
 
 const BASE_PROMPT =
   "你是桌面小助手，回复简洁友好。工具使用原则：\n" +
@@ -111,13 +120,14 @@ export async function chatStream(
   history: ChatMessage[],
   persona: string,
   memory: string[],
+  customBaseUrl: string,
   onDelta: (t: string) => void,
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
-  const p = PROVIDERS[provider];
-  const m = model || p.defaultModel;
+  const base = resolveBase(provider, customBaseUrl);
+  const m = model || PROVIDERS[provider].defaultModel;
   if (!m) throw new Error("未设置模型名");
   const messages = buildMessages(history, persona, memory);
-  const res = await fetch(`${p.base}/chat/completions`, {
+  const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -196,12 +206,13 @@ function parseArgs(args: string): Record<string, unknown> {
 export async function listModels(
   provider: AssistantProvider,
   apiKey: string,
+  customBaseUrl: string,
 ): Promise<string[]> {
-  const p = PROVIDERS[provider];
+  const base = resolveBase(provider, customBaseUrl);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 5000);
   try {
-    const res = await fetch(`${p.base}/models`, {
+    const res = await fetch(`${base}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: ctrl.signal,
     });

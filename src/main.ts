@@ -51,8 +51,9 @@ let settings: Settings = loadSettings();
 let engine: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
 // 当前实际模型来源（面板高亮用）
-let currentModel: { type: "import" | "manifest" | "live2d" | "placeholder"; name?: string } = {
-  type: "placeholder",
+let currentModel: { type: "import" | "manifest" | "live2d"; name?: string } = {
+  type: "manifest",
+  name: "",
 };
 
 function attachView(v: PetView) {
@@ -420,12 +421,6 @@ async function toggleModelPanel() {
       empty.textContent = "（无已导入模型）";
       host.appendChild(empty);
     }
-    if (currentModel.type === "placeholder") {
-      const ph = document.createElement("div");
-      ph.className = "mp-item active";
-      ph.innerHTML = "<span>占位角色</span><b>使用中</b>";
-      host.appendChild(ph);
-    }
     // 导入入口
     const importRow = document.createElement("div");
     importRow.className = "mp-item";
@@ -467,7 +462,7 @@ function buildMenu(engine: BehaviorEngine) {
   return [
     {
       id: "audio",
-      label: "跟随音乐",
+      label: "跟随音乐（未完善）",
       state: settings.audioEnabled ? "开" : "关",
       onPick: () => toggleAudio(!settings.audioEnabled),
     },
@@ -491,7 +486,11 @@ function buildMenu(engine: BehaviorEngine) {
         settings.mouseTrack = !settings.mouseTrack;
         saveSettings(settings);
         engine.setTracking(settings.mouseTrack);
-        toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
+        if (settings.mouseTrack && settings.activity === "low") {
+          toast("低活动频率下桌宠保持静止，逗猫棒不生效");
+        } else {
+          toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
+        }
       },
     },
     {
@@ -524,6 +523,11 @@ function buildMenu(engine: BehaviorEngine) {
       id: "assistant-settings",
       label: "小助手设置",
       onPick: () => void toggleAssistantSettings(),
+    },
+    {
+      id: "feedback",
+      label: "反馈",
+      onPick: () => openFeedbackInput(),
     },
     {
       id: "hide",
@@ -638,13 +642,25 @@ async function toggleAssistantSettings() {
       l.textContent = label;
       row.append(l, el);
       host.appendChild(row);
+      return row;
     };
 
     const provider = document.createElement("select");
     provider.className = "as-input as-select";
-    provider.innerHTML = `<option value="deepseek">DeepSeek</option><option value="mimo">MiniMax (mimo)</option>`;
+    provider.innerHTML = `<option value="deepseek">DeepSeek（内置）</option><option value="custom">自定义 OpenAI 兼容</option>`;
     provider.value = settings.assistant.provider;
     mkRow("提供商", provider);
+
+    const baseUrl = document.createElement("input");
+    baseUrl.className = "as-input";
+    baseUrl.placeholder = "如 https://api.openai.com/v1";
+    baseUrl.value = settings.assistant.customBaseUrl;
+    const baseUrlRow = mkRow("API 端点", baseUrl);
+    const toggleBaseUrl = () => {
+      baseUrlRow.style.display = provider.value === "custom" ? "flex" : "none";
+    };
+    provider.addEventListener("change", toggleBaseUrl);
+    toggleBaseUrl();
 
     const key = document.createElement("input");
     key.className = "as-input";
@@ -661,15 +677,22 @@ async function toggleAssistantSettings() {
         /* 未设置 */
       });
 
+    const modelSelect = document.createElement("select");
+    modelSelect.className = "as-input as-select";
+    const emptyOpt = document.createElement("option");
+    emptyOpt.value = "";
+    emptyOpt.textContent = "（点下方「自动获取模型」）";
+    modelSelect.appendChild(emptyOpt);
+    mkRow("模型列表", modelSelect);
+
     const model = document.createElement("input");
     model.className = "as-input";
-    model.placeholder = "模型名";
+    model.placeholder = "模型名（留空用默认）";
     model.value = settings.assistant.model;
-    model.setAttribute("list", "model-datalist");
-    const datalist = document.createElement("datalist");
-    datalist.id = "model-datalist";
-    mkRow("模型", model);
-    host.appendChild(datalist);
+    mkRow("模型名", model);
+    modelSelect.addEventListener("change", () => {
+      if (modelSelect.value) model.value = modelSelect.value;
+    });
 
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
@@ -686,7 +709,11 @@ async function toggleAssistantSettings() {
       fetchBtn.textContent = "获取中…";
       let models: string[] = [];
       try {
-        models = await listModels(provider.value as AssistantProvider, key.value.trim());
+        models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          baseUrl.value.trim(),
+        );
       } catch {
         models = [];
       } finally {
@@ -695,15 +722,16 @@ async function toggleAssistantSettings() {
       }
       if (models.length) {
         // 填充下拉列表，让用户自己选（不自动用第一个）
-        datalist.innerHTML = "";
+        modelSelect.innerHTML = "";
         for (const m of models) {
           const opt = document.createElement("option");
           opt.value = m;
-          datalist.appendChild(opt);
+          opt.textContent = m;
+          modelSelect.appendChild(opt);
         }
-        toast(`获取到 ${models.length} 个模型，点输入框下拉选择`);
+        toast(`获取到 ${models.length} 个模型，请从「模型列表」选择`);
       } else {
-        toast("未获取到模型列表（可能接口不支持），请手填", "warn");
+        toast("未获取到模型列表（可能接口不支持），请在「模型名」手填", "warn");
       }
     });
     mkRow("", fetchBtn);
@@ -737,6 +765,7 @@ async function toggleAssistantSettings() {
     save.textContent = "保存";
     save.addEventListener("click", async () => {
       settings.assistant.provider = provider.value as AssistantProvider;
+      settings.assistant.customBaseUrl = baseUrl.value.trim();
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
       saveSettings(settings);
@@ -765,6 +794,82 @@ async function toggleAssistantSettings() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+  }
+}
+
+// ---------- 反馈面板 ----------
+function openFeedbackInput() {
+  const panel = document.getElementById("feedback-panel") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) return;
+
+  const render = (host: HTMLElement) => {
+    host.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "mp-title";
+    title.textContent = "反馈";
+    host.appendChild(title);
+
+    const desc = document.createElement("div");
+    desc.className = "mp-hint";
+    desc.textContent = "告诉我们遇到了什么问题，将自动附上本次启动的运行日志发送给开发者；发送失败时自动导出到桌面。";
+    host.appendChild(desc);
+
+    const ta = document.createElement("textarea");
+    ta.className = "as-input as-persona";
+    ta.rows = 5;
+    ta.placeholder = "描述你遇到的问题…";
+    host.appendChild(ta);
+
+    const btns = document.createElement("div");
+    btns.className = "as-set-btns";
+    const back = document.createElement("button");
+    back.className = "as-btn";
+    back.textContent = "返回";
+    back.addEventListener("click", () => host.classList.add("hidden"));
+    const send = document.createElement("button");
+    send.className = "as-btn as-btn-primary";
+    send.textContent = "发送";
+    send.addEventListener("click", () => {
+      const t = ta.value.trim();
+      if (!t) {
+        toast("请先描述一下遇到的问题", "warn");
+        return;
+      }
+      host.classList.add("hidden");
+      void doSendFeedback(t);
+    });
+    btns.append(back, send);
+    host.appendChild(btns);
+  };
+
+  if (panel) {
+    render(panel);
+    panel.classList.remove("hidden");
+  } else {
+    const p = document.createElement("div");
+    p.id = "feedback-panel";
+    p.className = "model-panel hidden";
+    p.addEventListener("pointerdown", (e) => e.stopPropagation());
+    render(p);
+    document.body.appendChild(p);
+    p.classList.remove("hidden");
+  }
+}
+
+async function doSendFeedback(message: string) {
+  toast("正在发送反馈…");
+  try {
+    const msg = await invoke<string>("send_feedback", { message });
+    toast(msg);
+  } catch (e) {
+    // 邮件发送失败：兜底导出桌面文件
+    toast(`邮件发送失败：${e}`, "warn");
+    try {
+      const path = await invoke<string>("export_feedback", { message });
+      toast(`已导出反馈文件到桌面：${path}`);
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 

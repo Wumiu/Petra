@@ -33,7 +33,7 @@ body {
 /* ---------- 右键菜单 ---------- */
 .pet-menu {
   position: fixed;
-  z-index: 100;
+  z-index: 200; /* 最高层，不被对话框/面板盖住 */
   min-width: 132px;
   padding: 6px;
   border-radius: 12px;
@@ -84,7 +84,7 @@ body {
 /* ---------- 模型设置面板 ---------- */
 .model-panel {
   position: fixed;
-  z-index: 120;
+  z-index: 150; /* 高于输入条(130)、低于右键菜单(200) */
   width: 230px;
   padding: 10px;
   border-radius: 12px;
@@ -300,6 +300,14 @@ body {
   border-radius: 10px;
   resize: none;
   line-height: 1.5;
+  box-sizing: border-box;
+}
+#feedback-panel .as-persona {
+  width: 100%;
+  margin-top: 4px;
+}
+.as-set-row .as-persona {
+  flex: 1;
 }
 .as-set-btns {
   display: flex;

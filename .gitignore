@@ -26,3 +26,7 @@ Thumbs.db
 public/models/*.psd
 !public/models/sample.psd
 !public/models/deepseek.psd
+
+# 打包产物
+Live2D-Pet_*.zip
+build.log

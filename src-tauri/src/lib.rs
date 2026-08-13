@@ -473,9 +473,161 @@ fn get_api_key(app: AppHandle) -> Result<String, String> {
     String::from_utf8(dec).map_err(|e| e.to_string())
 }
 
+/// 本次启动日志的起始偏移（setup 时记录 pet.log 现有大小，反馈只取本次启动后的日志）。
+static LOG_START_OFFSET: OnceLock<u64> = OnceLock::new();
+
+/// 收集环境信息。
+fn collect_env_info(app: &AppHandle) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("时间: {}\n", chrono_now()));
+    out.push_str(&format!("OS: {}\n", std::env::var("OS").unwrap_or_default()));
+    out.push_str(&format!(
+        "WebView2: {}\n",
+        read_reg_value(
+            r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+            "pv"
+        )
+    ));
+    out.push_str(&format!("版本: {}\n", app.package_info().version));
+    out
+}
+
+/// 只取本次启动后的日志（从 LOG_START_OFFSET 到文件末尾）。
+fn collect_session_log() -> String {
+    let Some(dir) = LOG_DIR.get() else {
+        return "（无日志）\n".into();
+    };
+    let path = dir.join("pet.log");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return "（无日志）\n".into();
+    };
+    let offset = LOG_START_OFFSET.get().copied().unwrap_or(0) as usize;
+    let start = offset.min(bytes.len());
+    String::from_utf8_lossy(&bytes[start..]).to_string()
+}
+
+/// 轻量混淆解密：XOR + 位置偏移（非密码学强度，仅防止明文散落在二进制/源码中）。
+const SMTP_KEY: &[u8] = b"p3t_smtp_aozora_2026";
+fn xdecrypt(cipher: &[u8]) -> String {
+    let bytes: Vec<u8> = cipher
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b ^ SMTP_KEY[i % SMTP_KEY.len()] ^ (i as u8 & 0xFF))
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// SMTP 反馈配置：敏感字段（授权码/邮箱）以加密字节内嵌，运行时解密。
+/// 加密生成方式见 scripts/enc-smtp.py（更新配置后需重新生成密文）。
+struct SmtpConfig {
+    smtp_server: String,
+    port: u16,
+    username: String,
+    auth_code: String,
+    to_email: String,
+}
+
+impl SmtpConfig {
+    fn load() -> Self {
+        Self {
+            smtp_server: xdecrypt(&[
+                3, 95, 2, 44, 89, 89, 68, 68, 121, 11, 10, 28,
+            ]),
+            port: 465,
+            username: xdecrypt(&[
+                7, 71, 27, 53, 2, 91, 74, 70, 23, 89, 83, 66, 77, 28, 0, 61,
+            ]),
+            auth_code: xdecrypt(&[
+                58, 117, 27, 44, 2, 37, 40, 21, 19, 15, 53, 6, 16, 73, 34, 42,
+            ]),
+            to_email: xdecrypt(&[
+                65, 10, 69, 110, 65, 91, 65, 71, 103, 94, 37, 0, 18, 81, 12, 63, 79,
+            ]),
+        }
+    }
+}
+
+/// 发送反馈邮件：用户问题描述 + 环境信息 + 本次启动日志，直达开发者邮箱。
+#[tauri::command]
+fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::transport::smtp::client::{Tls, TlsParameters};
+    use lettre::{Message, SmtpTransport, Transport};
+
+    let cfg = SmtpConfig::load();
+    let msg = message.trim();
+    let body = format!(
+        "用户反馈：\n{}\n\n{}\n=== 本次启动日志 ===\n{}",
+        if msg.is_empty() { "（未填写问题描述）" } else { msg },
+        collect_env_info(&app),
+        collect_session_log(),
+    );
+    let subject = format!("[桌宠反馈] v{} {}", app.package_info().version, chrono_now());
+
+    let email = Message::builder()
+        .from(
+            format!("<{}>", cfg.username)
+                .parse::<lettre::message::Mailbox>()
+                .map_err(|e| e.to_string())?,
+        )
+        .to(
+            format!("<{}>", cfg.to_email)
+                .parse::<lettre::message::Mailbox>()
+                .map_err(|e| e.to_string())?,
+        )
+        .subject(subject)
+        .body(body)
+        .map_err(|e| e.to_string())?;
+
+    let creds = Credentials::new(cfg.username.clone(), cfg.auth_code.clone());
+    let tls_params = TlsParameters::builder(cfg.smtp_server.clone())
+        .build()
+        .map_err(|e| format!("TLS 参数失败: {e}"))?;
+    let mailer = SmtpTransport::builder_dangerous(&cfg.smtp_server)
+        .port(cfg.port)
+        .tls(Tls::Wrapper(tls_params))
+        .credentials(creds)
+        .build();
+
+    log_line(&format!(
+        "send_feedback: {} -> {} via {}:{}",
+        cfg.username, cfg.to_email, cfg.smtp_server, cfg.port
+    ));
+    match mailer.send(&email) {
+        Ok(_) => Ok("反馈已发送".into()),
+        Err(e) => Err(format!("发送失败: {e}")),
+    }
+}
+
+fn chrono_now() -> String {
+    // 简单时间戳，避免额外依赖
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("ts{secs}")
+}
+
+/// 导出反馈文本到桌面文件（含用户描述 + 环境信息 + 本次启动日志），返回文件路径。
+#[tauri::command]
+fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
+    let text = format!(
+        "用户反馈：\n{}\n\n{}\n=== 本次启动日志 ===\n{}",
+        if message.trim().is_empty() { "（未填写问题描述）" } else { message.trim() },
+        collect_env_info(&app),
+        collect_session_log()
+    );
+    let desktop = std::env::var("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Desktop"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let name = format!("live2d-pet-反馈_{}.txt", chrono_now());
+    let path = desktop.join(&name);
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// 命令安全校验：拦截危险/破坏性命令与链式多命令，降低 RCE 风险。
-fn validate_shell_command(command: &str) -> Result<(), String> {
-    let lower = command.trim().to_lowercase();
+fn validate_shell_command(command: &str) -> Result<(), String> {    let lower = command.trim().to_lowercase();
     const DANGEROUS: &[&str] = &[
         "format", "diskpart", "shutdown", "taskkill", "reg delete", "rd /s", "rmdir /s",
         "del /s", "del /f", "deltree", "cipher", "fsutil", "bcdedit", "takeown", "vssadmin",
@@ -722,6 +874,8 @@ pub fn run() {
             active_window_title,
             set_api_key,
             get_api_key,
+            send_feedback,
+            export_feedback,
             get_autostart,
             set_autostart,
         ])
@@ -735,6 +889,12 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             });
+            // 记录本次启动日志起始偏移（反馈只附本次启动后的日志）
+            let offset = LOG_DIR
+                .get()
+                .and_then(|d| std::fs::metadata(d.join("pet.log")).ok().map(|m| m.len()))
+                .unwrap_or(0);
+            LOG_START_OFFSET.get_or_init(|| offset);
             log_line("=== pet started ===");
             log_environment();
 

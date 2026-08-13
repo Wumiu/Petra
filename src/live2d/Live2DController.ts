@@ -10,7 +10,6 @@ import { getActivityFactor } from "../utils/settings";
  * 模型约定放在 `public/models/<name>/`（含 model3.json）。
  * 前端通过 `/models/manifest.json` 声明使用哪个模型：
  *   { "active": "my-char", "scale": 2.0 }
- * 缺少模型时由 PlaceholderRenderer 兜底。
  */
 export class Live2DController implements PetView {
   container!: PIXI.Container;

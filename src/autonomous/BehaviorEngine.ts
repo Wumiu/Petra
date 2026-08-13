@@ -150,6 +150,14 @@ export class BehaviorEngine {
   setActivityLevel(level: "low" | "mid" | "high") {
     this.activityLevel = level;
     this.actParams = ACTIVITY_LEVELS[level] ?? this.actParams;
+    if (level === "low") {
+      // 低频率：停止一切移动（含逗猫棒与 Rust mover 残留目标），保证原地静止
+      this.target = null;
+      this.fleeUntil = 0;
+      this.trackAt = 0;
+      this.excitement = 0;
+      void invoke("clear_pet_target").catch(() => {});
+    }
   }
 
   /** 逗猫棒开关（开启后追着鼠标跑） */
