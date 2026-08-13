@@ -1,0 +1,60 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: master
+nodes_managed: true
+exported_at: "2026-08-13T01:36:01Z"
+modules:
+    "":
+        dir_name: Live2D 桌面桌宠项目根
+        title: Live2D 桌面桌宠项目根
+        scope:
+            - README.md
+            - .gitignore
+            - index.html
+            - package.json
+            - package-lock.json
+            - tsconfig.json
+            - vite.config.ts
+            - 启动桌宠.dev.bat
+        source_files: []
+        children:
+            - assets_and_scripts
+            - frontend_app
+            - tauri_backend
+        depends_on: []
+        related_to: []
+    assets_and_scripts:
+        dir_name: 静态资源与构建辅助脚本
+        title: 静态资源与构建辅助脚本
+        scope:
+            - public/
+            - scripts/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: frontend_app
+            - path: tauri_backend
+    frontend_app:
+        dir_name: 桌面桌宠前端应用（Pixi.js + Tauri）
+        title: 桌面桌宠前端应用（Pixi.js + Tauri）
+        scope:
+            - src/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: assets_and_scripts
+            - path: tauri_backend
+    tauri_backend:
+        dir_name: Tauri 桌面端后端（Live2D Pet）
+        title: Tauri 桌面端后端（Live2D Pet）
+        scope:
+            - src-tauri/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: assets_and_scripts
+            - path: frontend_app

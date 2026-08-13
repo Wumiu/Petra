@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: tauri_backend
+title: Tauri 桌面端后端（Live2D Pet）
+scope:
+    - src-tauri/
+source_files: []
+depends_on: []
+related_to:
+    - path: assets_and_scripts
+    - path: frontend_app
