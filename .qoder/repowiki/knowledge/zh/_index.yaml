@@ -3,7 +3,7 @@ schema_version: 1
 locale: zh-CN
 branch: master
 nodes_managed: true
-exported_at: "2026-08-13T01:36:01Z"
+exported_at: "2026-08-13T03:14:50Z"
 modules:
     "":
         dir_name: Live2D 桌面桌宠项目根
