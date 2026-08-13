@@ -5,7 +5,7 @@ Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音
 基于Anime2.5DRig技术实现一键live2d效果，可自定义角色形象。
 
 自定义角色推荐流程：
-准备一张想要的角色正面视图，前往https://huggingface.co/spaces/24yearsold/see-through-demo，一键拆分成psd。
+准备一张想要的角色正面视图，前往 https://huggingface.co/spaces/24yearsold/see-through-demo 一键拆分成psd。
 再前往https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
 效果满意后，即可导入到软件中使用。
 
