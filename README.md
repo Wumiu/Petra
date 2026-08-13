@@ -360,3 +360,18 @@ window.__ASTROBOT__.emit({ type: "speak" | "emote" | "gesture" | "move" | "react
 ```
 
 指令会触发对应反馈动画（speak→吞咽、emote/gesture→点击反应、move→随机传送）。
+
+
+## 开源许可与致谢
+
+本项目内置并借鉴了以下开源项目，特此致谢：
+
+- **Anime2.5DRig**（自动 PSD 装配 / 2.5D 运行时，内置 `src/vendor/anime2dr/`）：MIT License，作者 [852wa (hakoniwa)](https://github.com/852wa)，源码 <https://github.com/852wa/Anime2.5DRig>。许可证全文见 `src/vendor/anime2dr/LICENSE`。
+- **See-through**（单图拆分层层 PSD 的技术方案与在线 Demo）：学术项目 [shitagaki-lab/see-through](https://github.com/shitagaki-lab/see-through)，在线 Demo <https://huggingface.co/spaces/24yearsold/see-through-demo>（大陆用户也可用魔搭 ModelScope 版本）。
+- **ag-psd**（PSD 解析）：MIT License。
+
+### 免责声明
+
+- 本软件与 Live2D 株式会社**无任何关联、授权或背书**；「Live2D」为 Live2D 株式会社的注册商标，此处仅用于说明本软件兼容其模型文件格式。
+- 使用 See-through / Photopea 等工具处理图片时，请仅使用**您拥有版权或已获得授权**的图片；因图片版权产生的纠纷与作者无关。
+- 第三方链接仅为便利提供，作者不对第三方服务的内容与可用性负责。
