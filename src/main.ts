@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
@@ -202,6 +203,9 @@ async function boot() {
     }
     await analyzer.ctx.resume().catch(() => {});
   };
+  // 启动后自动检查一次更新（静默）
+  setTimeout(() => void checkUpdate(false), 5000);
+
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
     toggleAudio(false);
@@ -528,6 +532,11 @@ function buildMenu(engine: BehaviorEngine) {
       id: "feedback",
       label: "反馈",
       onPick: () => openFeedbackInput(),
+    },
+    {
+      id: "update",
+      label: "检查更新",
+      onPick: () => void checkUpdate(true),
     },
     {
       id: "hide",
@@ -870,6 +879,76 @@ async function doSendFeedback(message: string) {
     } catch {
       /* 忽略 */
     }
+  }
+}
+
+// ---------- 检查更新 ----------
+const UPDATE_REPO = "Wumiu/pet";
+const UPDATE_KEY = "live2d-pet-last-update-notify"; // 已提示过的版本（启动自动检查时不重复弹）
+
+function parseVersion(v: string): number[] {
+  return v
+    .replace(/^v/i, "")
+    .split(".")
+    .map((n) => parseInt(n, 10) || 0);
+}
+
+/** a>b 返回正数，相等 0，a<b 负数 */
+function cmpVersion(a: number[], b: number[]): number {
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+function showUpdateBubble(tag: string, url: string) {
+  let el = document.getElementById("update-bubble") as HTMLElement | null;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "update-bubble";
+    el.className = "update-bubble";
+    el.addEventListener("pointerdown", (e) => e.stopPropagation());
+    document.body.appendChild(el);
+  }
+  el.innerHTML = `<b>✨ 新版本 ${tag} 可用！</b><span>点这里前往下载</span>`;
+  el.classList.remove("hidden");
+  el.onclick = () => {
+    void invoke("open_url", { url }).catch(() => {});
+    el!.remove();
+  };
+  // 8 秒未点击自动消失
+  clearTimeout((el as unknown as { _t?: number })._t);
+  (el as unknown as { _t?: number })._t = window.setTimeout(() => {
+    if (el?.isConnected) el.remove();
+  }, 8000);
+}
+
+async function checkUpdate(manual = false) {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`, {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (manual) toast("检查更新失败（网络或仓库不可用）", "warn");
+      return;
+    }
+    const rel = await res.json();
+    const tag = String(rel.tag_name ?? "");
+    const url = String(rel.html_url ?? "");
+    const local = parseVersion(await getVersion().catch(() => "0"));
+    const remote = parseVersion(tag);
+    if (remote.length && cmpVersion(remote, local) > 0) {
+      // 自动检查：同一版本只提示一次；手动检查总是提示
+      if (!manual && localStorage.getItem(UPDATE_KEY) === tag) return;
+      localStorage.setItem(UPDATE_KEY, tag);
+      showUpdateBubble(tag, url);
+    } else if (manual) {
+      toast(`已是最新版本（v${local.join(".")}）`);
+    }
+  } catch {
+    if (manual) toast("检查更新失败（网络不可用）", "warn");
   }
 }
 

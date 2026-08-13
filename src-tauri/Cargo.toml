@@ -1,6 +1,6 @@
 [package]
 name = "pet"
-version = "0.1.0"
+version = "0.1.1"
 description = "Live2D desktop pet"
 edition = "2021"
 

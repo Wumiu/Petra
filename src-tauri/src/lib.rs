@@ -713,6 +713,12 @@ fn launch_application(application: String) -> launch::LaunchResult {
     launch::launch_application_checked(application)
 }
 
+/// 用系统默认浏览器打开 URL（更新提示「前往下载」用）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    launch::open_url(&url)
+}
+
 /// 清除移动目标（拖动/停止漫游时）。
 #[tauri::command]
 fn clear_pet_target(state: State<'_, PetMotion>) {
@@ -871,6 +877,7 @@ pub fn run() {
             drag_end,
             run_shell,
             launch_application,
+            open_url,
             active_window_title,
             set_api_key,
             get_api_key,

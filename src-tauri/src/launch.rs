@@ -334,6 +334,14 @@ pub fn launch_application(application: String) -> LaunchResult {
     fail(format!("没有找到 {name} 的可执行程序，请确认已安装或在开始菜单中创建快捷方式"))
 }
 
+/// 用系统默认浏览器打开 URL（更新提示下载页等）。只允许 http/https。
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("仅支持 http/https 链接".into());
+    }
+    shell_execute(url, "")
+}
+
 /// Tauri command 入口：command 可能在任意线程执行，这里自行初始化/清理 COM。
 pub fn launch_application_checked(application: String) -> LaunchResult {
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
