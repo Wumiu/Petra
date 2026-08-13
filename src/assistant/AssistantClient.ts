@@ -24,14 +24,14 @@ const PROVIDERS: Record<AssistantProvider, { base: string; defaultModel: string 
 };
 
 const BASE_PROMPT =
-  "你是桌面小助手，回复简洁友好。需要执行系统命令时，请调用 run_shell 工具；" +
-  "命令执行结果会以 tool 消息返回，请用简洁自然语言转述给用户（如\"已经帮你打开记事本啦\"），不要复述原始输出。\n" +
+  "你是桌面小助手，回复简洁友好。工具使用原则：\n" +
+  "1. 用户要求打开/启动本机已安装的软件（如网易云音乐、微信、QQ、记事本、计算器、VS Code、浏览器）时，必须调用 launch_application 工具，只需传入应用名称，不要猜路径；\n" +
+  "2. 只有明确需要执行受支持的系统命令（如 ipconfig、dir、ping 等查询类操作）时才调用 run_shell；普通“打开软件”请求一律不要用 run_shell；\n" +
+  "3. 工具执行结果会以 tool 消息返回，请用简洁自然语言如实转述给用户（如“已经帮你打开网易云音乐啦”）；工具返回失败时如实告知用户失败原因，不要假装成功；\n" +
   "run_shell 是 Windows cmd 命令，必须严格遵守语法：\n" +
   "1. 路径一律用反斜杠（如 C:\\Program Files\\xxx），严禁使用 //；\n" +
-  "2. 打开应用/文件用 start \"\" \"<路径或协议>\"，如：start \"\" \"C:\\Program Files\\网易云音乐\\cloudmusic.exe\"，网页用 start https://...；\n" +
-  "3. 打开文件管理器/此电脑/我的电脑，用 explorer（不加任何反斜杠或路径）；打开指定文件夹用 explorer \"C:\\某路径\"；\n" +
-  "4. 命令必须一条完整可执行，不要加 // 或任何注释，不要输出解释文字到命令里；\n" +
-  "5. 拿不准确切路径时，宁可提示用户不要乱猜路径。\n" +
+  "2. 命令必须一条完整可执行，不要加 // 或任何注释，不要输出解释文字到命令里；\n" +
+  "3. 拿不准确切路径时，宁可提示用户不要乱猜路径。\n" +
   "当用户透露出重要个人信息、偏好或习惯时（如名字、作息、喜欢的东西），请自动调用 remember 工具归档到长期记忆。" +
   "用户明确说\"记住 xx\"时也必须调用 remember。\n" +
   "对话历史较长时只需记住最新上下文。";
@@ -40,9 +40,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "launch_application",
+      description:
+        "当用户要求打开/启动本机已安装的软件（如网易云音乐、微信、QQ、记事本、计算器、VS Code、浏览器）时调用。只需传应用名称，系统会自动解析安装位置。执行结果返回后请用自然语言转述。",
+      parameters: {
+        type: "object",
+        properties: { application: { type: "string", description: "应用名称，如\"网易云音乐\"、\"记事本\"、\"VS Code\"" } },
+        required: ["application"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "run_shell",
       description:
-        "执行一条 Windows cmd 命令。严格注意：路径用反斜杠\\，禁止用//；打开应用/文件用 start \"\" \"<路径或协议>\"（如 start \"\" \"C:\\Program Files\\...\" 或 start https://...）；命令必须完整可执行，不得含注释。执行结果返回后请用自然语言转述。",
+        "执行一条 Windows cmd 命令（仅查询类/受支持命令，如 ipconfig、dir）。严格注意：路径用反斜杠\\，禁止用//；命令必须完整可执行，不得含注释。普通“打开软件”请求不要用本工具，请用 launch_application。执行结果返回后请用自然语言转述。",
       parameters: {
         type: "object",
         properties: { command: { type: "string", description: "要执行的完整 cmd 命令" } },

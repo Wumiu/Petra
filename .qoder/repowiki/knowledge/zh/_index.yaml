@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: master
 nodes_managed: true
-exported_at: "2026-08-13T03:14:50Z"
+exported_at: "2026-08-13T07:00:43Z"
 modules:
     "":
-        dir_name: Live2D 桌面桌宠项目根
-        title: Live2D 桌面桌宠项目根
+        dir_name: Live2D 桌面桌宠应用（Vite + Tauri v2 聚合工程）
+        title: Live2D 桌面桌宠应用（Vite + Tauri v2 聚合工程）
         scope:
             - README.md
             - .gitignore
@@ -48,8 +48,8 @@ modules:
             - path: assets_and_scripts
             - path: tauri_backend
     tauri_backend:
-        dir_name: Tauri 桌面端后端（Live2D Pet）
-        title: Tauri 桌面端后端（Live2D Pet）
+        dir_name: Live2D Pet Tauri v2 Windows 桌面后端
+        title: Live2D Pet Tauri v2 Windows 桌面后端
         scope:
             - src-tauri/
         source_files: []

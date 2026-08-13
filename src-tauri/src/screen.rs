@@ -1,4 +1,5 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use tauri::Manager;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -25,12 +26,27 @@ fn hwnd_of(win: &tauri::WebviewWindow) -> Option<HWND> {
     }
 }
 
-pub fn cursor_pos() -> CursorPos {
+pub fn cursor_pos(app: &tauri::AppHandle) -> CursorPos {
     let mut pt = POINT::default();
     let _ = unsafe { GetCursorPos(&mut pt) };
+    // 光标相对真实窗口中心的偏移（物理像素）：窗口位置由 Rust 权威管理，
+    // 直接基于 GetWindowRect 计算，避免前端引擎本地积分位置与窗口实际位置漂移。
+    let mut rx = 0;
+    let mut ry = 0;
+    if let Some(win) = app.get_webview_window("main") {
+        if let Some(hwnd) = hwnd_of(&win) {
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(hwnd, &mut rect).is_ok() } {
+                rx = pt.x - (rect.left + (rect.right - rect.left) / 2);
+                ry = pt.y - (rect.top + (rect.bottom - rect.top) / 2);
+            }
+        }
+    }
     CursorPos {
         x: pt.x,
         y: pt.y,
+        rx,
+        ry,
     }
 }
 

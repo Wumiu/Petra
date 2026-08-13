@@ -603,6 +603,8 @@ window.__pet = {
     idleTop: engine.isIdleTop,
     idleTarget: engine.idleTarget,
     pos: engine.position,
+    cursorDx: engine.cursorDx,
+    cursorDy: engine.cursorDy,
   }),
   winPos: async () => {
     const p = await getCurrentWindow().outerPosition();

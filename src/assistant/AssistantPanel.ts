@@ -328,6 +328,26 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
       history.push({ role: "tool", tool_call_id: tc.id, content: "已记住" });
       continue;
     }
+    if (tc.name === "launch_application") {
+      const app = String(tc.args.application ?? "").trim();
+      if (!app) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "应用名称为空" });
+        continue;
+      }
+      loading.textContent = "启动中…";
+      // 启动软件只接受应用名、不接受任意命令，安全免确认
+      let result: string;
+      try {
+        const r = await invoke<{ success: boolean; message: string; resolved: string | null }>(
+          "launch_application",
+          { application: app },
+        );
+        result = JSON.stringify(r);
+      } catch (e) {
+        result = JSON.stringify({ success: false, message: `执行失败：${e}`, resolved: null });
+      }
+      history.push({ role: "tool", tool_call_id: tc.id, content: result });
+    }
     if (tc.name === "run_shell") {
       const cmd = String(tc.args.command ?? "").trim();
       if (!cmd) {

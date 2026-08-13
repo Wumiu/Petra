@@ -1,4 +1,5 @@
 mod audio;
+mod launch;
 mod screen;
 mod trash;
 
@@ -40,6 +41,9 @@ pub struct WorkArea {
 pub struct CursorPos {
     pub x: i32,
     pub y: i32,
+    /// 光标相对真实窗口中心的偏移（物理像素），供视线跟随使用
+    pub rx: i32,
+    pub ry: i32,
 }
 
 #[derive(Serialize, Clone)]
@@ -155,8 +159,8 @@ fn work_area_at(x: i32, y: i32) -> WorkArea {
 }
 
 #[tauri::command]
-fn cursor_pos() -> CursorPos {
-    screen::cursor_pos()
+fn cursor_pos(app: AppHandle) -> CursorPos {
+    screen::cursor_pos(&app)
 }
 
 #[tauri::command]
@@ -332,6 +336,7 @@ fn spawn_drag_follower(app: AppHandle) {
 /// 小助手主动问候：取当前前台窗口标题 + 进程名，供 AI 判断用户在做什么。
 #[tauri::command]
 fn active_window_title() -> String {
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
@@ -352,6 +357,9 @@ fn active_window_title() -> String {
         let mut exe = String::new();
         if pid != 0 {
             if let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                // windows 0.58 的 HANDLE 是 Copy 类型且无 Drop 实现，
+                // OpenProcess 成功后必须显式 CloseHandle，否则每次调用泄漏一个进程句柄。
+                // 本作用域内无 early return，块结束前必然走到这里释放。
                 let mut exebuf = [0u16; 1024];
                 let mut size = exebuf.len() as u32;
                 if QueryFullProcessImageNameW(
@@ -368,6 +376,7 @@ fn active_window_title() -> String {
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or(path);
                 }
+                let _ = CloseHandle(proc);
             }
         }
         if !exe.is_empty() {
@@ -485,6 +494,7 @@ fn validate_shell_command(command: &str) -> Result<(), String> {
 
 /// 小助手 shell 调用：执行命令（chcp 65001 切 UTF-8 避免中文乱码），返回输出；
 /// 15s 超时并强制终止子进程。仅由前端在用户确认气泡允许后调用。
+/// 注意：普通“打开软件”请求应走 launch_application，不要用本命令。
 #[tauri::command]
 fn run_shell(command: String) -> Result<String, String> {
     use std::io::Read;
@@ -542,6 +552,13 @@ fn run_shell(command: String) -> Result<String, String> {
         s.push_str(&String::from_utf8_lossy(&eb));
     }
     Ok(s.trim().to_string())
+}
+
+/// 小助手“打开软件”专用：只接受应用名，解析（别名 → 系统应用 → 开始菜单快捷方式）
+/// 后经 ShellExecuteW 启动，返回结构化结果。不接受任意 shell 表达式。
+#[tauri::command]
+fn launch_application(application: String) -> launch::LaunchResult {
+    launch::launch_application_checked(application)
 }
 
 /// 清除移动目标（拖动/停止漫游时）。
@@ -701,6 +718,7 @@ pub fn run() {
             drag_start,
             drag_end,
             run_shell,
+            launch_application,
             active_window_title,
             set_api_key,
             get_api_key,

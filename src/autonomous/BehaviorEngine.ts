@@ -42,6 +42,8 @@ const ACTIVITY_LEVELS: Record<"low" | "mid" | "high", ActivityParams> = {
 export class BehaviorEngine {
   private pos: XY;
   private cursor: XY = { x: 0, y: 0 };
+  // 光标相对真实窗口中心的偏移（逻辑坐标，Rust 侧基于 GetWindowRect 计算，免疫引擎 pos 漂移）
+  private cursorRel: XY = { x: 0, y: 0 };
   private target: XY | null = null;
   private area: { left: number; top: number; width: number; height: number } | null = null;
   private dwellUntil = 0;
@@ -180,10 +182,11 @@ export class BehaviorEngine {
   /** 光标轮询（独立定时器调用，避免渲染热路径 await IPC） */
   async pollCursor() {
     try {
-      const c = await invoke<{ x: number; y: number }>("cursor_pos");
+      const c = await invoke<{ x: number; y: number; rx: number; ry: number }>("cursor_pos");
       const prev = this.cursor;
       // Rust 返回物理像素 → 转逻辑
       this.cursor = { x: c.x / this.scaleFactor, y: c.y / this.scaleFactor };
+      this.cursorRel = { x: c.rx / this.scaleFactor, y: c.ry / this.scaleFactor };
       // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
       const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
       this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
@@ -251,11 +254,16 @@ export class BehaviorEngine {
   update(now: number, dt: number) {
     // 光标/工作区由 pollCursor()/pollArea() 独立定时器更新，热路径不做 IPC
 
-    // 相对窗口中心的鼠标偏移（供角色视线跟随；pos 是窗口左上角）
-    const cx = this.pos.x + WIN / 2;
-    const cy = this.pos.y + WIN / 2;
-    this.cursorDx = Math.max(-1, Math.min(1, (this.cursor.x - cx) / 260));
-    this.cursorDy = Math.max(-1, Math.min(1, (this.cursor.y - cy) / 260));
+    // 视线跟随：基准是真实窗口中心（Rust 侧计算），而不是引擎本地积分 pos，
+    // 否则漫游漂移（逻辑速度 vs 物理速度单位不一致）会累积成“以屏幕中心为基准”的方向错误。
+    // 死区 + 平滑：靠近中心不剧烈转头，lerp 避免 120ms 轮询跳变。
+    const relDist = Math.hypot(this.cursorRel.x, this.cursorRel.y);
+    const dead = Math.max(0, Math.min(1, (relDist - 20) / 40)); // 20~60px 过渡带
+    const tdx = clamp((this.cursorRel.x / 260) * dead, -1, 1);
+    const tdy = clamp((this.cursorRel.y / 260) * dead, -1, 1);
+    const k = 1 - Math.exp(-dt * 8); // 约 125ms 时间常数，平滑追赶
+    this.cursorDx += (tdx - this.cursorDx) * k;
+    this.cursorDy += (tdy - this.cursorDy) * k;
 
     // 待机：完全静止（不漫游/不躲避/不追踪），保留视线跟随
     if (this.idle) {
@@ -302,10 +310,8 @@ export class BehaviorEngine {
       }
       this.lastCursor = { ...this.cursor };
     } else {
-      // 鼠标靠太近 → 逃跑
-      const dx = this.pos.x - this.cursor.x;
-      const dy = this.pos.y - this.cursor.y;
-      const dist = Math.hypot(dx, dy);
+      // 鼠标靠太近 → 逃跑（用相对窗口中心的偏移判定，免疫 pos 漂移）
+      const dist = relDist;
       if (dist < 165 && dist > 1) {
         this.fleeUntil = now + 900 + this.rng() * 600;
         this.target = null;
@@ -313,9 +319,9 @@ export class BehaviorEngine {
       }
     }
 
-    // 鼠标与窗口距离（供逃跑/追踪共用）
-    const mdx = this.pos.x - this.cursor.x;
-    const mdy = this.pos.y - this.cursor.y;
+    // 鼠标与窗口距离（供逃跑/追踪共用）：直接用相对窗口中心偏移
+    const mdx = -this.cursorRel.x; // 从窗口中心指向鼠标的反方向（背离鼠标）
+    const mdy = -this.cursorRel.y;
     const mdist = Math.hypot(mdx, mdy) || 1;
 
     if (now < this.fleeUntil) {

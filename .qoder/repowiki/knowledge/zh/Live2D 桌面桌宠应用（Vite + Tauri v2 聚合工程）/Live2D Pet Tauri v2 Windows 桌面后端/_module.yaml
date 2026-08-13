@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: tauri_backend
-title: Tauri 桌面端后端（Live2D Pet）
+title: Live2D Pet Tauri v2 Windows 桌面后端
 scope:
     - src-tauri/
 source_files: []
