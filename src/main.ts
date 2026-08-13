@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
-import { PlaceholderRenderer } from "./live2d/PlaceholderRenderer";
 import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
 import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
@@ -14,7 +13,7 @@ import { loadSettings, saveSettings, type Settings, type AssistantProvider } fro
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
-import { setLifecycle } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
 import { listModels } from "./assistant/AssistantClient";
 
 const WIN = 300;
@@ -112,9 +111,8 @@ async function createView(): Promise<PetView> {
   } catch (err) {
     console.error(`live2d 加载失败: ${err}`);
   }
-  // 4) 占位角色兜底
-  currentModel = { type: "placeholder" };
-  return new PlaceholderRenderer();
+  // 默认模型（deepseek.psd）加载失败：不允许回退占位，直接抛错
+  throw new Error("模型加载失败（manifest 未配置或 deepseek.psd 缺失）");
 }
 
 async function importPsdBytes(name: string, bytes: Uint8Array) {
@@ -149,7 +147,13 @@ async function reloadView() {
 }
 
 async function boot() {
-  await mountView();
+  try {
+    await mountView();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast(`模型加载失败：${msg}`, "warn");
+    return;
+  }
 
   // 同步 Rust 侧音频开关到持久化设置
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
@@ -160,7 +164,7 @@ async function boot() {
 
   engine = new BehaviorEngine(pos);
   engine.setScale(scaleFactor);
-  engine.setActivityFactor({ low: 3.5, mid: 1.8, high: 1 }[settings.activity]);
+  engine.setActivityLevel(settings.activity);
   engine.setTracking(settings.mouseTrack);
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
@@ -172,8 +176,19 @@ async function boot() {
     settings.idleMode = false;
     saveSettings(settings);
   }
-  // 延迟首次漫游，让主人先在屏幕中央看到桌宠
-  setTimeout(() => void engine.teleportRandom(), 5000);
+  // 延迟首次漫游（low 档完全静止，不触发首次移动）
+  if (settings.activity !== "low") {
+    setTimeout(() => void engine.teleportRandom(), 5000);
+  }
+
+  // 小助手主动问候：每 20 分钟，若开启且空闲则智能打招呼（识别当前窗口）
+  setInterval(() => {
+    if (settings.assistant.enabled) void triggerProactive();
+  }, 20 * 60 * 1000);
+
+  // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
+  setInterval(() => void engine.pollCursor(), 120);
+  setInterval(() => void engine.pollArea(), 2500);
 
   // ---------- 音频 ----------
   const analyzer = new AudioAnalyzer();
@@ -281,26 +296,25 @@ async function boot() {
 
     analyzer.tick();
 
-    void engine.update(now, dt).then(() => {
-      driver.bass = analyzer.bass;
-      driver.mid = analyzer.mid;
-      driver.treble = analyzer.treble;
-      driver.beat = analyzer.beat;
-      driver.bob = engine.bob;
-      driver.vx = engine.vx;
-      driver.cursorDx = engine.cursorDx;
-      driver.cursorDy = engine.cursorDy;
-      // 待机时呼吸放缓
-      driver.breathing = (now / 1000) * Math.PI * 2 * (engine.isIdle ? 0.18 : 0.42);
-      driver.excited = engine.excitementValue;
-      driver.idleTop = engine.isIdleTop;
-      driver.idle = engine.isIdle;
-      // 临时调试：音频数据是否到达角色（每2秒输出一次）
-      if (Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
-        console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
-      }
-      view.update(driver, dt);
-    });
+    engine.update(now, dt);
+    driver.bass = analyzer.bass;
+    driver.mid = analyzer.mid;
+    driver.treble = analyzer.treble;
+    driver.beat = analyzer.beat;
+    driver.bob = engine.bob;
+    driver.vx = engine.vx;
+    driver.cursorDx = engine.cursorDx;
+    driver.cursorDy = engine.cursorDy;
+    // 待机时呼吸放缓
+    driver.breathing = (now / 1000) * Math.PI * 2 * (engine.isIdle ? 0.18 : 0.42);
+    driver.excited = engine.excitementValue;
+    driver.idleTop = engine.isIdleTop;
+    driver.idle = engine.isIdle;
+    // 调试日志仅 dev 构建输出
+    if (import.meta.env.DEV && Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
+      console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
+    }
+    view.update(driver, dt);
   });
 }
 
@@ -423,6 +437,16 @@ async function toggleModelPanel() {
       hiddenPsdInput().click();
     });
     host.appendChild(importRow);
+
+    // 返回按钮
+    const backRow = document.createElement("div");
+    backRow.className = "as-set-btns";
+    const backBtn = document.createElement("button");
+    backBtn.className = "as-btn";
+    backBtn.textContent = "返回";
+    backBtn.addEventListener("click", () => host.classList.add("hidden"));
+    backRow.appendChild(backBtn);
+    host.appendChild(backRow);
   };
 
   if (panel) {
@@ -435,6 +459,7 @@ async function toggleModelPanel() {
     p.addEventListener("pointerdown", (e) => e.stopPropagation());
     render(p);
     document.body.appendChild(p);
+    p.classList.remove("hidden");
   }
 }
 
@@ -454,12 +479,8 @@ function buildMenu(engine: BehaviorEngine) {
         const next: ActivityLevel = nextActivity(settings);
         settings.activity = next;
         saveSettings(settings);
-        engine.setActivityFactor({
-          low: 3.5,
-          mid: 1.8,
-          high: 1,
-        }[next]);
-        toast(`活动频率：${ACTIVITY_LABEL[next]}（表情/漫游节奏）`);
+        engine.setActivityLevel(next);
+        toast(`活动频率：${ACTIVITY_LABEL[next]}`);
       },
     },
     {
@@ -491,6 +512,11 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => {
         settings.assistant.enabled = !settings.assistant.enabled;
         saveSettings(settings);
+        if (!settings.assistant.enabled) {
+          // 关闭时立即关闭对话框 + 清空气泡
+          closeAssistant();
+          clearBubbles();
+        }
         toast(settings.assistant.enabled ? "小助手已开启（点我对话）" : "小助手已关闭");
       },
     },
@@ -622,14 +648,26 @@ async function toggleAssistantSettings() {
     key.className = "as-input";
     key.type = "password";
     key.placeholder = "API Key";
-    key.value = settings.assistant.apiKey;
+    key.value = "";
     mkRow("API Key", key);
+    // API Key 存 Rust 侧（DPAPI 加密），打开面板时回填
+    void invoke<string>("get_api_key")
+      .then((k) => {
+        key.value = k;
+      })
+      .catch(() => {
+        /* 未设置 */
+      });
 
     const model = document.createElement("input");
     model.className = "as-input";
-    model.placeholder = "模型名（可自动获取）";
+    model.placeholder = "模型名";
     model.value = settings.assistant.model;
+    model.setAttribute("list", "model-datalist");
+    const datalist = document.createElement("datalist");
+    datalist.id = "model-datalist";
     mkRow("模型", model);
+    host.appendChild(datalist);
 
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
@@ -644,30 +682,74 @@ async function toggleAssistantSettings() {
     fetchBtn.addEventListener("click", async () => {
       fetchBtn.disabled = true;
       fetchBtn.textContent = "获取中…";
-      const models = await listModels(provider.value as AssistantProvider, key.value.trim());
-      fetchBtn.disabled = false;
+      let models: string[] = [];
+      try {
+        models = await listModels(provider.value as AssistantProvider, key.value.trim());
+      } catch {
+        models = [];
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = "自动获取模型";
+      }
       if (models.length) {
-        model.value = models[0];
-        toast(`获取到 ${models.length} 个模型，已填入第一个（可在输入框改）`);
+        // 填充下拉列表，让用户自己选（不自动用第一个）
+        datalist.innerHTML = "";
+        for (const m of models) {
+          const opt = document.createElement("option");
+          opt.value = m;
+          datalist.appendChild(opt);
+        }
+        toast(`获取到 ${models.length} 个模型，点输入框下拉选择`);
       } else {
         toast("未获取到模型列表（可能接口不支持），请手填", "warn");
       }
     });
     mkRow("", fetchBtn);
 
+    const btns = document.createElement("div");
+    btns.className = "as-set-btns";
+
+    const clearHistBtn = document.createElement("button");
+    clearHistBtn.className = "as-btn";
+    clearHistBtn.textContent = "清空对话历史";
+    clearHistBtn.addEventListener("click", () => {
+      clearHistory();
+      toast("对话历史已清空（长期记忆保留）");
+    });
+
+    const privacyHint = document.createElement("div");
+    privacyHint.className = "as-privacy";
+    privacyHint.textContent = "隐私提示：主动问候会读取当前前台窗口标题+进程名并发送给 AI。API Key 经系统 DPAPI 加密存储。";
+    host.appendChild(privacyHint);
+    host.appendChild(clearHistBtn);
+
+    const back = document.createElement("button");
+    back.className = "as-btn";
+    back.textContent = "返回";
+    back.addEventListener("click", () => {
+      host.classList.add("hidden");
+    });
+
     const save = document.createElement("button");
     save.className = "as-btn as-btn-primary";
     save.textContent = "保存";
-    save.addEventListener("click", () => {
+    save.addEventListener("click", async () => {
       settings.assistant.provider = provider.value as AssistantProvider;
-      settings.assistant.apiKey = key.value.trim();
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
       saveSettings(settings);
+      // API Key 存 Rust 侧（DPAPI 加密）
+      try {
+        await invoke("set_api_key", { apiKey: key.value.trim() });
+        clearApiKeyCache();
+      } catch (e) {
+        toast(`API Key 保存失败：${e}`, "warn");
+      }
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });
-    host.appendChild(save);
+    btns.append(back, save);
+    host.appendChild(btns);
   };
 
   if (panel) {
@@ -680,6 +762,7 @@ async function toggleAssistantSettings() {
     p.addEventListener("pointerdown", (e) => e.stopPropagation());
     render(p);
     document.body.appendChild(p);
+    p.classList.remove("hidden");
   }
 }
 

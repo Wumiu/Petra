@@ -117,13 +117,17 @@ export class Rigged2DView implements PetView {
     const e = this.expr;
 
     const exc = d.excited ?? 0; // 逗猫棒兴奋度：眼神更跟手、微前倾、瞳孔聚焦
+    // 顶部待机倒挂（旋转 180°）→ 视线横纵都镜像
+    const flip = d.idleTop ? -1 : 1;
+    const cdx = d.cursorDx * flip;
+    const cdy = d.cursorDy * flip;
 
     const o: Partial<RigParams> = {
       // 头部轻微跟随（眼神为主）：头微动、眼明显；兴奋时微前倾
-      angleX: clamp(d.cursorDx * 0.7 + d.vx * 0.25 + exc * 0.12, -1, 1),
-      angleY: clamp(d.cursorDy * 0.55 + exc * 0.06, -1, 1),
-      eyeX: clamp(d.cursorDx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
-      eyeY: clamp(-d.cursorDy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
+      angleX: clamp(cdx * 0.7 + d.vx * 0.25 + exc * 0.12, -1, 1),
+      angleY: clamp(-cdy * 0.55 + exc * 0.06, -1, 1),
+      eyeX: clamp(cdx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
+      eyeY: clamp(cdy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
       // 音乐 → 身体律动
       body: clamp(d.bass * 0.55 * sway + d.vx * 0.3 + d.beat * 0.2 * sway, -1, 1),
       angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway + e.tilt * ew, -0.5, 0.5),

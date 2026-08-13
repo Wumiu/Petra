@@ -11,17 +11,26 @@ const EDGE_PAD = 4; // 离屏幕边缘留 4px 间隙
 const POLL_CURSOR_MS = 120;
 const TARGET_INTERVAL = 100;
 
-// 运动参数（调小=更慢更温和）
-const BASE_SPEED = 32;        // 闲逛速度 px/s（原 55~110）
-const FLEE_SPEED = 140;       // 逃跑速度 px/s（原 210~270）
-const BOUNCE_DAMP = 0.55;     // 撞墙后速度衰减
-const RADIUS_DIV = 4.5;       // 目标半径除数（越大半径越小，原 2.5）
-const REST_BASE = 4000;       // 到达目标后基础休息 ms（原 1500）
-const REST_LONG_CHANCE = 0.45; // 长休息概率（原 0.35）
-const REST_LONG = 8000;       // 长休息额外 ms（原 4000）
+// 运动参数（逗猫棒追速等）
+const CHASE_SPEED = 160;   // 逗猫棒追鼠标速度 px/s
+const FLEE_SPEED = 140;    // 逃跑速度 px/s
+const BOUNCE_DAMP = 0.55;  // 撞墙后速度衰减
 
 const EXPOSE_TOP = 150;    // 顶部待机露出 px（旋转后多露一点，到眼睛）
 const EXPOSE_BOTTOM = 95;  // 底部待机露出 px（少露一点，从肩头缩回）
+
+// 活动频率三档显著区分（休息时长/长歇概率/移动半径/闲逛速度）
+interface ActivityParams {
+  restBase: number; // 到达后休息 base ms
+  restChance: number; // 休息后再歇概率 / 长歇概率
+  radiusDiv: number; // 目标半径除数（越小半径越大）
+  speed: number; // 闲逛速度 px/s
+}
+const ACTIVITY_LEVELS: Record<"low" | "mid" | "high", ActivityParams> = {
+  low: { restBase: 600000, restChance: 0.95, radiusDiv: 8, speed: 12 }, // 几乎不动：10~20 分钟才可能挪一下
+  mid: { restBase: 8000, restChance: 0.3, radiusDiv: 3.5, speed: 55 },
+  high: { restBase: 1500, restChance: 0.05, radiusDiv: 2, speed: 120 },
+};
 
 /**
  * 自主漫游引擎：
@@ -38,26 +47,18 @@ export class BehaviorEngine {
   private dwellUntil = 0;
   private fleeUntil = 0;
   private suspendUntil = 0;
-  private lastCursorPoll = 0;
   private lastTarget = 0;
-  private areaAt = 0;
-  private activityFactor = 2.6;
+  private actParams: ActivityParams = ACTIVITY_LEVELS.mid;
+  private activityLevel: "low" | "mid" | "high" = "mid";
   private tracking = false;
+  private cursorSpeed = 0; // 鼠标移动速度 px/s（按 120ms 轮询间隔真实计算）
+  private vel: XY = { x: 0, y: 0 }; // 上一帧速度（供碰撞反弹用）
+  // 逗猫棒（追鼠标）
+  private excitement = 0; // 0~1 兴奋度（鼠标越快越兴奋，渲染表现用）
   private trackAt = 0;
   private lastCursor: XY = { x: 0, y: 0 };
-  private cursorSpeed = 0; // 鼠标移动速度 px/s（按 120ms 轮询间隔真实计算）
-  private lastCursorMoveAt = 0; // 鼠标最后移动时刻（静止判定用）
-  private vel: XY = { x: 0, y: 0 }; // 上一帧速度（供碰撞反弹用）
-  private bounceDir: "none" | "left" | "right" | "top" | "bottom" = "none";
-  // 逗猫棒状态机
-  private excitement = 0; // 0~1 兴奋度（鼠标越快越兴奋）
-  private trackState: "idle" | "sneak" | "chase" | "pounce" | "circle" | "bored" = "idle";
-  private pounceUntil = 0;
-  private boredUntil = 0;
-  private circleAngle = 0;
-  private lastTrackTime = 0;
   private fleeSpeed = FLEE_SPEED;
-  private lastPushSpeed = BASE_SPEED;
+  private lastPushSpeed = ACTIVITY_LEVELS.mid.speed;
   // 待机模式（沉到屏幕边缘，只露头顶+眼睛，完全静止）
   private idle = false;
   private idleTop = false;
@@ -82,7 +83,7 @@ export class BehaviorEngine {
   async setIdle(on: boolean) {
     this.idle = on;
     if (on) {
-      await this.refreshArea();
+      await this.pollArea();
       // 就近边缘：以窗口中心判断（用户直觉：桌宠在屏幕哪半就往哪边沉）
       const a = this.area ?? { left: 0, top: 0, width: 1920, height: 1080 };
       const midY = a.top + a.height / 2;
@@ -137,30 +138,26 @@ export class BehaviorEngine {
   }
 
   async teleportRandom() {
-    await this.refreshArea();
+    await this.pollArea();
     this.pickTarget(true);
     this.dwellUntil = 0;
     await this.pushTarget();
   }
 
-  /** 活动频率因子（菜单切换）：越大活动越少 */
-  setActivityFactor(f: number) {
-    this.activityFactor = Math.max(1, f);
+  /** 活动频率（菜单切换）：三档显著区分，查表 */
+  setActivityLevel(level: "low" | "mid" | "high") {
+    this.activityLevel = level;
+    this.actParams = ACTIVITY_LEVELS[level] ?? this.actParams;
   }
 
-  /** 逗猫棒开关（开启时进入猫咪行为状态机） */
+  /** 逗猫棒开关（开启后追着鼠标跑） */
   setTracking(on: boolean) {
     this.tracking = on;
     this.target = null;
     this.fleeUntil = 0;
     if (on) {
       this.dwellUntil = 0;
-      // 重置状态机残留
-      this.pounceUntil = 0;
-      this.boredUntil = 0;
       this.excitement = 0;
-      this.circleAngle = 0;
-      this.lastTrackTime = 0;
       this.cursorSpeed = 0;
     } else {
       this.dwellUntil = performance.now() + 2000;
@@ -180,7 +177,23 @@ export class BehaviorEngine {
     this.target = null;
   }
 
-  private async refreshArea() {
+  /** 光标轮询（独立定时器调用，避免渲染热路径 await IPC） */
+  async pollCursor() {
+    try {
+      const c = await invoke<{ x: number; y: number }>("cursor_pos");
+      const prev = this.cursor;
+      // Rust 返回物理像素 → 转逻辑
+      this.cursor = { x: c.x / this.scaleFactor, y: c.y / this.scaleFactor };
+      // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
+      const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
+      this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  /** 工作区轮询（独立定时器调用） */
+  async pollArea() {
     try {
       // Rust 返回物理像素 → 转逻辑
       const r = await invoke<{ left: number; top: number; width: number; height: number }>(
@@ -211,8 +224,8 @@ export class BehaviorEngine {
       this.target = null;
       return;
     }
-    // 半径随活动因子缩小：低活动时原地小范围溜达
-    const radius = Math.min(maxX - minX, maxY - minY) / Math.max(3, RADIUS_DIV * (1 / this.activityFactor)) + 60;
+    // 半径随活动档位变化：低档小范围溜达，高档接近全屏
+    const radius = Math.min(maxX - minX, maxY - minY) / Math.max(3, this.actParams.radiusDiv) + 60;
     this.target = {
       x: clamp(this.pos.x + (this.rng() * 2 - 1) * radius, minX, maxX),
       y: clamp(this.pos.y + (this.rng() * 2 - 1) * radius, minY, maxY),
@@ -235,32 +248,27 @@ export class BehaviorEngine {
     }
   }
 
-  async update(now: number, dt: number) {
-    // 定频拉光标（拖拽暂停期间不拉，避免触发躲避）
-    if (now - this.lastCursorPoll > POLL_CURSOR_MS) {
-      try {
-        const c = await invoke<{ x: number; y: number }>("cursor_pos");
-        const prev = this.cursor;
-        // Rust 返回物理像素 → 转逻辑
-        this.cursor = { x: c.x / this.scaleFactor, y: c.y / this.scaleFactor };
-        // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
-        const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
-        this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
-        if (moved > 4) this.lastCursorMoveAt = now;
-      } catch {
-        /* 忽略 */
-      }
-      this.lastCursorPoll = now;
-    }
+  update(now: number, dt: number) {
+    // 光标/工作区由 pollCursor()/pollArea() 独立定时器更新，热路径不做 IPC
 
-    // 相对窗口中心的鼠标偏移（供角色视线跟随）
-    this.cursorDx = Math.max(-1, Math.min(1, (this.cursor.x - this.pos.x) / 260));
-    this.cursorDy = Math.max(-1, Math.min(1, (this.cursor.y - this.pos.y) / 260));
+    // 相对窗口中心的鼠标偏移（供角色视线跟随；pos 是窗口左上角）
+    const cx = this.pos.x + WIN / 2;
+    const cy = this.pos.y + WIN / 2;
+    this.cursorDx = Math.max(-1, Math.min(1, (this.cursor.x - cx) / 260));
+    this.cursorDy = Math.max(-1, Math.min(1, (this.cursor.y - cy) / 260));
 
     // 待机：完全静止（不漫游/不躲避/不追踪），保留视线跟随
     if (this.idle) {
       this.vx = 0;
       this.bob = 0;
+      return;
+    }
+
+    // low 档：很安静地在原地（不漫游、不躲避鼠标），仅保留呼吸/眨眼/表情/视线
+    if (this.activityLevel === "low") {
+      this.vx = 0;
+      this.bob = 0;
+      this.target = null;
       return;
     }
 
@@ -274,72 +282,23 @@ export class BehaviorEngine {
     let velX = 0;
     let velY = 0;
 
-    // 逗猫棒模式：真实猫咪行为状态机
+    // 逗猫棒模式：追着鼠标跑（简化为直接跟随，去掉复杂状态机）
     if (this.tracking) {
-      const dtTrack = Math.min(0.3, (now - (this.lastTrackTime || now)) / 1000);
-      this.lastTrackTime = now;
-
-      const cSpeed = this.cursorSpeed;
-      const dist = Math.hypot(this.pos.x - this.cursor.x, this.pos.y - this.cursor.y);
-      const mouseStill = now - this.lastCursorMoveAt > 5000; // 鼠标静止 5s+
-
-      // 兴奋度：鼠标越快越兴奋，自然衰减（阈值按真实速度校准）
-      const exciteGain = Math.min(1, cSpeed / 400) * 0.15;
-      this.excitement = clamp(this.excitement + exciteGain - 0.02, 0, 1);
-
-      // ---- 状态转换 ----
-      if (now < this.pounceUntil) {
-        // 扑击中：保持冲向目标
-        this.trackState = "pounce";
-      } else if (now < this.boredUntil) {
-        // 无聊中：东张西望，不追
-        this.trackState = "bored";
-        if (this.rng() < 0.02) {
-          this.target = { x: this.pos.x + (this.cursor.x - this.pos.x) * 0.3, y: this.pos.y + (this.cursor.y - this.pos.y) * 0.3 };
+      if (now > this.trackAt) {
+        this.trackAt = now + 250;
+        const dist = Math.hypot(this.pos.x - this.cursor.x, this.pos.y - this.cursor.y);
+        if (dist > 60) {
+          // 离得远 → 朝鼠标当前位置追
+          this.target = { x: this.cursor.x, y: this.cursor.y };
+          this.dwellUntil = now + 400;
+        } else {
+          // 够近 → 停住看
+          this.target = null;
+          this.dwellUntil = now + 300;
+          void invoke("clear_pet_target").catch(() => {});
         }
-      } else if (dist < 70 && this.excitement > 0.4 && now > this.pounceUntil + 800) {
-        // 距离够近 + 兴奋 → 扑！（带提前量：扑向鼠标移动方向前方）
-        this.trackState = "pounce";
-        this.pounceUntil = now + 300;
-        const pvx = this.cursor.x - this.lastCursor.x;
-        const pvy = this.cursor.y - this.lastCursor.y;
-        const plen = Math.hypot(pvx, pvy);
-        const lead = plen > 4 ? 110 : 50;
-        this.target = {
-          x: this.cursor.x + (plen ? (pvx / plen) * lead : 0),
-          y: this.cursor.y + (plen ? (pvy / plen) * lead : 0),
-        };
-        this.dwellUntil = now + 350;
-      } else if (dist < 120 && dist > 40 && !mouseStill) {
-        // 近距离且鼠标在动 → 绕圈（像猫咪围着逗猫棒转）
-        this.trackState = "circle";
-        this.circleAngle += dtTrack * 2.5;
-        const r = 55 + Math.sin(now * 0.003) * 18;
-        this.target = {
-          x: this.cursor.x + Math.cos(this.circleAngle) * r,
-          y: this.cursor.y + Math.sin(this.circleAngle) * r,
-        };
-      } else if (cSpeed > 60 || this.excitement > 0.5) {
-        // 鼠标快速移动或高兴奋 → 追
-        this.trackState = "chase";
-        this.target = { x: this.cursor.x, y: this.cursor.y };
-        this.dwellUntil = now + 300;
-      } else if (mouseStill && this.excitement < 0.3 && this.rng() < 0.02) {
-        // 鼠标静止太久 → 无聊，转移注意力片刻
-        this.trackState = "bored";
-        this.boredUntil = now + 2000 + this.rng() * 3000;
-        this.target = null;
-        this.excitement = Math.max(0, this.excitement - 0.25);
-      } else {
-        // 默认 → 偷偷靠近（始终保证有逼近点）
-        this.trackState = "sneak";
-        const angle = Math.atan2(this.cursor.y - this.pos.y, this.cursor.x - this.pos.x);
-        const offsetAngle = angle + (this.rng() - 0.5) * 1.2;
-        const approachDist = Math.max(50, dist * 0.4 + 40);
-        this.target = {
-          x: this.pos.x + Math.cos(offsetAngle) * approachDist,
-          y: this.pos.y + Math.sin(offsetAngle) * approachDist,
-        };
+        // 兴奋度简化为鼠标速度轻量映射（渲染表现用）
+        this.excitement = clamp(this.excitement + Math.min(1, this.cursorSpeed / 400) * 0.1 - 0.015, 0, 1);
       }
       this.lastCursor = { ...this.cursor };
     } else {
@@ -372,15 +331,14 @@ export class BehaviorEngine {
       this.target = { x: tx, y: ty };
       this.fleeSpeed = speed;
     } else {
-      if (!this.area || now - this.areaAt > 2500) {
-        await this.refreshArea();
-        this.areaAt = now;
+      if (!this.area) {
+        // 工作区尚未就绪：用默认（pollArea 定时器很快会更新）
+        this.area = { left: 0, top: 0, width: 1920, height: 1080 };
       }
       if (!this.target || now >= this.dwellUntil) {
-        // 低活动：休息结束后仍有概率继续歇着（越低的频率越爱歇）
-        const restP = 1 - 1 / this.activityFactor;
-        if (this.rng() < restP) {
-          this.dwellUntil = now + (8000 + this.rng() * 22000) * this.activityFactor;
+        // 休息结束后按档位概率继续歇（低档爱歇，高档几乎不歇）
+        if (this.rng() < this.actParams.restChance) {
+          this.dwellUntil = now + this.actParams.restBase + this.rng() * this.actParams.restBase;
           this.target = null;
         } else {
           this.pickTarget(true);
@@ -392,22 +350,14 @@ export class BehaviorEngine {
         const td = Math.hypot(tx, ty);
         if (td < 14) {
           this.target = null;
-          // 到达后小憩（随活动因子变长）；偶尔长休息
-          const base = REST_BASE + this.rng() * 2000;
-          const longRest = this.rng() < REST_LONG_CHANCE ? REST_LONG + this.rng() * 6000 : 0;
-          this.dwellUntil = now + (base + longRest) * this.activityFactor;
+          // 到达后按档位休息（低档几十秒，高档几秒）
+          this.dwellUntil = now + this.actParams.restBase + this.rng() * this.actParams.restBase;
           velX = 0;
           velY = 0;
           void invoke("clear_pet_target").catch(() => {});
         } else {
-          // 速度随逗猫棒状态变化（本地积分与 mover 用同一速度）
-          const trackSpeed =
-            this.trackState === "pounce" ? 380 + this.excitement * 200 :
-            this.trackState === "chase"  ? 180 + this.excitement * 120 :
-            this.trackState === "circle" ? 105 :
-            this.trackState === "sneak"  ? 35 + this.excitement * 25 :
-            20; // idle / bored
-          const speed = this.tracking ? trackSpeed : BASE_SPEED;
+          // 逗猫棒：追鼠标速度；非追踪按档位闲逛速度（本地积分与 mover 同一速度）
+          const speed = this.tracking ? CHASE_SPEED : this.actParams.speed;
           this.lastPushSpeed = speed;
           velX = (tx / td) * speed;
           velY = (ty / td) * speed;
@@ -453,24 +403,20 @@ export class BehaviorEngine {
       this.pos.x = left;
       this.vel.x = Math.abs(this.vel.x) * BOUNCE_DAMP;
       bounced = true;
-      this.bounceDir = "left";
     } else if (this.pos.x >= right) {
       this.pos.x = right;
       this.vel.x = -Math.abs(this.vel.x) * BOUNCE_DAMP;
       bounced = true;
-      this.bounceDir = "right";
     }
 
     if (this.pos.y <= top) {
       this.pos.y = top;
       this.vel.y = Math.abs(this.vel.y) * BOUNCE_DAMP;
       bounced = true;
-      this.bounceDir = "top";
     } else if (this.pos.y >= bottom) {
       this.pos.y = bottom;
       this.vel.y = -Math.abs(this.vel.y) * BOUNCE_DAMP;
       bounced = true;
-      this.bounceDir = "bottom";
     }
 
     if (bounced) {

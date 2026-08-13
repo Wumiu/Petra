@@ -329,13 +329,168 @@ fn spawn_drag_follower(app: AppHandle) {
     });
 }
 
-/// 小助手 shell 调用：执行命令（cmd /U /C，UTF-16 输出避免中文乱码），返回输出；
+/// 小助手主动问候：取当前前台窗口标题 + 进程名，供 AI 判断用户在做什么。
+#[tauri::command]
+fn active_window_title() -> String {
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    };
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return String::new();
+        }
+        let mut buf = [0u16; 512];
+        let len = GetWindowTextW(hwnd, &mut buf);
+        let title = String::from_utf16_lossy(&buf[..len as usize]).trim().to_string();
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let mut exe = String::new();
+        if pid != 0 {
+            if let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                let mut exebuf = [0u16; 1024];
+                let mut size = exebuf.len() as u32;
+                if QueryFullProcessImageNameW(
+                    proc,
+                    PROCESS_NAME_WIN32,
+                    windows::core::PWSTR(exebuf.as_mut_ptr()),
+                    &mut size,
+                )
+                .is_ok()
+                {
+                    let path = String::from_utf16_lossy(&exebuf[..size as usize]);
+                    exe = std::path::Path::new(&path)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or(path);
+                }
+            }
+        }
+        if !exe.is_empty() {
+            format!("{title} [{exe}]")
+        } else {
+            title
+        }
+    }
+}
+
+/// 用 Windows DPAPI 加密数据（绑定当前用户，无需额外密钥）。
+fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::Foundation::LocalFree;
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+    let in_blob = CRYPT_INTEGER_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    unsafe {
+        CryptProtectData(
+            &in_blob,
+            windows::core::PCWSTR::null(),
+            None,
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out_blob,
+        )
+        .map_err(|e| format!("加密失败: {e}"))?;
+        let v = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
+        LocalFree(windows::Win32::Foundation::HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        Ok(v)
+    }
+}
+
+/// 用 Windows DPAPI 解密数据。
+fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+    use windows::Win32::Foundation::LocalFree;
+    use windows::Win32::Security::Cryptography::{
+        CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+    let in_blob = CRYPT_INTEGER_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = CRYPT_INTEGER_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+    unsafe {
+        CryptUnprotectData(
+            &in_blob,
+            None,
+            None,
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut out_blob,
+        )
+        .map_err(|e| format!("解密失败: {e}"))?;
+        let v = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
+        LocalFree(windows::Win32::Foundation::HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        Ok(v)
+    }
+}
+
+fn api_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("api_key.bin"))
+}
+
+/// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
+#[tauri::command]
+fn set_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    let enc = dpapi_protect(api_key.as_bytes())?;
+    std::fs::write(api_key_path(&app)?, enc).map_err(|e| e.to_string())
+}
+
+/// 读取 API Key（DPAPI 解密）。
+#[tauri::command]
+fn get_api_key(app: AppHandle) -> Result<String, String> {
+    let path = api_key_path(&app)?;
+    let enc = std::fs::read(&path).map_err(|_| "未设置 API Key".to_string())?;
+    let dec = dpapi_unprotect(&enc)?;
+    String::from_utf8(dec).map_err(|e| e.to_string())
+}
+
+/// 命令安全校验：拦截危险/破坏性命令与链式多命令，降低 RCE 风险。
+fn validate_shell_command(command: &str) -> Result<(), String> {
+    let lower = command.trim().to_lowercase();
+    const DANGEROUS: &[&str] = &[
+        "format", "diskpart", "shutdown", "taskkill", "reg delete", "rd /s", "rmdir /s",
+        "del /s", "del /f", "deltree", "cipher", "fsutil", "bcdedit", "takeown", "vssadmin",
+        "powershell -enc", "mshta", "wscript", "cscript",
+    ];
+    for d in DANGEROUS {
+        if lower.contains(d) {
+            return Err(format!("命令被拦截（含危险操作 {d}）"));
+        }
+    }
+    if command.contains('&') || command.contains('|') || command.contains('>') || command.contains('<') {
+        return Err("命令被拦截（不允许 & | > < 链式/重定向）".into());
+    }
+    Ok(())
+}
+
+/// 小助手 shell 调用：执行命令（chcp 65001 切 UTF-8 避免中文乱码），返回输出；
 /// 15s 超时并强制终止子进程。仅由前端在用户确认气泡允许后调用。
 #[tauri::command]
 fn run_shell(command: String) -> Result<String, String> {
     use std::io::Read;
     use std::time::Duration;
 
+    validate_shell_command(&command)?;
     log_line(&format!("run_shell: {command}"));
     // chcp 65001 切 UTF-8 代码页，避免 cmd 内置命令 GBK 输出乱码
     let full = format!("chcp 65001>nul & {command}");
@@ -409,7 +564,10 @@ fn spawn_pet_mover(app: AppHandle) {
         let Some(win) = app.get_webview_window("main") else {
             continue;
         };
-        screen::move_window_toward(&win, tx, ty, speed, 0.016);
+        if screen::move_window_toward(&win, tx, ty, speed, 0.016) {
+            // 到位（或窗口不可见）→ 清除目标，避免空转
+            *motion.target.lock().unwrap() = None;
+        }
     });
 }
 
@@ -543,6 +701,9 @@ pub fn run() {
             drag_start,
             drag_end,
             run_shell,
+            active_window_title,
+            set_api_key,
+            get_api_key,
             get_autostart,
             set_autostart,
         ])
@@ -565,8 +726,10 @@ pub fn run() {
             spawn_pet_mover(handle.clone());
             spawn_drag_follower(handle.clone());
 
-            if let Some(win) = app.get_webview_window("main") {
-                spawn_diag_probe(win);
+            if cfg!(debug_assertions) {
+                if let Some(win) = app.get_webview_window("main") {
+                    spawn_diag_probe(win);
+                }
             }
 
             let state = app.state::<AudioState>();

@@ -158,13 +158,15 @@ export class Live2DController implements PetView {
     const eEyeR = k === 6 || k === 3 ? (1 - 0.85 * ew) : 1;
     const eForm = k === 1 ? 0.8 * ew : k === 3 ? 0.4 * ew : k === 4 ? -0.4 * ew : 0;
 
-    set("ParamAngleX", Math.max(-25, Math.min(25, d.cursorDx * 22)));
-    set("ParamAngleY", Math.max(-15, Math.min(15, d.cursorDy * 12)));
+    // 顶部待机倒挂（旋转 180°）→ 视线横纵都镜像
+    const flip = d.idleTop ? -1 : 1;
+    set("ParamAngleX", Math.max(-25, Math.min(25, d.cursorDx * flip * 22)));
+    set("ParamAngleY", Math.max(-15, Math.min(15, -d.cursorDy * flip * 12)));
     set("ParamAngleZ", Math.max(-10, Math.min(10, d.vx * 6)));
     // 眼球跟随（标准 Cubism 参数，范围 ±30；兴奋时更跟手）
     const exc = d.excited ?? 0;
-    set("ParamEyeBallX", Math.max(-30, Math.min(30, d.cursorDx * (26 + exc * 14))));
-    set("ParamEyeBallY", Math.max(-30, Math.min(30, -d.cursorDy * (18 + exc * 10))));
+    set("ParamEyeBallX", Math.max(-30, Math.min(30, d.cursorDx * flip * (26 + exc * 14))));
+    set("ParamEyeBallY", Math.max(-30, Math.min(30, d.cursorDy * flip * (18 + exc * 10))));
 
     set("ParamBreath", 0.5 + breathePhase * 0.5);
     // 眼睛：中频能量 + 表情（眯眼/眨眼收敛）+ 兴奋睁大

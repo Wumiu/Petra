@@ -1,5 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+const DEV = import.meta.env.DEV;
+
 /**
  * 音频分析：订阅 Rust WASAPI 回环捕获推来的 PCM，
  * 经 Web Audio AnalyserNode 做 FFT，输出低频/中频/高频能量与节拍脉冲。
@@ -10,6 +12,7 @@ export class AudioAnalyzer {
   private ring: Float32Array;
   private writePos = 0;
   private freqByte: Uint8Array<ArrayBuffer>;
+  private buf: AudioBuffer; // 复用，避免每帧重建
   private unlisten?: UnlistenFn;
   private lastBeat = 0;
   private bassAvg = 0;
@@ -33,25 +36,27 @@ export class AudioAnalyzer {
 
     this.freqByte = new Uint8Array(this.analyser.frequencyBinCount);
     this.ring = new Float32Array(this.analyser.frequencyBinCount);
+    // 预分配一次 AudioBuffer，每帧只更新采样数据
+    this.buf = this.ctx.createBuffer(1, 1024, this.ctx.sampleRate);
   }
 
   async start(): Promise<void> {
-    console.log("[audio] start() 已调用，注册 audio:pcm 监听器...");
+    if (DEV) console.log("[audio] start() 注册 audio:pcm 监听器...");
     this.unlisten = await listen<number[]>("audio:pcm", (e) => {
       this.available = true;
       const arr = e.payload;
       this.pcmCount++;
-      if (this.pcmCount % 50 === 1) {
+      if (DEV && this.pcmCount % 50 === 1) {
         const min = Math.min(...arr);
         const max = Math.max(...arr);
-        console.log(`[audio] PCM #${this.pcmCount}: ${arr.length}采样, range=[${min.toFixed(4)}, ${max.toFixed(4)}], rms=${Math.sqrt(arr.reduce((s,v)=>s+v*v,0)/arr.length).toFixed(4)}`);
+        const rms = Math.sqrt(arr.reduce((s, v) => s + v * v, 0) / arr.length);
+        console.log(`[audio] PCM #${this.pcmCount}: ${arr.length}采样, range=[${min.toFixed(4)}, ${max.toFixed(4)}], rms=${rms.toFixed(4)}`);
       }
       for (const v of arr) {
         this.ring[this.writePos] = v;
         this.writePos = (this.writePos + 1) % this.ring.length;
       }
     });
-    console.log("[audio] 监听器注册完成");
   }
 
   stop() {
@@ -65,13 +70,12 @@ export class AudioAnalyzer {
 
     const n = 1024;
     const start = (this.writePos - n + this.ring.length) % this.ring.length;
-    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
+    const data = this.buf.getChannelData(0);
     for (let i = 0; i < n; i++) {
       data[i] = this.ring[(start + i) % this.ring.length];
     }
     const src = this.ctx.createBufferSource();
-    src.buffer = buf;
+    src.buffer = this.buf;
     src.connect(this.analyser);
     src.start();
     src.onended = () => src.disconnect();
@@ -106,8 +110,7 @@ export class AudioAnalyzer {
     this.treble = this.treble * 0.82 + sn(trebleN ? trebleE / trebleN : 0) * 0.18;
     this.beat = Math.max(this.lastBeat, this.beat * 0.9);
 
-    // 调试输出（每秒约60次，取第30次输出避免刷屏）
-    if (this.pcmCount > 0 && this.pcmCount % 30 === 0) {
+    if (DEV && this.pcmCount > 0 && this.pcmCount % 30 === 0) {
       console.log(`[audio] 频谱 bass=${this.bass.toFixed(4)} mid=${this.mid.toFixed(4)} treble=${this.treble.toFixed(4)} beat=${this.beat.toFixed(4)}`);
     }
   }
