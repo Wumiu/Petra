@@ -1,7 +1,13 @@
 # Live2D 桌宠
 
-Tauri 2 + PixiJS 桌宠：垃圾桶功效（拖文件删除进回收站）、桌面乱逛、始终置顶、随音乐摆动。
+Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音乐摆动（未完善）、简单shell命令、人格设定。
 内置 Anime2.5DRig 技术（MIT）：**拖入分层 PSD 即自动生成 2.5D 角色**，无需 Cubism Editor、全本地离线运行。
+基于Anime2.5DRig技术实现一键live2d效果，可自定义角色形象。
+
+自定义角色推荐流程：
+准备一张想要的角色正面视图，前往https://huggingface.co/spaces/24yearsold/see-through-demo，一键拆分成psd。
+再前往https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
+效果满意后，即可导入到软件中使用。
 
 ## 运行
 
