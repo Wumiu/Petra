@@ -1,5 +1,13 @@
 # Live2D 桌宠
 
+> ## 🚀 快速获取
+>
+> - **普通用户（不写代码）**：请直接前往 **[Releases 页面](https://github.com/Wumiu/pet/releases)** 下载最新的
+>   `Live2D-Pet_*_x64.zip`，解压后运行其中的 `Live2D Pet_*_x64-setup.exe` 即可安装使用，无需安装任何开发环境。
+> - **开发者（想改代码/二次开发）**：`git clone https://github.com/Wumiu/pet.git` 获取完整源码，再按下方「开发者运行」步骤构建。
+
+---
+
 Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音乐摆动（未完善）、AI 小助手（流式对话/Shell 工具调用/长期记忆/主动问候）、人格设定。
 内置 Anime2.5DRig 技术（MIT）：**拖入分层 PSD 即自动生成 2.5D 角色**，无需 Cubism Editor、全本地离线运行。
 
@@ -8,7 +16,9 @@ Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音
 再前往 https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
 效果满意后，即可导入到软件中使用。
 
-## 运行
+## 开发者运行
+
+> 普通用户请直接去 [Releases](https://github.com/Wumiu/pet/releases) 下载安装包，无需源码。
 
 ```bash
 npm install
