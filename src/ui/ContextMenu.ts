@@ -31,9 +31,15 @@ export function setupContextMenu(
       }
       const row = document.createElement("div");
       row.className = `mi${item.danger ? " danger" : ""}`;
-      row.innerHTML = `<span>${item.label ?? ""}</span>${
-        item.state !== undefined ? `<span class="state">${item.state}</span>` : ""
-      }`;
+      const labelSpan = document.createElement("span");
+      labelSpan.textContent = item.label ?? "";
+      row.appendChild(labelSpan);
+      if (item.state !== undefined) {
+        const stateSpan = document.createElement("span");
+        stateSpan.className = "state";
+        stateSpan.textContent = item.state;
+        row.appendChild(stateSpan);
+      }
       row.addEventListener("click", () => {
         hide();
         item.onPick?.();

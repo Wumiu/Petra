@@ -1,12 +1,11 @@
 # Live2D 桌宠
 
-Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音乐摆动（未完善）、简单shell命令、人格设定。
+Tauri 2 + PixiJS 桌宠：垃圾桶功效、桌面乱逛、始终置顶、随音乐摆动、AI 小助手（流式对话/Shell 工具调用/长期记忆/主动问候）、人格设定。
 内置 Anime2.5DRig 技术（MIT）：**拖入分层 PSD 即自动生成 2.5D 角色**，无需 Cubism Editor、全本地离线运行。
-基于Anime2.5DRig技术实现一键live2d效果，可自定义角色形象。
 
 自定义角色推荐流程：
 准备一张想要的角色正面视图，前往 https://huggingface.co/spaces/24yearsold/see-through-demo 一键拆分成psd。
-再前往https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
+再前往 https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
 效果满意后，即可导入到软件中使用。
 
 ## 运行
@@ -17,11 +16,11 @@ npm run tauri dev      # 开发
 npm run tauri build    # 打包
 ```
 
-## 换模型（两种方式）
+## 换模型
 
 1. **拖入 PSD**：把分层 PSD 文件直接拖到桌宠身上 → 自动装配并即时换皮（存应用数据目录，持久化）
-2. **右键菜单**「导入 PSD 模型」选择文件
-3. **打包模型**：PSD 放 `public/models/`，编辑 `public/models/manifest.json`：
+2. **右键菜单 → 模型设置**：「＋ 导入 PSD 模型」选择文件，也可在此面板切换内置/已导入模型
+3. **打包默认模型**：PSD 放 `public/models/`，编辑 `public/models/manifest.json`：
 
 ```json
 { "type": "psd", "file": "my-char.psd" }
@@ -30,8 +29,7 @@ npm run tauri build    # 打包
 标准 Live2D 模型（model3.json）仍支持，manifest 改为 `{ "active": "model" }`。
 使用标准 Live2D 模式需先放入官方 Cubism Core runtime：
 将 `live2dcubismcore.min.js`（Live2D 官网下载，见其许可）放到 `public/vendor/`
-并在 `index.html` 的 `<head>` 中以 `<script>` 引入（缺失时前端会回退到占位角色）。
-没有模型时自动使用内置占位角色（粉团子）。
+并在 `index.html` 的 `<head>` 中以 `<script>` 引入。
 
 ## PSD 图层命名规范（Anime2.5DRig 约定）
 
@@ -55,11 +53,23 @@ npm run tauri build    # 打包
 ## 功能
 
 - 文件拖到身上松手 → 进回收站（可撤销，系统路径被拦截）；`.psd` 拖入则换模型
-- 鼠标靠近会躲开；右键菜单：导入 PSD / 逗猫棒 / 待机模式 / 活动频率 / 模型设置 / 隐藏 / 开机自启 / 退出
-- **待机模式**：沉到就近屏幕边缘（光标在上半→顶部倒挂 180°，下半→底部），只露头顶+眼睛，完全静止；拖动即唤醒
+- 鼠标靠近会躲开；右键菜单：跟随音乐 / 逗猫棒 / 待机模式 / 活动频率 / 模型设置 / 小助手模式 / 小助手设置 / 隐藏 / 开机自启 / 重启 / 退出
+- **待机模式**：沉到就近屏幕边缘（上半→顶部倒挂 180°，下半→底部），只露头顶+眼睛，完全静止；待机中拖动沿边缘滑动，退出靠右键菜单
+- **活动频率三档**：低（几乎静止）/ 中（适度活动）/ 高（明显活跃）
 - 托盘图标或 `Alt+P` 唤出/隐藏
 - 音频走 WASAPI 回环捕获系统输出（免虚拟声卡）；失败时静默降级为待机动画
-- PSD 角色：自动眨眼 / 发丝弹簧物理 / 闭眼闭口十字渐变 / 虹膜模板裁剪；音乐驱动身体律动、嘴型、眉毛、发丝
+- PSD 角色：自动眨眼 / 发丝弹簧物理 / 闭眼闭口十字渐变 / 虹膜模板裁剪；音乐驱动身体律动、嘴型、眉毛、发丝（bass/mid/treble/beat → 身体/嘴/眉/发丝/瞳孔）
+
+## AI 小助手
+
+- **流式对话**：点桌宠弹出输入框，回复逐字输出，左上角气泡展示
+- **Shell 工具调用**（function calling）：AI 可执行系统命令，危险命令黑名单 + 链式拦截；默认弹确认气泡，可勾「免确认 shell」
+- **长期记忆**：AI 自动归档用户偏好，也可说「记住 xx」
+- **主动问候**：每 20 分钟智能打招呼（识别当前前台窗口标题/进程判断你在做什么）
+- **人格设定**：小助手设置面板自定义人设
+
+> **隐私说明**：主动问候会读取**当前前台窗口标题 + 进程名**并发送给 AI 判断，标题可能包含文件名、聊天内容等敏感信息；如介意，可关闭小助手模式。
+> **安全说明**：API Key 经 Windows DPAPI 加密存储于应用数据目录（不明文落盘）；Shell 命令执行有危险命令黑名单（format/diskpart/del /s 等）与链式（& | > <）拦截。
 
 ## Astrobot 预留接口
 
@@ -88,8 +98,8 @@ src/
 ├─ live2d/
 │  ├─ psd/PsdRuntime.ts      # Anime2.5DRig 运行时（GL 网格/变形/物理/裁剪）
 │  ├─ psd/Rigged2DView.ts    # PSD 渲染后端（PetView 实现，音乐/鼠标驱动映射）
-│  ├─ Live2DController.ts    # 标准 Live2D 后端
-│  └─ PlaceholderRenderer.ts # 占位角色
+│  └─ Live2DController.ts    # 标准 Live2D 后端
+├─ assistant/                # AI 小助手（流式/工具调用/记忆）
 ├─ vendor/anime2dr/          # 上游 MIT 代码（rigger.js / genericparts.js）
 └─ autonomous/ audio/ features/trash/ bridges/ ui/ utils/
 ```

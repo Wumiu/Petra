@@ -24,51 +24,58 @@ const CLSID_MM_DEVICE_ENUMERATOR: GUID = GUID::from_u128(0xBCDE_0395_E52F_467C_8
 
 const CHUNK: usize = 1024;
 
+/// 调试日志：仅 debug 构建输出，避免生产刷屏
+macro_rules! adbg {
+    ($($arg:tt)*) => {
+        if cfg!(debug_assertions) { eprintln!($($arg)*); }
+    };
+}
+
 /// 后台线程：以回环模式捕获系统默认输出设备，切块后通过
-/// `audio:pcm` 事件推给前端（Vec<f32> 单声道 RMS）。
+/// `audio:pcm` 事件推给前端（Vec<f32> 单声道波形）。
 pub fn start_loopback_capture(app: AppHandle, enabled: Arc<AtomicBool>) {
-    eprintln!("[audio] WASAPI 回环捕获线程启动");
+    adbg!("[audio] WASAPI 回环捕获线程启动");
     let result = run_capture(app.clone(), enabled);
     if let Err(e) = result {
-        eprintln!("[audio] 捕获失败: {e}");
+        adbg!("[audio] 捕获失败: {e}");
         let _ = app.emit("audio:error", format!("音频捕获不可用：{e}"));
     } else {
-        eprintln!("[audio] 捕获线程正常退出");
+        adbg!("[audio] 捕获线程正常退出");
     }
 }
 
 fn run_capture(app: AppHandle, enabled: Arc<AtomicBool>) -> Result<(), String> {
-    eprintln!("[audio] 初始化 COM...");
+    adbg!("[audio] 初始化 COM...");
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED)
             .ok()
             .map_err(|e| e.to_string())?;
     }
-    eprintln!("[audio] COM 初始化完成，进入捕获循环...");
+    adbg!("[audio] COM 初始化完成，进入捕获循环...");
     let result = unsafe { capture_loop(&app, &enabled) };
     unsafe { CoUninitialize() };
-    eprintln!("[audio] 捕获循环结束: {:?}", result.is_ok());
+    adbg!("[audio] 捕获循环结束: {:?}", result.is_ok());
     result
 }
 
 unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), String> {
-    eprintln!("[audio] 创建设备枚举器...");
+    adbg!("[audio] 创建设备枚举器...");
     let enumerator: IMMDeviceEnumerator =
         CoCreateInstance(&CLSID_MM_DEVICE_ENUMERATOR, None, CLSCTX_ALL)
             .map_err(|e| format!("无法创建设备枚举器：{e}"))?;
-    eprintln!("[audio] 设备枚举器创建成功");
+    adbg!("[audio] 设备枚举器创建成功");
 
-    eprintln!("[audio] 获取默认输出设备...");
+    adbg!("[audio] 获取默认输出设备...");
     let device = enumerator
         .GetDefaultAudioEndpoint(EDataFlow(eRender.0), ERole(eConsole.0))
         .map_err(|e| format!("无法获取默认输出设备：{e}"))?;
-    eprintln!("[audio] 默认输出设备获取成功");
+    adbg!("[audio] 默认输出设备获取成功");
 
-    eprintln!("[audio] 激活音频客户端...");
+    adbg!("[audio] 激活音频客户端...");
     let client: IAudioClient = device
         .Activate::<IAudioClient>(CLSCTX_ALL, None)
         .map_err(|e| format!("激活音频客户端失败：{e}"))?;
-    eprintln!("[audio] 音频客户端激活成功");
+    adbg!("[audio] 音频客户端激活成功");
 
     let format_ptr = client.GetMixFormat().map_err(|e| e.to_string())?;
     if format_ptr.is_null() {
@@ -79,9 +86,9 @@ unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), Stri
     let bits = fmt.wBitsPerSample as usize;
     let is_float = is_float_format(fmt.wFormatTag, format_ptr);
     let tag = fmt.wFormatTag;
-    eprintln!("[audio] 格式: {channels}ch, {bits}bit, float={is_float}, tag=0x{tag:04X}");
+    adbg!("[audio] 格式: {channels}ch, {bits}bit, float={is_float}, tag=0x{tag:04X}");
 
-    eprintln!("[audio] 初始化回环捕获...");
+    adbg!("[audio] 初始化回环捕获...");
     client
         .Initialize(
             AUDCLNT_SHAREMODE_SHARED,
@@ -92,14 +99,14 @@ unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), Stri
             None,
         )
         .map_err(|e| format!("回环捕获初始化失败 (0x{:08X})：{e}", e.code().0))?;
-    eprintln!("[audio] 回环捕获初始化成功");
+    adbg!("[audio] 回环捕获初始化成功");
 
     let capture: IAudioCaptureClient = client
         .GetService::<IAudioCaptureClient>()
         .map_err(|e| format!("获取捕获端点失败：{e}"))?;
 
     client.Start().map_err(|e| e.to_string())?;
-    eprintln!("[audio] 捕获已开始，进入数据循环...");
+    adbg!("[audio] 捕获已开始，进入数据循环...");
 
     let mut mono: Vec<f32> = Vec::with_capacity(CHUNK);
     let mut emit_count: u32 = 0;
@@ -134,9 +141,11 @@ unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), Stri
                         std::slice::from_raw_parts(data, frames as usize * channels * bps);
                     for frm in bytes.chunks_exact(channels * bps) {
                         // 多声道取平均（保留正负波形）
-                        let avg: f64 = frm.chunks_exact(bps)
+                        let avg: f64 = frm
+                            .chunks_exact(bps)
                             .map(|ch| decode_int_sample(ch, bps))
-                            .sum::<f64>() / channels as f64;
+                            .sum::<f64>()
+                            / channels as f64;
                         mono.push(avg as f32);
                     }
                 }
@@ -147,8 +156,11 @@ unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), Stri
             let chunk: Vec<f32> = mono.drain(..CHUNK).collect();
             emit_count += 1;
             if emit_count <= 3 || emit_count % 500 == 0 {
-                eprintln!("[audio] emit audio:pcm #{emit_count}, {}采样, rms={:.4}", chunk.len(),
-                    (chunk.iter().map(|v| v*v).sum::<f32>() / chunk.len() as f32).sqrt());
+                adbg!(
+                    "[audio] emit audio:pcm #{emit_count}, {}采样, rms={:.4}",
+                    chunk.len(),
+                    (chunk.iter().map(|v| v * v).sum::<f32>() / chunk.len() as f32).sqrt()
+                );
             }
             let _ = app.emit("audio:pcm", chunk);
         }
@@ -162,6 +174,8 @@ fn rms(f: &[f32]) -> f32 {
     (f.iter().map(|v| v * v).sum::<f32>() / n).sqrt()
 }
 
+/// WAVEFORMATEXTENSIBLE 是 packed（1 字节对齐），字段必须用 read_unaligned 读取，
+/// 不能直接解引用（会触发 E0793 unaligned 错误）。
 fn is_float_format(tag: u16, format_ptr: *mut WAVEFORMATEX) -> bool {
     if tag == WAVE_TAG_FLOAT {
         return true;

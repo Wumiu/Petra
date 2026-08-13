@@ -6,7 +6,6 @@ export type AssistantProvider = "deepseek" | "mimo";
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
-  apiKey: string;
   model: string;
   persona: string;
 }
@@ -27,16 +26,15 @@ const DEFAULTS: Settings = {
   assistant: {
     enabled: false,
     provider: "deepseek",
-    apiKey: "",
     model: "",
     persona: "",
   },
 };
 
-/** 活动频率因子：越大活动越少（表情间隔/漫游小憩/移动半径都受它影响） */
+/** 活动频率表情因子：越大表情/活动越少（渲染器用） */
 const ACTIVITY_FACTOR: Record<ActivityLevel, number> = {
-  low: 3.5,
-  mid: 1.8,
+  low: 4,
+  mid: 2,
   high: 1,
 };
 
