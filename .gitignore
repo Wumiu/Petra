@@ -8,6 +8,10 @@ src-tauri/target/
 # Vite
 *.local
 
+# 环境变量（API Key 等本地敏感配置不入库）
+.env
+.env.*
+
 # Logs
 *.log
 src-tauri/logs/
@@ -21,6 +25,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Qoder 文档目录（本地使用，不跟踪）
+.qoder/
 
 # Runtime data
 public/models/*.psd
