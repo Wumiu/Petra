@@ -56,8 +56,9 @@ Live2D Pet 是一个运行在 Windows 桌面上的 AI 桌宠框架：一个会�
 - **拖入 PSD 即换角色**：把分层 PSD 文件直接拖到桌宠身上，自动装配并即时换皮（持久化存储）
 - **模型设置面板**：右键 → 模型设置，可导入 PSD、在内置模型与已导入模型之间切换
 - **打包默认模型**：把 PSD 放入 `public/models/` 并编辑 `public/models/manifest.json`，重新构建即可让默认角色变成你的角色
-- **标准 Live2D**：支持 `model3.json` 模型（需放入 Cubism Core runtime，见下方「模型说明」）
+- **标准 Live2D**：支持 `model3.json` 模型（需放入 Cubism Core runtime）
 - **PSD 图层命名规范**：`face` / `eyewhite` / `irides` / `eyelash` / `eye_close` / `eyebrow` / `mouth_open` / `mouth_close` / `front hair` / `back hair` 等图层名自动识别为五官、表情与发丝物理；不符合规范的图层也会按位置自动归类
+  > **注意**：PSD 需使用**平铺（扁平）图层结构**，当前不支持图层组 / 文件夹，放在文件夹内的图层会被忽略。
 
 从默认角色到自己的 OC、动漫角色、游戏角色，都可以通过资源替换实现。
 
