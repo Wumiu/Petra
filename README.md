@@ -13,6 +13,10 @@
   <img src="https://img.shields.io/badge/version-v0.1.1-green" alt="Version: v0.1.1" />
 </p>
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Live2D Pet Demo">
+</p>
+
 ---
 
 ## ✨ 项目简介
