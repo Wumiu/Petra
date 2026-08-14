@@ -338,7 +338,7 @@ public/models/              # 默认角色资源 + manifest.json
 
 ## 📜 License
 
-> ⚠️ 仓库当前**未声明开源 License**（无 LICENSE 文件），如需商用或二次分发请先联系作者。
+> 本项目基于 **MIT License** 开源，详见 [LICENSE](LICENSE)。
 >
 > 内置的 Anime2.5DRig 运行时（`src/vendor/anime2dr/`）为上游 [Anime2.5DRig](https://github.com/852wa/Anime2.5DRig) 的 MIT 代码，遵循其原始许可。
 
