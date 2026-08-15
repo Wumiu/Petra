@@ -8,7 +8,7 @@ interface XY {
 
 const WIN = 300;
 const EDGE_PAD = 4; // 离屏幕边缘留 4px 间隙
-const POLL_CURSOR_MS = 120;
+const POLL_CURSOR_MS = 60;
 const TARGET_INTERVAL = 100;
 
 // 运动参数（逗猫棒追速等）
@@ -120,6 +120,7 @@ export class BehaviorEngine {
   bob = 0; // 0..1
   cursorDx = 0; // -1..1
   cursorDy = 0;
+  cursorVx = 0; // 鼠标横向速度（逻辑 px/s，拖拽摆动用）
 
   /** 逗猫棒兴奋度（0..1），供渲染层表现 */
   get excitementValue(): number {
@@ -198,6 +199,7 @@ export class BehaviorEngine {
       // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
       const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
       this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
+      this.cursorVx = (this.cursor.x - prev.x) / (POLL_CURSOR_MS / 1000);
     } catch {
       /* 忽略 */
     }

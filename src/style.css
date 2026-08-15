@@ -150,6 +150,55 @@ body {
   line-height: 1.5;
 }
 
+/* ---------- 动作调试：底部横条（贴底，不挡桌宠） ---------- */
+.action-panel {
+  left: 50%;
+  top: auto;
+  bottom: 6px;
+  transform: translateX(-50%);
+  width: auto;
+  max-width: 290px;
+  max-height: none;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.action-panel .ap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.action-panel .ap-head .ap-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: #3a2a45;
+}
+
+.action-panel .ap-list {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  max-width: 290px;
+  padding: 2px;
+  scrollbar-width: thin;
+}
+
+.action-panel .ap-list .mp-item {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
 /* ---------- 小助手：脚下输入条 + 左上角气泡 ---------- */
 .as-inputbar {
   position: fixed;

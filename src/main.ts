@@ -7,9 +7,11 @@ import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
 import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
 import { Rigged2DView } from "./live2d/psd/Rigged2DView";
+import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
 import { toast } from "./ui/Toast";
+import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
@@ -189,7 +191,7 @@ async function boot() {
   }, 20 * 60 * 1000);
 
   // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
-  setInterval(() => void engine.pollCursor(), 120);
+  setInterval(() => void engine.pollCursor(), 60);
   setInterval(() => void engine.pollArea(), 2500);
 
   // ---------- 音频 ----------
@@ -306,6 +308,7 @@ async function boot() {
     driver.mid = analyzer.mid;
     driver.treble = analyzer.treble;
     driver.beat = analyzer.beat;
+    driver.bpm = analyzer.bpm;
     driver.bob = engine.bob;
     driver.vx = engine.vx;
     driver.cursorDx = engine.cursorDx;
@@ -315,6 +318,9 @@ async function boot() {
     driver.excited = engine.excitementValue;
     driver.idleTop = engine.isIdleTop;
     driver.idle = engine.isIdle;
+    driver.dragging = !!drag && drag.moved;
+    driver.dragVelX = clamp(engine.cursorVx / 800, -1, 1);
+    driver.pressed = !!drag;
     // 调试日志仅 dev 构建输出
     if (import.meta.env.DEV && Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
       console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
@@ -382,6 +388,11 @@ async function toggleModelPanel() {
     else if (m?.active) builtinName = m.active;
   } catch {
     /* 无 manifest */
+  }
+
+  // 动作库仅 PSD 角色支持，标准 Live2D 模型提示
+  if (currentModel.type === "live2d") {
+    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "warn");
   }
 
   const render = (host: HTMLElement) => {
@@ -570,6 +581,11 @@ function buildMenu(engine: BehaviorEngine) {
       },
     },
     {
+      id: "action-debug",
+      label: "动作试玩",
+      onPick: () => void toggleActionDebug(),
+    },
+    {
       id: "quit",
       label: "退出",
       danger: true,
@@ -596,6 +612,65 @@ async function toggleIdle() {
     void getCurrentWindow().setPosition(new LogicalPosition(t.x, t.y));
   }
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
+}
+
+// ---------- 动作调试面板 ----------
+function toggleActionDebug() {
+  const panel = document.getElementById("action-debug") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) {
+    view.stopAction();
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const render = (host: HTMLElement) => {
+    host.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "ap-head";
+    const title = document.createElement("span");
+    title.className = "ap-title";
+    title.textContent = "动作试玩";
+    const backBtn = document.createElement("button");
+    backBtn.className = "as-btn";
+    backBtn.textContent = "返回";
+    backBtn.addEventListener("click", () => {
+      view.stopAction();
+      host.classList.add("hidden");
+    });
+    head.append(title, backBtn);
+    host.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "ap-list";
+    for (const a of listActions()) {
+      const row = document.createElement("div");
+      row.className = "mp-item";
+      const span = document.createElement("span");
+      span.textContent = a.label;
+      row.appendChild(span);
+      row.addEventListener("click", () => {
+        view.playAction(a.id, true);
+        list.querySelectorAll(".mp-item").forEach((el) => el.classList.remove("active"));
+        row.classList.add("active");
+      });
+      list.appendChild(row);
+    }
+    host.appendChild(list);
+  };
+
+  if (panel) {
+    render(panel);
+    panel.classList.remove("hidden");
+  } else {
+    const p = document.createElement("div");
+    p.id = "action-debug";
+    p.className = "model-panel action-panel hidden";
+    p.addEventListener("pointerdown", (e) => e.stopPropagation());
+    render(p);
+    document.body.appendChild(p);
+    p.classList.remove("hidden");
+  }
 }
 
 // 诊断钩子（CDP 验证待机位置用）

@@ -1,8 +1,9 @@
 import type { Container } from "pixi.js";
 import type { PetDriver, PetView } from "../PetDriver";
 import { PsdRuntime, type RigParams } from "./PsdRuntime";
+import { findAction, sampleAction, pickPoolAction, type ActionDef } from "../actions";
 import { clamp } from "../../utils/math";
-import { getActivityFactor } from "../../utils/settings";
+import { getActivityFactor, getActivityLevel } from "../../utils/settings";
 
 /** 表情目标参数（在音乐驱动基础上叠加偏移） */
 interface Expression {
@@ -52,6 +53,26 @@ export class Rigged2DView implements PetView {
   private exprNext = 0;
   private expr: Expression = EXPRESSIONS[0];
 
+  // 动作播放器
+  private action: ActionDef | null = null;
+  private actionT = 0;
+  private actionLoop = false;
+  private winkRight = false; // wink 动作随机闭右眼
+
+  // 动作池：空闲随机抽取播放（启动 8s 后才开始）
+  private actionPoolNext = performance.now() + 8000;
+
+  // 跟随音乐：BPM 节奏摇摆 + 节拍随机 wink
+  private bpmPhase = 0;
+  private musicWinkT = 0;
+  private musicWinkNext = 2 + Math.random() * 4;
+  private musicWinkSide: "L" | "R" = "L";
+
+  // 拖拽下半身摆动（弹性惯性，松手自然衰减）
+  private swing = 0;
+  private swingV = 0;
+  private dragSquint = 0; // 拖拽眯眼（0=睁眼，1=眯眼）
+
   private static rand() {
     return Math.random();
   }
@@ -91,7 +112,7 @@ export class Rigged2DView implements PetView {
   }
 
   update(d: PetDriver, dt: number) {
-    const sway = this.swayEnabled ? 1 : 0;
+    const sway = this.swayEnabled && !this.action ? 1 : 0;
     this.gobblePulse = Math.max(0, this.gobblePulse - dt * 2.2);
     this.clickPulse = Math.max(0, this.clickPulse - dt * 6);
     this.scalePulse = Math.max(0, this.scalePulse - dt * 5);
@@ -106,7 +127,7 @@ export class Rigged2DView implements PetView {
         this.exprT = 0;
       }
       this.exprNext = nowMs + 60000;
-    } else if (nowMs > this.exprNext) {
+    } else if (!this.action && nowMs > this.exprNext) {
       this.expr = pickExpression(Rigged2DView.rand);
       this.exprT = 0;
       this.exprDur = 1.6 + Rigged2DView.rand() * 0.8;
@@ -116,20 +137,66 @@ export class Rigged2DView implements PetView {
     const ew = Math.sin(Math.PI * eProg); // 0→1→0
     const e = this.expr;
 
+    // ---- 动作池：空闲随机抽取播放（频率随活动因子拉长，low 最稀疏） ----
+    if (!this.action && !d.idle && !d.dragging && nowMs > this.actionPoolNext) {
+      const def = pickPoolAction(getActivityLevel());
+      if (def) this.playAction(def.id, false);
+      this.actionPoolNext = nowMs + (15 + Math.random() * 15) * 1000 * getActivityFactor();
+    }
+
     const exc = d.excited ?? 0; // 逗猫棒兴奋度：眼神更跟手、微前倾、瞳孔聚焦
     // 顶部待机倒挂（旋转 180°）→ 视线横纵都镜像
     const flip = d.idleTop ? -1 : 1;
     const cdx = d.cursorDx * flip;
     const cdy = d.cursorDy * flip;
 
+    // ---- 跟随音乐：BPM 节奏摇摆 + 节拍随机 wink ----
+    let bpmSway = 0;
+    let winkClose = 0;
+    if (sway) {
+      if (d.bpm > 40) {
+        this.bpmPhase += dt * (d.bpm / 60) * Math.PI * 2;
+        bpmSway = Math.sin(this.bpmPhase) * 0.5;
+      }
+      if (this.musicWinkT > 0) {
+        this.musicWinkT -= dt;
+        if (this.musicWinkT <= 0) this.musicWinkNext = 2 + Math.random() * 6;
+      } else if (this.musicWinkNext > 0) {
+        this.musicWinkNext -= dt;
+        if (this.musicWinkNext <= 0) {
+          this.musicWinkT = 0.35;
+          this.musicWinkSide = Math.random() < 0.5 ? "L" : "R";
+        }
+      } else {
+        this.musicWinkNext = 2 + Math.random() * 6;
+      }
+      winkClose = this.musicWinkT > 0 ? 1 : 0;
+    }
+
+    // ---- 下半身摆动：按住期间软乎乎晃动（拖动叠加速度摆动）/ 松开立即归正 ----
+    if (d.pressed) {
+      const hold = Math.sin((nowMs / 1000) * 0.6) * 0.4 + Math.sin((nowMs / 1000) * 0.25 + 1.0) * 0.18;
+      const speedSwing = d.dragging ? clamp(d.dragVelX * 2.0, -1.5, 1.5) : 0;
+      const target = hold + speedSwing;
+      this.swingV += (target - this.swing) * 45 * dt;
+      this.swingV *= Math.exp(-dt * 6.3); // 帧率无关阻尼（等效 60fps 下每帧 *0.9）
+      this.swing += this.swingV * dt;
+    } else {
+      // 松开：立即归正
+      this.swingV = 0;
+      this.swing += (0 - this.swing) * Math.min(1, dt * 12);
+    }
+    // 按住眯眼平滑（全闭）
+    this.dragSquint += ((d.pressed ? 1 : 0) - this.dragSquint) * Math.min(1, dt * 6);
+
     const o: Partial<RigParams> = {
       // 头部轻微跟随（眼神为主）：头微动、眼明显；兴奋时微前倾
-      angleX: clamp(cdx * 0.7 + d.vx * 0.25 + exc * 0.12, -1, 1),
-      angleY: clamp(-cdy * 0.55 + exc * 0.06, -1, 1),
+      angleX: clamp(cdx * 0.25 + d.vx * 0.25 + exc * 0.12, -1, 1),
+      angleY: clamp(-cdy * 0.15 + exc * 0.06, -1, 1),
       eyeX: clamp(cdx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
       eyeY: clamp(cdy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
-      // 音乐 → 身体律动
-      body: clamp(d.bass * 0.55 * sway + d.vx * 0.3 + d.beat * 0.2 * sway, -1, 1),
+      // 音乐 → 身体律动（+ BPM 节奏摇摆）
+      body: clamp(d.bass * 0.55 * sway + d.vx * 0.3 + d.beat * 0.2 * sway + bpmSway, -1, 1),
       angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway + e.tilt * ew, -0.5, 0.5),
       // 音乐 → 嘴型（中频 + 节拍 + 吞咽/点击脉冲），表情叠加，兴奋时微张嘴
       mouthOpen: clamp(d.mid * 0.9 * sway + d.beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew + exc * 0.12, 0, 1.3),
@@ -146,7 +213,59 @@ export class Rigged2DView implements PetView {
       physAmp: 2 + d.bass * 2 * sway,
       // 走动摇晃 → 手臂摆动
       armY: clamp(d.vx * 0.6, -1, 1),
+      // 拖拽 → 下半身摆动
+      bodySwing: clamp(this.swing, -1.5, 1.5),
     };
+
+    // 音乐节拍 wink：闭对应单眼
+    if (winkClose) {
+      if (this.musicWinkSide === "L") o.eyeOpenL = Math.min(o.eyeOpenL ?? 1, 0.12);
+      else o.eyeOpenR = Math.min(o.eyeOpenR ?? 1, 0.12);
+    }
+
+    // 按住眯眼：全闭
+    if (this.dragSquint > 0.01) {
+      const sq = 1 - 0.95 * this.dragSquint;
+      o.eyeOpenL = Math.min(o.eyeOpenL ?? 1, sq);
+      o.eyeOpenR = Math.min(o.eyeOpenR ?? 1, sq);
+    }
+
+    // ---- 动作层：覆盖对应通道（播放完自动回落待机 / 循环） ----
+    if (this.action) {
+      const speed = this.action.bpmSync && d.bpm > 40 ? d.bpm / 60 : 1;
+      this.actionT += dt * speed;
+      const progress = Math.min(1, this.actionT / this.action.duration);
+      const ap = sampleAction(this.action, progress);
+      if (this.action.randomEye && this.winkRight) {
+        // 显式交换声明过的眼睛通道（缺失通道不写入 undefined）
+        const l = ap.eyeOpenL;
+        const r = ap.eyeOpenR;
+        if (r !== undefined) ap.eyeOpenL = r;
+        if (l !== undefined) ap.eyeOpenR = l;
+      }
+      // 平滑混合：动作参数与基线 lerp，渐入渐出消除硬覆盖跳变
+      const FADE = 0.2; // 秒
+      let w = 1;
+      if (!this.actionLoop) {
+        w = Math.min(1, this.actionT / FADE, Math.max(0, (this.action.duration - this.actionT) / FADE));
+      }
+      for (const k in ap) {
+        const av = (ap as unknown as Record<string, number>)[k];
+        if (typeof av === "number") {
+          const base = (o as unknown as Record<string, number>)[k] ?? 0;
+          (o as unknown as Record<string, number>)[k] = base * (1 - w) + av * w;
+        }
+      }
+      if (this.actionT >= this.action.duration) {
+        if (this.actionLoop) {
+          this.actionT = 0;
+          if (this.action.randomEye) this.winkRight = Math.random() < 0.5;
+        } else {
+          this.action = null;
+          this.setAuto(true);
+        }
+      }
+    }
 
     this.runtime.update(dt, o);
 
@@ -170,6 +289,32 @@ export class Rigged2DView implements PetView {
   playClick() {
     this.clickPulse = 1;
     this.scalePulse = 1;
+  }
+
+  playAction(id: string, loop = false) {
+    const def = findAction(id);
+    if (def) {
+      this.action = def;
+      this.actionT = 0;
+      this.actionLoop = loop;
+      if (def.randomEye) this.winkRight = Math.random() < 0.5;
+      // 动作独占：关闭自动眨眼/随机晃头/待机微动，避免干扰动作
+      this.setAuto(false);
+    }
+  }
+
+  stopAction() {
+    this.action = null;
+    this.actionT = 0;
+    this.actionLoop = false;
+    this.setAuto(true);
+  }
+
+  /** 动作独占开关：统一管理自动眨眼/随机微动/待机晃动 */
+  private setAuto(on: boolean) {
+    this.runtime.autoBlinkOn = on;
+    this.runtime.autoRandOn = on;
+    this.runtime.autoIdleOn = on;
   }
 
   setSwayEnabled(on: boolean) {

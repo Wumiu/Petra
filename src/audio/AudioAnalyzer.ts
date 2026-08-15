@@ -17,11 +17,14 @@ export class AudioAnalyzer {
   private lastBeat = 0;
   private bassAvg = 0;
   private pcmCount = 0;
+  private beatTimes: number[] = [];
+  private lastBpmAt = 0;
 
   bass = 0;
   mid = 0;
   treble = 0;
   beat = 0;
+  bpm = 0;
   available = false;
 
   constructor() {
@@ -101,6 +104,21 @@ export class AudioAnalyzer {
     const spike = bass - this.bassAvg;
     if (spike > 0.14 && this.lastBeat <= 0) {
       this.lastBeat = 1;
+      // BPM：累计 beat 时间戳，取间隔中位数推算
+      const nowMs = performance.now();
+      this.beatTimes.push(nowMs);
+      while (this.beatTimes.length > 1 && nowMs - this.beatTimes[0] > 4000) this.beatTimes.shift();
+      if (this.beatTimes.length >= 3) {
+        const iv: number[] = [];
+        for (let i = 1; i < this.beatTimes.length; i++) iv.push(this.beatTimes[i] - this.beatTimes[i - 1]);
+        const sorted = iv.slice().sort((a, b) => a - b);
+        const med = sorted[Math.floor(sorted.length / 2)];
+        if (med >= 250 && med <= 1500) {
+          const inst = 60000 / med;
+          this.bpm = this.bpm === 0 ? inst : this.bpm * 0.6 + inst * 0.4;
+        }
+      }
+      this.lastBpmAt = nowMs;
     }
     this.lastBeat = Math.max(0, this.lastBeat - 0.06);
 
@@ -109,6 +127,12 @@ export class AudioAnalyzer {
     this.mid = this.mid * 0.82 + sn(midN ? midE / midN : 0) * 0.18;
     this.treble = this.treble * 0.82 + sn(trebleN ? trebleE / trebleN : 0) * 0.18;
     this.beat = Math.max(this.lastBeat, this.beat * 0.9);
+
+    // BPM 超时衰减（超过 3s 无 beat 视为无音乐）
+    if (this.bpm > 0 && performance.now() - this.lastBpmAt > 3000) {
+      this.bpm *= 0.95;
+      if (this.bpm < 5) this.bpm = 0;
+    }
 
     if (DEV && this.pcmCount > 0 && this.pcmCount % 30 === 0) {
       console.log(`[audio] 频谱 bass=${this.bass.toFixed(4)} mid=${this.mid.toFixed(4)} treble=${this.treble.toFixed(4)} beat=${this.beat.toFixed(4)}`);

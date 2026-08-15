@@ -41,6 +41,7 @@ const ACTIVITY_FACTOR: Record<ActivityLevel, number> = {
 };
 
 let currentFactor = ACTIVITY_FACTOR[DEFAULTS.activity];
+let currentLevel: ActivityLevel = DEFAULTS.activity;
 
 export function loadSettings(): Settings {
   try {
@@ -48,6 +49,7 @@ export function loadSettings(): Settings {
     const parsed = raw ? JSON.parse(raw) : {};
     const s: Settings = { ...DEFAULTS, ...parsed };
     currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
+    currentLevel = s.activity ?? DEFAULTS.activity;
     return s;
   } catch {
     return { ...DEFAULTS };
@@ -56,6 +58,7 @@ export function loadSettings(): Settings {
 
 export function saveSettings(s: Settings) {
   currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
+  currentLevel = s.activity ?? DEFAULTS.activity;
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
   } catch {
@@ -66,6 +69,11 @@ export function saveSettings(s: Settings) {
 /** 各渲染器/引擎每帧读取的活动因子（模块级缓存，零开销） */
 export function getActivityFactor(): number {
   return currentFactor;
+}
+
+/** 当前活动频率档位（动作池分级用） */
+export function getActivityLevel(): ActivityLevel {
+  return currentLevel;
 }
 
 export function nextActivity(s: Settings): ActivityLevel {

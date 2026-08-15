@@ -45,6 +45,7 @@ export interface RigParams {
   eyeScaleL: number;
   eyeScaleR: number;
   body: number;
+  bodySwing: number;
   armY: number;
   armPos: number;
   bust: number;
@@ -65,7 +66,7 @@ const DEFAULTS: RigParams = {
   angleX: 0, angleY: 0, angleZ: 0, eyeOpenL: 1, eyeOpenR: 1, eyeX: 0, eyeY: 0,
   brow: 0, browAngL: 0, browAngR: 0, browAngSym: 0, mouthOpen: 0, mouthForm: 0,
   mouthCY: 0, mouthCAng: 0, mouthScale: 1, eyeCY: 0, eyeCAng: 0,
-  eyeScaleL: 1, eyeScaleR: 1, body: 0, armY: 0, armPos: 0, bust: 2.5, bustY: 1,
+  eyeScaleL: 1, eyeScaleR: 1, body: 0, bodySwing: 0, armY: 0, armPos: 0, bust: 2.5, bustY: 1,
   bangL: 0, bangC: 0, bangR: 0, physAmp: 2, soft: 2, fhAmp: 2, fhSoft: 0.4,
   irisScale: 1, eyeEase: 0.3, mouthEase: 0.45,
 };
@@ -123,6 +124,7 @@ export class PsdRuntime {
   private blinkT = -1;
   private nextBlink = 0;
   private rnd = { ax: 0, ay: 0, az: 0, bd: 0, ex: 0, ey: 0 };
+  private rndTarget = { ax: 0, ay: 0, az: 0, bd: 0, ex: 0, ey: 0 };
   private nextRnd = 0;
   private autoIdle = true;
   private autoBlink = true;
@@ -341,17 +343,24 @@ export class PsdRuntime {
       this.tgt.angleZ += 0.07 * Math.sin(t * 0.23 + 0.5);
       this.tgt.body += 0.1 * Math.sin(t * 0.19 + 2.1);
     }
-    // ---- 随机小动作 ----
+    // ---- 随机小动作（平滑漂移，避免突变弹跳） ----
     if (this.autoRand) {
       if (now * 1000 > this.nextRnd) {
         this.nextRnd = now * 1000 + 1400 + Math.random() * 2600;
-        this.rnd.ax = (Math.random() * 2 - 1) * 0.55;
-        this.rnd.ay = (Math.random() * 2 - 1) * 0.4;
-        this.rnd.az = (Math.random() * 2 - 1) * 0.35;
-        this.rnd.bd = (Math.random() * 2 - 1) * 0.3;
-        this.rnd.ex = (Math.random() * 2 - 1) * 0.6;
-        this.rnd.ey = (Math.random() * 2 - 1) * 0.35;
+        this.rndTarget.ax = (Math.random() * 2 - 1) * 0.4;
+        this.rndTarget.ay = (Math.random() * 2 - 1) * 0.22;
+        this.rndTarget.az = (Math.random() * 2 - 1) * 0.12;
+        this.rndTarget.bd = (Math.random() * 2 - 1) * 0.1;
+        this.rndTarget.ex = (Math.random() * 2 - 1) * 0.6;
+        this.rndTarget.ey = (Math.random() * 2 - 1) * 0.35;
       }
+      const k = Math.min(1, dt * 1.0);
+      this.rnd.ax += (this.rndTarget.ax - this.rnd.ax) * k;
+      this.rnd.ay += (this.rndTarget.ay - this.rnd.ay) * k;
+      this.rnd.az += (this.rndTarget.az - this.rnd.az) * k;
+      this.rnd.bd += (this.rndTarget.bd - this.rnd.bd) * k;
+      this.rnd.ex += (this.rndTarget.ex - this.rnd.ex) * k;
+      this.rnd.ey += (this.rndTarget.ey - this.rnd.ey) * k;
       this.tgt.angleX = clamp(this.tgt.angleX + this.rnd.ax, -1, 1);
       this.tgt.angleY = clamp(this.tgt.angleY + this.rnd.ay, -1, 1);
       this.tgt.angleZ = clamp(this.tgt.angleZ + this.rnd.az, -1, 1);
@@ -476,8 +485,8 @@ export class PsdRuntime {
     const b = L.base, o = L.cur, n = b.length;
     const A = this.A;
     const isHead = L.group === "head";
-    const az = e.angleZ * 0.07, cz = Math.cos(az), sz = Math.sin(az);
-    const ab = e.body * 0.028, cb = Math.cos(ab), sb = Math.sin(ab);
+    const az = e.angleZ * 0.2, cz = Math.cos(az), sz = Math.sin(az);
+    const ab = e.body * 0.085, cb = Math.cos(ab), sb = Math.sin(ab);
     const bn = L.bn;
     const eyeSide = L.side;
     const EA = eyeSide === "L" ? A.eyeL : eyeSide === "R" ? A.eyeR : null;
@@ -555,8 +564,17 @@ export class PsdRuntime {
         const rx2 = rx * cz - ry * sz, ry2 = rx * sz + ry * cz;
         x += (rx2 - rx) * hw; y += (ry2 - ry) * hw;
         const dd = L.depth;
-        x += hw * this.FS * (e.angleX * (14 + 40 * (dd - 1)) + e.angleX * (this.NP.cy - y) * 0.028);
-        y += hw * this.FS * (-e.angleY * (9 + 30 * (dd - 1)) - e.angleY * (dd - 1) * (y - this.FC.y) * 0.05);
+        x += hw * this.FS * (e.angleX * (18 + 40 * (dd - 1)) + e.angleX * (this.NP.cy - y) * 0.075);
+        y += hw * this.FS * (-e.angleY * (16 + 30 * (dd - 1)) - e.angleY * (dd - 1) * (y - this.FC.y) * 0.05);
+      }
+
+      // 身体绕颈枢摆动（下半身摆，头部稳定）：绕颈枢旋转，越靠下摆越大
+      if (L.group === "body" && L.bn !== "neck" && e.bodySwing !== 0) {
+        const ang = e.bodySwing * 0.35;
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        const rx = x - this.NP.cx, ry = y - this.NP.cy;
+        x = this.NP.cx + rx * ca - ry * sa;
+        y = this.NP.cy + rx * sa + ry * ca;
       }
 
       y -= (L.group === "body" ? e.breath * 2.0 : e.breathHead * 1.6) * this.FS;
@@ -571,9 +589,9 @@ export class PsdRuntime {
       }
       if (bn === "handwear") {
         const w = smooth((y - L.y) / L.h * 1.15);
-        y -= e.armY * 30 * this.FS * w;
-        y += e.armPos * 40 * this.FS;
-        x += e.armY * 6 * this.FS * w * (x < this.NP.cx ? 1 : -1);
+        y -= e.armY * 85 * this.FS * w;
+        y += e.armPos * 100 * this.FS;
+        x += e.armY * 14 * this.FS * w * (x < this.NP.cx ? 1 : -1);
       }
       if (L.bw && L.su) {
         const m = Math.pow(L.su[vi], 1.4) * 22 * this.FS;

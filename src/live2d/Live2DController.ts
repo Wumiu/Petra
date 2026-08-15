@@ -197,6 +197,14 @@ export class Live2DController implements PetView {
     this.tryMotion(["TapBody", "FlickHead", "Idle"]);
   }
 
+  playAction(_id: string, _loop = false) {
+    // PSD 动作库暂不支持标准 Live2D 后端（此处留空占位）
+  }
+
+  stopAction() {
+    // 同上
+  }
+
   private tryMotion(names: string[]) {
     const m = this.model;
     if (!m) return;
