@@ -270,6 +270,45 @@ fn list_models(app: AppHandle) -> Vec<String> {
     names
 }
 
+/// 删除一个已导入的 PSD 模型文件。
+/// 仅允许删除应用模型目录（models_dir）内的 .psd 文件：
+/// - sanitize_psd_name 剥离目录部分并强制 .psd 后缀，天然阻断路径穿越
+/// - canonicalize + starts_with 二次校验，确保目标确在模型目录内
+/// - 只删普通文件，文件不存在返回明确错误（可幂等重试）
+fn delete_model_file(models_dir: &std::path::Path, name: &str) -> Result<(), String> {
+    let file_name = sanitize_psd_name(name);
+    if !file_name.to_lowercase().ends_with(".psd") {
+        return Err("只允许删除 PSD 模型".into());
+    }
+    let dir = models_dir
+        .canonicalize()
+        .map_err(|e| format!("模型目录无效: {e}"))?;
+    let target = dir.join(&file_name);
+    let canon = target
+        .canonicalize()
+        .map_err(|e| format!("模型文件不存在或已被删除: {e}"))?;
+    if !canon.starts_with(&dir) {
+        return Err("非法路径，已拒绝删除".into());
+    }
+    if !canon.is_file() {
+        return Err("目标不是普通文件，已拒绝删除".into());
+    }
+    std::fs::remove_file(&canon).map_err(|e| format!("删除失败: {e}"))?;
+    Ok(())
+}
+
+/// 删除已导入模型（模型设置面板「删除」按钮调用）。
+/// 内置模型位于打包资源（public/models），不在 app_data/models，
+/// 本命令只操作 app_data/models，天然无法删除内置模型。
+#[tauri::command]
+fn delete_imported_model(app: AppHandle, name: String) -> Result<(), String> {
+    let file_name = sanitize_psd_name(&name);
+    let dir = models_dir(&app)?;
+    delete_model_file(&dir, &file_name)?;
+    log_line(&format!("delete_imported_model: 已删除 {file_name}"));
+    Ok(())
+}
+
 #[tauri::command]
 fn set_audio_enabled(state: State<'_, AudioState>, enabled: bool) -> bool {
     state.enabled.store(enabled, Ordering::SeqCst);
@@ -869,6 +908,7 @@ pub fn run() {
             save_psd,
             read_psd,
             list_models,
+            delete_imported_model,
             set_audio_enabled,
             set_pet_target,
             set_pet_target_speed,
@@ -924,4 +964,72 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// sanitize_psd_name 必须剥离目录部分并强制 .psd 后缀（路径穿越第一道防线）。
+    #[test]
+    fn sanitize_strips_directory_and_dots() {
+        assert_eq!(sanitize_psd_name(r"..\..\evil.psd"), "evil.psd");
+        assert_eq!(sanitize_psd_name("../../evil.psd"), "evil.psd");
+        assert_eq!(sanitize_psd_name("seethrough_output_1.psd"), "seethrough_output_1.psd");
+        assert!(sanitize_psd_name("model").ends_with(".psd"));
+        // 目录部分（正斜杠/反斜杠）一律剥离，只保留文件名——路径穿越防护
+        assert_eq!(sanitize_psd_name("a/b/c.psd"), "c.psd");
+        assert_eq!(sanitize_psd_name("a\\b\\c.psd"), "c.psd");
+    }
+
+    /// 正常删除：模型目录内的 .psd 文件被删除。
+    #[test]
+    fn delete_removes_psd_file() {
+        let dir = std::env::temp_dir().join(format!("pet_delete_test1_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("test_model.psd");
+        std::fs::write(&f, b"psd").unwrap();
+        let r = delete_model_file(&dir, "test_model.psd");
+        assert!(r.is_ok(), "删除应成功: {r:?}");
+        assert!(!f.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 非 .psd 后缀被拒绝，文件保留。
+    #[test]
+    fn delete_rejects_non_psd_and_keeps_file() {
+        let dir = std::env::temp_dir().join(format!("pet_delete_test2_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("evil.txt");
+        std::fs::write(&f, b"x").unwrap();
+        let r = delete_model_file(&dir, "evil.txt");
+        assert!(r.is_err());
+        assert!(f.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 文件不存在：返回明确错误（幂等，可重试）。
+    #[test]
+    fn delete_rejects_missing_file() {
+        let dir = std::env::temp_dir().join(format!("pet_delete_test3_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = delete_model_file(&dir, "missing.psd");
+        assert!(r.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 任意绝对路径：sanitize 会剥离目录只保留文件名，且只在模型目录内解析，
+    /// 外部文件绝不可能被删除。
+    #[test]
+    fn delete_never_touches_outside_file() {
+        let dir = std::env::temp_dir().join(format!("pet_delete_test4_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = std::env::temp_dir().join("pet_outside_target.bin");
+        std::fs::write(&outside, b"x").unwrap();
+        let r = delete_model_file(&dir, &outside.to_string_lossy());
+        assert!(r.is_err());
+        assert!(outside.exists(), "外部文件不应被删除");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&outside).ok();
+    }
 }

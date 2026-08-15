@@ -150,6 +150,31 @@ body {
   line-height: 1.5;
 }
 
+/* 已导入模型的删除按钮：默认低调，hover 强化危险视觉 */
+.model-panel .mp-del {
+  border: none;
+  background: transparent;
+  color: #a89aa8;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: 6px;
+  line-height: 1.4;
+}
+.model-panel .mp-del:hover {
+  background: rgba(200, 70, 70, 0.14);
+  color: #c94a4a;
+}
+/* 删除确认按钮（危险操作） */
+.as-btn-danger {
+  background: #b03030;
+}
+.as-btn-danger:hover {
+  background: #c94141;
+}
+
 /* ---------- 动作调试：底部横条（贴底，不挡桌宠） ---------- */
 .action-panel {
   left: 50%;

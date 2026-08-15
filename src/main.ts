@@ -428,10 +428,36 @@ async function toggleModelPanel() {
     if (builtinName) {
       mk(`内置 · ${builtinName}`, () => localStorage.removeItem(PSD_KEY), currentModel.type === "manifest" && currentModel.name === builtinName);
     }
-    // 已导入 PSD
+    // 已导入 PSD——带删除按钮（内置模型不可删）
     for (const m of models) {
       const label = m.replace(/\.psd$/i, "");
-      mk(`已导入 · ${label}`, () => localStorage.setItem(PSD_KEY, m), currentModel.type === "import" && currentModel.name === m);
+      const active = currentModel.type === "import" && currentModel.name === m;
+      const row = document.createElement("div");
+      row.className = `mp-item${active ? " active" : ""}`;
+      const span = document.createElement("span");
+      span.textContent = `已导入 · ${label}`;
+      row.appendChild(span);
+      if (active) {
+        const tag = document.createElement("b");
+        tag.textContent = "使用中";
+        row.appendChild(tag);
+      }
+      // 删除按钮：点击只触发删除，不切换模型
+      const del = document.createElement("button");
+      del.className = "mp-del";
+      del.textContent = "删除";
+      del.title = "删除该模型（删除后需重新导入才能恢复）";
+      del.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showDeleteConfirm(host, m, label, active);
+      });
+      row.appendChild(del);
+      row.addEventListener("click", async () => {
+        localStorage.setItem(PSD_KEY, m);
+        host.classList.add("hidden");
+        await reloadView();
+      });
+      host.appendChild(row);
     }
     if (!models.length) {
       const empty = document.createElement("div");
@@ -460,6 +486,98 @@ async function toggleModelPanel() {
     backBtn.addEventListener("click", () => host.classList.add("hidden"));
     backRow.appendChild(backBtn);
     host.appendChild(backRow);
+  };
+
+  // 删除确认面板：二次确认后才真正删除，杜绝误触
+  const showDeleteConfirm = (
+    host: HTMLElement,
+    file: string,
+    label: string,
+    isCurrent: boolean,
+  ) => {
+    document.getElementById("del-confirm")?.remove();
+    const panel = document.createElement("div");
+    panel.id = "del-confirm";
+    panel.className = "model-panel";
+    panel.style.zIndex = "160"; // 高于模型面板(150)，避免被盖住
+    const title = document.createElement("div");
+    title.className = "mp-title";
+    title.textContent = "删除模型？";
+    panel.appendChild(title);
+    const hint = document.createElement("div");
+    hint.className = "mp-hint";
+    hint.textContent = `确定删除「${label}」吗？删除后需要重新导入 PSD 才能恢复。`;
+    panel.appendChild(hint);
+    const btns = document.createElement("div");
+    btns.className = "as-set-btns";
+    const cancel = document.createElement("button");
+    cancel.className = "as-btn";
+    cancel.textContent = "取消";
+    cancel.addEventListener("click", () => panel.remove());
+    const ok = document.createElement("button");
+    ok.className = "as-btn as-btn-danger";
+    ok.textContent = "删除";
+    ok.addEventListener("click", async () => {
+      panel.remove();
+      await deleteModel(host, file, label, isCurrent);
+    });
+    btns.append(cancel, ok);
+    panel.appendChild(btns);
+    panel.addEventListener("pointerdown", (e) => e.stopPropagation());
+    document.body.appendChild(panel);
+  };
+
+  // 删除后重新拉取列表并重渲染
+  const refreshModels = async (host: HTMLElement) => {
+    try {
+      models = await invoke<string[]>("list_models");
+    } catch {
+      models = [];
+    }
+    render(host);
+  };
+
+  // 核心删除逻辑：
+  // 1) 删除当前使用模型时，先切回内置模型并确认加载成功，再删文件
+  // 2) 删除失败时回滚持久化状态并保留原条目
+  // 3) 成功后刷新列表
+  const deleteModel = async (
+    host: HTMLElement,
+    file: string,
+    label: string,
+    isCurrent: boolean,
+  ) => {
+    const wasCurrent = isCurrent || localStorage.getItem(PSD_KEY) === file;
+    // 若删除的是当前使用模型：先切回内置（清空 PSD_KEY），并确认内置加载成功
+    if (wasCurrent) {
+      localStorage.removeItem(PSD_KEY);
+      try {
+        await reloadView();
+      } catch (err) {
+        // 内置模型加载失败：回滚，保留原模型与条目
+        localStorage.setItem(PSD_KEY, file);
+        console.error("删除时切回内置模型失败:", err);
+        await reloadView().catch(() => {});
+        toast("内置模型加载失败，删除已取消", "warn");
+        return;
+      }
+    }
+    // 真正删除文件（后端已做路径安全校验）
+    try {
+      await invoke("delete_imported_model", { name: file });
+    } catch (err) {
+      // 删除失败：恢复原模型（若刚才已切回），保留条目
+      if (wasCurrent) {
+        localStorage.setItem(PSD_KEY, file);
+        await reloadView().catch(() => {});
+      }
+      console.error("delete_imported_model 失败:", err);
+      toast("删除模型失败，请重试", "warn");
+      return;
+    }
+    // 成功：刷新列表
+    await refreshModels(host);
+    toast(`已删除 ${label}`);
   };
 
   if (panel) {
