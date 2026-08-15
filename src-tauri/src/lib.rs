@@ -203,7 +203,7 @@ fn sanitize_psd_name(name: &str) -> String {
     let clean: String = base
         .chars()
         .take(MAX_NAME_LEN)
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' { c } else { '_' })
         .collect();
     if clean.to_lowercase().ends_with(".psd") {
         clean

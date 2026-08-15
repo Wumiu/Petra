@@ -78,7 +78,10 @@ async function createView(): Promise<PetView> {
       const bytes = await invoke<number[]>("read_psd", { name: imported });
       currentModel = { type: "import", name: imported };
       return await makePsdView(new Uint8Array(bytes));
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[模型切换] 导入 PSD "${imported}" 加载失败：`, err);
+      toast(`模型 "${imported}" 加载失败，已回退内置：${msg}`, "warn");
       localStorage.removeItem(PSD_KEY);
     }
   }
