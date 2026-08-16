@@ -8,7 +8,10 @@ import { clamp } from "../../utils/math";
 
 // vendor 的 rigger/genericparts 是 UMD 格式（无 ESM export），
 // 通过 index.html 的 <script> 标签在应用代码前加载（副作用 import 会被 Vite 生产构建 tree-shake 掉）。
+// Anime2.5DRig UMD 格式，通过 index.html 的 <script> 标签在应用代码前加载。
 // 加载后自动挂到 window.Rigger / window.GenericParts。
+// 注意：不能在模块顶层直接获取（Vite dev 模块加载时序问题），
+// 必须在 load() 调用时延迟获取，确保 <script> 已执行。
 
 interface RiggerApi {
   buildRig(psd: any, opts?: any): any;
@@ -18,8 +21,17 @@ interface RiggerApi {
 interface GenericPartsApi {
   get(k: "eyeL" | "eyeR" | "mouth"): { width: number; height: number; data: Uint8ClampedArray } | null;
 }
-const Rigger: RiggerApi = (window as unknown as { Rigger: RiggerApi }).Rigger;
-const GenericParts: GenericPartsApi = (window as unknown as { GenericParts: GenericPartsApi }).GenericParts;
+
+function getRigger(): RiggerApi {
+  const r = (window as unknown as { Rigger: RiggerApi }).Rigger;
+  if (!r) throw new Error("Rigger 未加载，请检查 index.html 是否正确引入 vendor/anime2dr/rigger.js");
+  return r;
+}
+function getGenericParts(): GenericPartsApi {
+  const g = (window as unknown as { GenericParts: GenericPartsApi }).GenericParts;
+  if (!g) throw new Error("GenericParts 未加载，请检查 index.html 是否正确引入 vendor/anime2dr/genericparts.js");
+  return g;
+}
 
 export interface RigParams {
   angleX: number;
@@ -184,6 +196,8 @@ export class PsdRuntime {
     this.layers = [];
 
     const psd = readPsd(u8, { useImageData: true, skipThumbnail: true }) as any;
+    const Rigger = getRigger();
+    const GenericParts = getGenericParts();
     Rigger.cleanPsdLayers(psd);
     const g = {
       eyeL: GenericParts.get("eyeL"),

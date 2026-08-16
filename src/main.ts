@@ -104,11 +104,21 @@ async function createView(): Promise<PetView> {
       const saved = localStorage.getItem(BUILTIN_KEY);
       const file = saved && Array.isArray(m.files) && m.files.includes(saved) ? saved : m.file;
       try {
-        const path = await invoke<string>("model_resource_path", { name: file });
-        const res = await fetch(convertFileSrc(path));
-        if (res.ok) {
-          currentModel = { type: "manifest", name: file };
-          return await makePsdView(new Uint8Array(await res.arrayBuffer()));
+        if (import.meta.env.DEV) {
+          // dev 模式：直接从 Vite 开发服务器 fetch（public/models/）
+          const res = await fetch(`/models/${file}`);
+          if (res.ok) {
+            currentModel = { type: "manifest", name: file };
+            return await makePsdView(new Uint8Array(await res.arrayBuffer()));
+          }
+        } else {
+          // release 模式：通过 model_resource_path 获取资源文件路径，用 asset protocol 读取
+          const path = await invoke<string>("model_resource_path", { name: file });
+          const res = await fetch(convertFileSrc(path));
+          if (res.ok) {
+            currentModel = { type: "manifest", name: file };
+            return await makePsdView(new Uint8Array(await res.arrayBuffer()));
+          }
         }
       } catch (err) {
         console.error(`内置模型 ${file} 加载失败:`, err);

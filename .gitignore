@@ -12,6 +12,9 @@ src-tauri/target/
 .env
 .env.*
 
+# API Key 加密文件（本地敏感数据，即使在用户目录也不跟踪）
+api_key.bin
+
 # Logs
 *.log
 src-tauri/logs/

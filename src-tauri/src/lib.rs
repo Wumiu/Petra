@@ -314,14 +314,22 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
         format!("{file}"),
     ] {
         if let Ok(p) = app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
-            tried.push(format!("{rel} -> {} (exists={})", p.display(), p.exists()));
-            if p.exists() {
-                log_line(&format!("model_resource_path: {file} -> {}", p.display()));
+            let exists = p.exists();
+            tried.push(format!("{rel} -> {} (exists={})", p.display(), exists));
+            if exists {
+                log_line(&format!("model_resource_path: {file} -> {} (candidate: {rel})", p.display()));
                 return Ok(p.to_string_lossy().to_string());
             }
         }
     }
-    Err(format!("模型资源不存在: {file}（尝试: {}）", tried.join(" | ")))
+    // 失败时给出明确提示：可能是 Tauri 资源目录结构变更或资源文件缺失
+    log_line(&format!(
+        "model_resource_path: {file} 未找到，尝试的候选路径: {}",
+        tried.join("; ")
+    ));
+    Err(format!(
+        "模型资源不存在: {file}（可能资源目录结构变更，请检查安装完整性）"
+    ))
 }
 
 /// 删除已导入模型（模型设置面板「删除」按钮调用）。
@@ -331,9 +339,16 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
 fn delete_imported_model(app: AppHandle, name: String) -> Result<(), String> {
     let file_name = sanitize_psd_name(&name);
     let dir = models_dir(&app)?;
-    delete_model_file(&dir, &file_name)?;
-    log_line(&format!("delete_imported_model: 已删除 {file_name}"));
-    Ok(())
+    match delete_model_file(&dir, &file_name) {
+        Ok(()) => {
+            log_line(&format!("delete_imported_model: 已删除 {file_name}"));
+            Ok(())
+        }
+        Err(e) => {
+            log_line(&format!("delete_imported_model: 删除 {file_name} 失败: {e}"));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]

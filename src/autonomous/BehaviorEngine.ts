@@ -184,7 +184,7 @@ export class BehaviorEngine {
 
   /** 清除 Rust mover 目标，停止移动 */
   private clearTarget() {
-    this.clearTarget();
+    void invoke("clear_pet_target").catch(() => {});
   }
 
 
