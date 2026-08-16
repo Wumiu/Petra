@@ -6,11 +6,9 @@
 import { readPsd } from "ag-psd";
 import { clamp } from "../../utils/math";
 
-// vendor 的 rigger/genericparts 是 UMD 格式（无 ESM export）。
-// vite dev 不转换源码 CJS，直接 default 导入会失败；
-// 改为副作用导入（执行 UMD → 挂到 window.Rigger / window.GenericParts）再从全局取。
-import "../../vendor/anime2dr/rigger";
-import "../../vendor/anime2dr/genericparts";
+// vendor 的 rigger/genericparts 是 UMD 格式（无 ESM export），
+// 通过 index.html 的 <script> 标签在应用代码前加载（副作用 import 会被 Vite 生产构建 tree-shake 掉）。
+// 加载后自动挂到 window.Rigger / window.GenericParts。
 
 interface RiggerApi {
   buildRig(psd: any, opts?: any): any;

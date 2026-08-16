@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -90,15 +90,21 @@ async function createView(): Promise<PetView> {
   }
   // 2) 打包的 PSD 模型（public/models/<file>）
   try {
-    const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json());
+    const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json())
+      .catch((err) => { void invoke("debug_mark", { msg: `[diag] manifest fetch 抛错: ${err}` }).catch(() => {}); throw err; });
     if (m?.type === "psd" && m.file) {
       // 默认模型：优先用用户上次选择的内置模型（须在 files 列表内）
       const saved = localStorage.getItem(BUILTIN_KEY);
       const file = saved && Array.isArray(m.files) && m.files.includes(saved) ? saved : m.file;
-      const res = await fetch(`/models/${file}`);
-      if (res.ok) {
-        currentModel = { type: "manifest", name: file };
-        return await makePsdView(new Uint8Array(await res.arrayBuffer()));
+      try {
+        const path = await invoke<string>("model_resource_path", { name: file });
+        const res = await fetch(convertFileSrc(path));
+        if (res.ok) {
+          currentModel = { type: "manifest", name: file };
+          return await makePsdView(new Uint8Array(await res.arrayBuffer()));
+        }
+      } catch (err) {
+        console.error(`内置模型 ${file} 加载失败:`, err);
       }
     }
     if (m?.active) {

@@ -27,12 +27,18 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$RESOURCE/**"]
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": ["../public/models/*.psd"],
+    "resources": ["resources/models/"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -33,8 +33,12 @@ Thumbs.db
 public/models/*.psd
 !public/models/sample.psd
 !public/models/deepseek.psd
+!public/models/Elaina.psd
 
 # 打包产物
 Live2D-Pet_*.zip
 build.log
 Petra_*.zip
+
+# Tauri 打包资源（构建产物）
+src-tauri/resources/

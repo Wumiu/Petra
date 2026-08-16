@@ -297,6 +297,33 @@ fn delete_model_file(models_dir: &std::path::Path, name: &str) -> Result<(), Str
     Ok(())
 }
 
+/// 返回内置 PSD 模型在资源目录的绝对路径（供前端 convertFileSrc 读取）。
+/// 内置模型作为 bundle.resources 打包为真实文件，不走二进制嵌入（嵌入对大文件有限制）。
+#[tauri::command]
+fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
+    let file = sanitize_psd_name(&name);
+    if !file.to_lowercase().ends_with(".psd") {
+        return Err("只支持 PSD 模型".into());
+    }
+    // 便携运行（exe 旁 resources/）与安装版布局可能不同，依次尝试候选路径
+    let mut tried: Vec<String> = Vec::new();
+    for rel in [
+        format!("resources/models/{file}"),
+        format!("models/{file}"),
+        format!("_up_/public/models/{file}"),
+        format!("{file}"),
+    ] {
+        if let Ok(p) = app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
+            tried.push(format!("{rel} -> {} (exists={})", p.display(), p.exists()));
+            if p.exists() {
+                log_line(&format!("model_resource_path: {file} -> {}", p.display()));
+                return Ok(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    Err(format!("模型资源不存在: {file}（尝试: {}）", tried.join(" | ")))
+}
+
 /// 删除已导入模型（模型设置面板「删除」按钮调用）。
 /// 内置模型位于打包资源（public/models），不在 app_data/models，
 /// 本命令只操作 app_data/models，天然无法删除内置模型。
@@ -908,6 +935,7 @@ pub fn run() {
             save_psd,
             read_psd,
             list_models,
+            model_resource_path,
             delete_imported_model,
             set_audio_enabled,
             set_pet_target,
