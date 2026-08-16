@@ -20,6 +20,13 @@ import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiK
 import { listModels } from "./assistant/AssistantClient";
 
 const WIN = 300;
+// 交互时间常量（ms）
+const PROACTIVE_GREET_INTERVAL = 20 * 60 * 1000; // 小助手主动问候间隔
+const DRAG_SUSPEND_MS = 30000; // 拖拽暂停自主漫游时长
+const IDLE_AFTER_DRAG_MS = 1500; // 拖拽后恢复漫游的休息时长
+const FIRST_ROAM_DELAY = 5000; // 首次漫游延迟
+const UPDATE_CHECK_DELAY = 5000; // 启动后检查更新延迟
+const BUBBLE_FADE_MS = 8000; // 更新气泡自动消失时间
 const PSD_KEY = "live2d-pet-psd";
 const BUILTIN_KEY = "live2d-pet-builtin-model"; // 当前选中的内置模型（manifest files 内）
 
@@ -188,7 +195,7 @@ async function boot() {
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
     () => engine.suspend(3600_000),
-    () => engine.suspend(1500),
+    () => engine.suspend(IDLE_AFTER_DRAG_MS),
   );
   // 启动一律正常站立（不自动恢复待机）
   if (settings.idleMode) {
@@ -197,13 +204,13 @@ async function boot() {
   }
   // 延迟首次漫游（low 档完全静止，不触发首次移动）
   if (settings.activity !== "low") {
-    setTimeout(() => void engine.teleportRandom(), 5000);
+    setTimeout(() => void engine.teleportRandom(), FIRST_ROAM_DELAY);
   }
 
   // 小助手主动问候：每 20 分钟，若开启且空闲则智能打招呼（识别当前窗口）
   setInterval(() => {
     if (settings.assistant.enabled) void triggerProactive();
-  }, 20 * 60 * 1000);
+  }, PROACTIVE_GREET_INTERVAL);
 
   // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
   setInterval(() => void engine.pollCursor(), 60);
@@ -221,7 +228,7 @@ async function boot() {
     await analyzer.ctx.resume().catch(() => {});
   };
   // 启动后自动检查一次更新（静默）
-  setTimeout(() => void checkUpdate(false), 5000);
+  setTimeout(() => void checkUpdate(false), UPDATE_CHECK_DELAY);
 
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
@@ -256,7 +263,7 @@ async function boot() {
     if ((e.target as HTMLElement).closest?.("#menu, #toasts, #assistant-panel")) return;
     const p = engine.position;
     drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
-    engine.suspend(30000); // 先停自主漫游，拖动结束再恢复
+    engine.suspend(DRAG_SUSPEND_MS); // 先停自主漫游，拖动结束再恢复
   });
   document.addEventListener("pointermove", (e) => {
     if (!drag) return;
@@ -362,6 +369,14 @@ async function currentLogicalPos(win: Awaited<ReturnType<typeof getCurrentWindow
   }
 }
 
+
+/** 清空元素内容（安全方式） */
+function clearElement(el: HTMLElement) {
+  while (el.firstChild) {
+    el.removeChild(el.firstChild);
+  }
+}
+
 // ---------- 右键菜单 ----------
 let autostartCache = false;
 
@@ -419,7 +434,7 @@ async function toggleModelPanel() {
   }
 
   const render = (host: HTMLElement) => {
-    host.innerHTML = "";
+    clearElement(host);
     const title = document.createElement("div");
     title.className = "mp-title";
     title.textContent = "模型设置";
@@ -769,7 +784,7 @@ function toggleActionDebug() {
   }
 
   const render = (host: HTMLElement) => {
-    host.innerHTML = "";
+    clearElement(host);
 
     const head = document.createElement("div");
     head.className = "ap-head";
@@ -860,7 +875,7 @@ async function toggleAssistantSettings() {
     return;
   }
   const render = (host: HTMLElement) => {
-    host.innerHTML = "";
+    clearElement(host);
     const title = document.createElement("div");
     title.className = "mp-title";
     title.textContent = "小助手设置";
@@ -1035,7 +1050,7 @@ function openFeedbackInput() {
   if (panel && !panel.classList.contains("hidden")) return;
 
   const render = (host: HTMLElement) => {
-    host.innerHTML = "";
+    clearElement(host);
     const title = document.createElement("div");
     title.className = "mp-title";
     title.textContent = "反馈";
@@ -1152,7 +1167,7 @@ function showUpdateBubble(tag: string, url: string) {
   clearTimeout((el as unknown as { _t?: number })._t);
   (el as unknown as { _t?: number })._t = window.setTimeout(() => {
     if (el?.isConnected) el.remove();
-  }, 8000);
+  }, BUBBLE_FADE_MS);
 }
 
 async function checkUpdate(manual = false) {

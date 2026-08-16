@@ -157,7 +157,7 @@ export class BehaviorEngine {
       this.fleeUntil = 0;
       this.trackAt = 0;
       this.excitement = 0;
-      void invoke("clear_pet_target").catch(() => {});
+      this.clearTarget();
     }
   }
 
@@ -178,9 +178,15 @@ export class BehaviorEngine {
   /** 暂停自主漫游（用户拖动时）；再次调用以新时长覆盖 */
   suspend(ms: number) {
     this.suspendUntil = performance.now() + ms;
-    void invoke("clear_pet_target");
+    this.clearTarget();
     this.target = null;
   }
+
+  /** 清除 Rust mover 目标，停止移动 */
+  private clearTarget() {
+    this.clearTarget();
+  }
+
 
   /** 外部直接设置位置（拖动跟随） */
   setPos(x: number, y: number) {
@@ -313,7 +319,7 @@ export class BehaviorEngine {
           // 够近 → 停住看
           this.target = null;
           this.dwellUntil = now + 300;
-          void invoke("clear_pet_target").catch(() => {});
+          this.clearTarget();
         }
         // 兴奋度简化为鼠标速度轻量映射（渲染表现用）
         this.excitement = clamp(this.excitement + Math.min(1, this.cursorSpeed / 400) * 0.1 - 0.015, 0, 1);
@@ -370,7 +376,7 @@ export class BehaviorEngine {
           this.dwellUntil = now + this.actParams.restBase + this.rng() * this.actParams.restBase;
           velX = 0;
           velY = 0;
-          void invoke("clear_pet_target").catch(() => {});
+          this.clearTarget();
         } else {
           // 逗猫棒：追鼠标速度；非追踪按档位闲逛速度（本地积分与 mover 同一速度）
           const speed = this.tracking ? CHASE_SPEED : this.actParams.speed;
@@ -440,7 +446,7 @@ export class BehaviorEngine {
       this.target = null;
       this.dwellUntil = performance.now() + 2000 + this.rng() * 3000;
       // 立即清除 Rust mover 目标，防止 mover 继续把窗口推过边界
-      void invoke("clear_pet_target").catch(() => {});
+      this.clearTarget();
     }
   }
 }
