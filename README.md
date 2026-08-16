@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon-preview-256.png" width="120" alt="Petra" />
+  <img src="docs/assets/petra-logo.png" width="180" alt="Petra Logo" />
 </p>
 
 <h1 align="center">Petra</h1>
