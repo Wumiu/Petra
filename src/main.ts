@@ -58,6 +58,8 @@ let currentModel: { type: "import" | "manifest" | "live2d"; name?: string } = {
   type: "manifest",
   name: "",
 };
+// 动作试玩面板：选完动作后隐藏，等左键点击恢复
+let actionDebugHidden = false;
 
 function attachView(v: PetView) {
   const stage = document.getElementById("stage")!;
@@ -234,6 +236,13 @@ async function boot() {
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
     if (e.button !== 0) return;
+    // 动作试玩面板隐藏中：左键点击恢复面板，不触发拖拽/摸头
+    if (actionDebugHidden) {
+      actionDebugHidden = false;
+      const panel = document.getElementById("action-debug") as HTMLElement | null;
+      panel?.classList.remove("hidden");
+      return;
+    }
     if ((e.target as HTMLElement).closest?.("#menu, #toasts, #assistant-panel")) return;
     const p = engine.position;
     drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
@@ -774,6 +783,9 @@ function toggleActionDebug() {
         view.playAction(a.id, true);
         list.querySelectorAll(".mp-item").forEach((el) => el.classList.remove("active"));
         row.classList.add("active");
+        // 选完动作隐藏面板，等左键点击恢复
+        host.classList.add("hidden");
+        actionDebugHidden = true;
       });
       list.appendChild(row);
     }
