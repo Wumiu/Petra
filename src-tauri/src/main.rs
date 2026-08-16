@@ -9,5 +9,5 @@ fn main() {
         args.push_str(" --remote-debugging-port=9222");
     }
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", args);
-    pet_lib::run()
+    petra_lib::run()
 }

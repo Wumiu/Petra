@@ -162,7 +162,7 @@ public/models/              # 默认角色资源 + manifest.json
 
 ## 诊断
 
-- 前端报错与启动埋点汇集到 `%APPDATA%\com.live2d.pet\logs\pet.log`
+- 前端报错与启动埋点汇集到 `%APPDATA%\com.wumiu.petra\logs\pet.log`
 - dev 构建自带 WebView2 远程调试端口 9222，`node scripts/cdp-diag.mjs` 可抓取页面异常详情
 - 排查启动问题先看 `pet.log`：`boot:start → boot:view=<类型> → boot:loop=start → boot:audio=on`
 
