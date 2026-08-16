@@ -21,6 +21,7 @@ import { listModels } from "./assistant/AssistantClient";
 
 const WIN = 300;
 const PSD_KEY = "live2d-pet-psd";
+const BUILTIN_KEY = "live2d-pet-builtin-model"; // 当前选中的内置模型（manifest files 内）
 
 // 启动标记：模块求值成功即置位（诊断/探测器判据）
 declare global {
@@ -91,9 +92,12 @@ async function createView(): Promise<PetView> {
   try {
     const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json());
     if (m?.type === "psd" && m.file) {
-      const res = await fetch(`/models/${m.file}`);
+      // 默认模型：优先用用户上次选择的内置模型（须在 files 列表内）
+      const saved = localStorage.getItem(BUILTIN_KEY);
+      const file = saved && Array.isArray(m.files) && m.files.includes(saved) ? saved : m.file;
+      const res = await fetch(`/models/${file}`);
       if (res.ok) {
-        currentModel = { type: "manifest", name: m.file };
+        currentModel = { type: "manifest", name: file };
         return await makePsdView(new Uint8Array(await res.arrayBuffer()));
       }
     }
@@ -392,12 +396,13 @@ async function toggleModelPanel() {
   } catch {
     /* 忽略 */
   }
-  // 内置模型名（manifest 配置）
-  let builtinName: string | null = null;
+  // 内置模型列表（manifest 配置：files 列表，兼容单 file）
+  let builtinNames: string[] = [];
   try {
     const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json());
-    if (m?.type === "psd" && m.file) builtinName = m.file;
-    else if (m?.active) builtinName = m.active;
+    if (m?.type === "psd" && Array.isArray(m.files) && m.files.length) builtinNames = m.files;
+    else if (m?.type === "psd" && m.file) builtinNames = [m.file];
+    else if (m?.active) builtinNames = [m.active];
   } catch {
     /* 无 manifest */
   }
@@ -433,9 +438,13 @@ async function toggleModelPanel() {
       host.appendChild(row);
     };
 
-    // 内置模型（manifest / 打包）
-    if (builtinName) {
-      mk(`内置 · ${builtinName}`, () => localStorage.removeItem(PSD_KEY), currentModel.type === "manifest" && currentModel.name === builtinName);
+    // 内置模型（manifest / 打包）：多个内置模型可切换
+    for (const f of builtinNames) {
+      const label = f.replace(/\.psd$/i, "");
+      mk(`内置 · ${label}`, () => {
+        localStorage.setItem(BUILTIN_KEY, f);
+        localStorage.removeItem(PSD_KEY);
+      }, currentModel.type === "manifest" && currentModel.name === f);
     }
     // 已导入 PSD——带删除按钮（内置模型不可删）
     for (const m of models) {
