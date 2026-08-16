@@ -1135,7 +1135,14 @@ function showUpdateBubble(tag: string, url: string) {
     el.addEventListener("pointerdown", (e) => e.stopPropagation());
     document.body.appendChild(el);
   }
-  el.innerHTML = `<b>✨ 新版本 ${tag} 可用！</b><span>点这里前往下载</span>`;
+  // 使用 textContent 防止 XSS（tag 来自 GitHub API，不可信）
+  el.innerHTML = ""; // 清空旧内容
+  const bold = document.createElement("b");
+  bold.textContent = `✨ 新版本 ${tag} 可用！`;
+  const span = document.createElement("span");
+  span.textContent = "点这里前往下载";
+  el.appendChild(bold);
+  el.appendChild(span);
   el.classList.remove("hidden");
   el.onclick = () => {
     void invoke("open_url", { url }).catch(() => {});
