@@ -1,18 +1,18 @@
 <p align="center">
-  <img src="icon-preview-256.png" width="120" alt="Live2D Pet" />
+  <img src="icon-preview-256.png" width="120" alt="Petra" />
 </p>
 
-<h1 align="center">Live2D Pet</h1>
+<h1 align="center">Petra</h1>
 
 <p align="center">一个运行在 Windows 桌面的可自定义 AI 桌宠</p>
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="Live2D Pet Demo" />
+  <img src="docs/assets/demo.gif" alt="Petra Demo" />
 </p>
 
 ## 简介
 
-Live2D Pet 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线跟随的动态角色，内置一个可以聊天、调用系统能力、记住用户偏好的 AI 小助手。
+Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线跟随的动态角色，内置一个可以聊天、调用系统能力、记住用户偏好的 AI 小助手。
 
 核心特点：
 
@@ -24,8 +24,8 @@ Live2D Pet 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视
 
 普通用户无需安装任何开发环境，直接下载使用：
 
-1. 前往 [Releases 页面](https://github.com/Wumiu/pet/releases)，下载最新的 `Live2D-Pet_*_x64.zip`
-2. 解压，运行其中的 `Live2D Pet_*_x64-setup.exe` 完成安装
+1. 前往 [Releases 页面](https://github.com/Wumiu/pet/releases)，下载最新的 `Petra_*_x64.zip`
+2. 解压，运行其中的 `Petra_*_x64-setup.exe` 完成安装
 3. 启动后右键桌宠可打开菜单，调节各项功能
 4. （可选）右键 → 小助手设置，填入自己的 AI API Key 即可使用 AI 对话功能；不填写也可以作为普通桌宠使用
 
