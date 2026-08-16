@@ -37,6 +37,7 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 
 - 拖入分层 PSD，自动装配生成 2.5D 角色（自动眨眼、发丝物理、表情）
 - 支持标准 Live2D 模型（model3.json）
+- 内置多个角色（deepseek、Elaina ），可在「模型设置」中一键切换
 - 右键「模型设置」可导入、切换或删除已导入的 PSD 模型
 - 鼠标视线追踪：模型看向鼠标位置（带死区与平滑）
 
@@ -45,7 +46,9 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 - 桌面漫游，活动频率三档（低 / 中 / 高）
 - 鼠标靠近自动躲避
 - 逗猫棒模式：追着鼠标跑
+- 动作系统：点头、摇头、歪头、挥手、打哈欠、伸懒腰等 14 个动作，按活动频率自动播放
 - 待机模式：沉到就近屏幕边缘（上半倒挂 180°），拖动唤醒
+- 拖拽互动：按住软乎乎晃动、拖拽惯性摆动、按住眯眼
 
 **桌面能力**
 
@@ -58,6 +61,7 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 **跟随音乐（未完善）**
 
 - WASAPI 回环捕获系统音频，驱动身体律动、嘴型、眉毛、发丝
+- BPM 节拍检测，随节奏摇摆、节拍眨眼
 
 ## 自定义角色
 
@@ -77,8 +81,10 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 3. **打包默认模型**：PSD 放 `public/models/`，编辑 `public/models/manifest.json`：
 
 ```json
-{ "type": "psd", "file": "my-char.psd" }
+{ "type": "psd", "file": "deepseek.psd", "files": ["deepseek.psd", "Elaina.psd"] }
 ```
+- `file`：默认加载的模型
+- `files`：所有内置模型列表，用户可在「模型设置」中切换
 
 标准 Live2D 模型（model3.json）仍支持，manifest 改为 `{ "active": "model" }`。使用标准 Live2D 模式需先放入官方 Cubism Core runtime（`live2dcubismcore.min.js`，Live2D 官网下载，见其许可）到 `public/vendor/`，并在 `index.html` 的 `<head>` 中以 `<script>` 引入。
 
@@ -198,4 +204,3 @@ window.__ASTROBOT__.emit({ type: "speak" | "emote" | "gesture" | "move" | "react
 
 - 主动问候会读取**当前前台窗口标题 + 进程名**并发送给 AI 判断，标题可能包含文件名、聊天内容等敏感信息；介意可关闭小助手模式
 - API Key 经 Windows DPAPI 加密存储于应用数据目录，不明文落盘
-- 反馈邮件会附上本次启动的运行日志（含最近执行的 Shell 命令记录），发送前请知悉

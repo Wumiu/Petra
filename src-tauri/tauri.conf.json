@@ -37,7 +37,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": ["../public/models/*.psd"],
     "resources": ["resources/models/"],
     "icon": [
       "icons/32x32.png",

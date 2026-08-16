@@ -310,7 +310,6 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
     for rel in [
         format!("resources/models/{file}"),
         format!("models/{file}"),
-        format!("_up_/public/models/{file}"),
         format!("{file}"),
     ] {
         if let Ok(p) = app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
