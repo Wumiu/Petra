@@ -26,7 +26,7 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 
 普通用户无需安装任何开发环境，直接下载使用：
 
-1. 前往 [Releases 页面](https://github.com/Wumiu/pet/releases)，下载最新的 `Petra_*_x64.zip`
+1. 前往 [Releases 页面](https://github.com/Wumiu/Petra/releases)，下载最新的 `Petra_*_x64.zip`
 2. 解压，运行其中的 `Petra_*_x64-setup.exe` 完成安装
 3. 启动后右键桌宠可打开菜单，调节各项功能
 4. （可选）右键 → 小助手设置，填入自己的 AI API Key 即可使用 AI 对话功能；不填写也可以作为普通桌宠使用
@@ -129,12 +129,12 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 
 ## 开发者运行
 
-> 普通用户请直接去 [Releases](https://github.com/Wumiu/pet/releases) 下载安装包，无需源码。
+> 普通用户请直接去 [Releases](https://github.com/Wumiu/Petra/releases) 下载安装包，无需源码。
 
 环境要求：Windows 10/11、Node.js 18+、Rust（stable）、WebView2 Runtime。
 
 ```bash
-git clone https://github.com/Wumiu/pet.git
+git clone https://github.com/Wumiu/Petra.git
 cd pet
 npm install
 npm run tauri dev      # 开发

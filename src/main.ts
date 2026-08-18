@@ -1131,7 +1131,7 @@ async function doSendFeedback(message: string) {
 }
 
 // ---------- 检查更新 ----------
-const UPDATE_REPO = "Wumiu/pet";
+const UPDATE_REPO = "Wumiu/Petra";
 const UPDATE_KEY = "live2d-pet-last-update-notify"; // 已提示过的版本（启动自动检查时不重复弹）
 
 function parseVersion(v: string): number[] {
