@@ -978,7 +978,7 @@ async function toggleAssistantSettings() {
         fetchBtn.textContent = "自动获取模型";
       }
       if (models.length) {
-        // 填充下拉列表，让用户自己选（不自动用第一个）
+        // 填充下拉列表
         modelSelect.innerHTML = "";
         for (const m of models) {
           const opt = document.createElement("option");
@@ -986,7 +986,15 @@ async function toggleAssistantSettings() {
           opt.textContent = m;
           modelSelect.appendChild(opt);
         }
-        toast(`获取到 ${models.length} 个模型，请从「模型列表」选择`);
+        // 自动选中：优先保留用户之前填的模型名，否则选第一个
+        const current = model.value.trim();
+        if (current && models.includes(current)) {
+          modelSelect.value = current;
+        } else {
+          model.value = models[0];
+          modelSelect.value = models[0];
+        }
+        toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
       } else {
         toast("未获取到模型列表（可能接口不支持），请在「模型名」手填", "warn");
       }

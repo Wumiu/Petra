@@ -43,6 +43,11 @@ const BASE_PROMPT =
   "3. 拿不准确切路径时，宁可提示用户不要乱猜路径。\n" +
   "当用户透露出重要个人信息、偏好或习惯时（如名字、作息、喜欢的东西），请自动调用 remember 工具归档到长期记忆。" +
   "用户明确说\"记住 xx\"时也必须调用 remember。\n" +
+  "4. 用户说\"帮我搜/查 xxx\"时调用 search_web 打开浏览器搜索。\n" +
+  "5. 用户说\"提醒我/xx分钟后叫我\"时调用 set_reminder。\n" +
+  "6. 用户问天气时调用 get_weather 获取实时天气。\n" +
+  "7. 用户说\"关机/定时关机/xx分钟后关机\"时调用 schedule_shutdown。\n" +
+  "8. 用户说\"取消关机\"时调用 cancel_shutdown。\n" +
   "对话历史较长时只需记住最新上下文。";
 
 const TOOLS = [
@@ -64,7 +69,7 @@ const TOOLS = [
     function: {
       name: "run_shell",
       description:
-        "执行一条 Windows cmd 命令（仅查询类/受支持命令，如 ipconfig、dir）。严格注意：路径用反斜杠\\，禁止用//；命令必须完整可执行，不得含注释。普通“打开软件”请求不要用本工具，请用 launch_application。执行结果返回后请用自然语言转述。",
+        "执行一条 Windows cmd 查询命令（白名单：ipconfig/dir/ping/netstat/systeminfo/tasklist/whoami/tree/type/echo 等只读命令）。禁止执行修改/删除/系统操作，打开软件请用 launch_application。执行结果返回后请用自然语言转述。",
       parameters: {
         type: "object",
         properties: { command: { type: "string", description: "要执行的完整 cmd 命令" } },
@@ -81,6 +86,80 @@ const TOOLS = [
         type: "object",
         properties: { content: { type: "string", description: "要记住的内容" } },
         required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_volume",
+      description:
+        "调节系统音量。传 level (0-100) 设置音量百分比，传 mute (true/false) 静音/取消静音。",
+      parameters: {
+        type: "object",
+        properties: {
+          level: { type: "number", description: "音量 0-100" },
+          mute: { type: "boolean", description: "true=静音, false=取消静音" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_reminder",
+      description: "定时提醒用户。传入分钟后触发，显示一条提醒气泡。",
+      parameters: {
+        type: "object",
+        properties: {
+          minutes: { type: "number", description: "多少分钟后提醒" },
+          message: { type: "string", description: "提醒内容" },
+        },
+        required: ["minutes", "message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_weather",
+      description: "获取当前天气信息，返回简短天气文字。无需参数。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_shutdown",
+      description: "定时关机。传入分钟后自动关机（1~1440分钟）。",
+      parameters: {
+        type: "object",
+        properties: {
+          minutes: { type: "number", description: "多少分钟后关机" },
+        },
+        required: ["minutes"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_shutdown",
+      description: "取消之前设定的定时关机。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_web",
+      description: "帮用户搜索网页。传入搜索关键词，自动用浏览器打开搜索结果。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词" },
+        },
+        required: ["query"],
       },
     },
   },

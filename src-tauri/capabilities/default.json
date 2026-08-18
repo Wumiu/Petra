@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Capabilities for the pet main window",
+  "description": "Capabilities for the Petra main window",
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -706,20 +706,132 @@ fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// 命令安全校验：拦截危险/破坏性命令与链式多命令，降低 RCE 风险。
-fn validate_shell_command(command: &str) -> Result<(), String> {    let lower = command.trim().to_lowercase();
-    const DANGEROUS: &[&str] = &[
-        "format", "diskpart", "shutdown", "taskkill", "reg delete", "rd /s", "rmdir /s",
-        "del /s", "del /f", "deltree", "cipher", "fsutil", "bcdedit", "takeown", "vssadmin",
-        "powershell -enc", "mshta", "wscript", "cscript",
-    ];
-    for d in DANGEROUS {
-        if lower.contains(d) {
-            return Err(format!("命令被拦截（含危险操作 {d}）"));
-        }
+// ==================== 小助手扩展工具 ====================
+
+/// 设置系统音量（0-100），或静音/取消静音。
+/// mute=true 设音量为 0（静音），mute=false 恢复到 level（默认 50）。
+/// level 和 mute 可同时使用（如 level=30, mute=true → 静音，记住 30）。
+#[tauri::command]
+fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
+    let target = match mute {
+        Some(true) => 0u8,          // 静音：强制 0
+        Some(false) => level.unwrap_or(50).min(100),  // 取消静音：恢复到 level
+        None => level.unwrap_or(50).min(100),          // 纯设音量
+    };
+    // 用 winmm.dll waveOutSetVolume 直接设置（左声道 = 右声道）
+    let vol = (target as f64 / 100.0 * 65535.0).round() as u32;
+    let packed = vol | (vol << 16); // 左右声道同值
+    let script = format!(
+        r#"Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Vol {{ [DllImport("winmm.dll")] public static extern int waveOutSetVolume(IntPtr h, uint v); }}
+"@; [Vol]::waveOutSetVolume([IntPtr]::Zero, {packed})"#
+    );
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output();
+    match mute {
+        Some(true) => Ok("已静音".into()),
+        Some(false) => Ok(format!("已恢复音量 {target}%")),
+        None => Ok(format!("音量已设为 {target}%")),
     }
-    if command.contains('&') || command.contains('|') || command.contains('>') || command.contains('<') {
-        return Err("命令被拦截（不允许 & | > < 链式/重定向）".into());
+}
+
+/// 获取当前天气信息（调用 wttr.in 纯文本接口，无需 API Key）。
+#[tauri::command]
+fn get_weather() -> Result<String, String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile", "-Command",
+            "try { (Invoke-WebRequest -Uri 'https://wttr.in/?format=3&lang=zh' -TimeoutSec 8 -UseBasicParsing).Content } catch { '天气获取失败' }",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动失败: {e}"))?;
+    let mut out = String::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_string(&mut out);
+    }
+    let _ = child.wait();
+    Ok(out.trim().to_string())
+}
+
+/// 定时关机（分钟后）。
+#[tauri::command]
+fn schedule_shutdown(minutes: u32) -> Result<String, String> {
+    if minutes == 0 || minutes > 1440 {
+        return Err("时间范围：1~1440 分钟".into());
+    }
+    let secs = minutes * 60;
+    let output = std::process::Command::new("shutdown")
+        .args(["/s", "/t", &secs.to_string()])
+        .output()
+        .map_err(|e| format!("执行失败: {e}"))?;
+    if output.status.success() {
+        log_line(&format!("schedule_shutdown: {minutes} 分钟后关机"));
+        Ok(format!("已设定 {minutes} 分钟后关机，说「取消关机」可取消"))
+    } else {
+        Err("关机命令执行失败".into())
+    }
+}
+
+/// 取消定时关机。
+#[tauri::command]
+fn cancel_shutdown() -> Result<String, String> {
+    let output = std::process::Command::new("shutdown")
+        .args(["/a"])
+        .output()
+        .map_err(|e| format!("执行失败: {e}"))?;
+    if output.status.success() {
+        log_line("cancel_shutdown: 已取消");
+        Ok("已取消定时关机".into())
+    } else {
+        Err("没有待取消的关机任务".into())
+    }
+}
+
+/// 命令安全校验：白名单模式，只允许已知安全的查询类命令。
+/// 打开软件请走 `launch_application`，不需要 shell。
+fn validate_shell_command(command: &str) -> Result<(), String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("命令为空".into());
+    }
+    // 链式/重定向一律拦截
+    if trimmed.contains('&') || trimmed.contains('|') || trimmed.contains('>')
+        || trimmed.contains('<') || trimmed.contains('`')
+    {
+        return Err("命令被拦截（不允许链式/重定向/反引号）".into());
+    }
+    // 提取首个 token（命令名），支持带路径参数的调用
+    let first = trimmed.split_whitespace().next().unwrap_or("");
+    let cmd = first
+        .rsplit('\\')
+        .next()
+        .unwrap_or(first)
+        .to_lowercase();
+    // 白名单：仅允许安全的查询/信息类命令
+    const ALLOWED: &[&str] = &[
+        // 网络
+        "ipconfig", "ping", "netstat", "nslookup", "tracert", "pathping",
+        "arp", "getmac", "nbtstat",
+        // 系统信息（只读）
+        "systeminfo", "hostname", "whoami", "ver", "vol", "date", "time",
+        "driverquery",
+        // 进程/服务（只读查询）
+        "tasklist", "tasklist.exe", "query",
+        // 文件/目录（只读）
+        "dir", "tree", "type", "where",
+        // 其他安全
+        "echo", "set", "chcp", "cls", "color", "title",
+    ];
+    if !ALLOWED.iter().any(|a| cmd == *a) {
+        return Err(format!(
+            "命令被拦截（不在白名单内：{cmd}）。小助手仅支持查询类命令，打开软件请直接说"
+        ));
     }
     Ok(())
 }
@@ -967,6 +1079,10 @@ pub fn run() {
             export_feedback,
             get_autostart,
             set_autostart,
+            set_volume,
+            get_weather,
+            schedule_shutdown,
+            cancel_shutdown,
         ])
         .setup(|app| {
             LOG_DIR.get_or_init(|| {

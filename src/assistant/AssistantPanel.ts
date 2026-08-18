@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, extractCommand, stripCommand, type ChatMessage, type ToolCall } from "./AssistantClient";
 import { loadSettings } from "../utils/settings";
+import { toast } from "../ui/Toast";
 
 const MAX_BUBBLES = 2;
 const HIST_KEY = "live2d-pet-assistant-history";
@@ -319,6 +320,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
     })),
   });
 
+  /** 通用工具调用：invoke 后 push 结果到 history */
+  const invokeTool = async (tcItem: ToolCall, name: string, args: Record<string, unknown> = {}) => {
+    try {
+      const result = await invoke<string>(name, args);
+      history.push({ role: "tool", tool_call_id: tcItem.id, content: result });
+    } catch (e) {
+      history.push({ role: "tool", tool_call_id: tcItem.id, content: `失败：${e}` });
+    }
+  };
+
   for (const tc of calls) {
     if (tc.name === "remember") {
       const content = String(tc.args.content ?? "").trim();
@@ -392,6 +403,37 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
         }
       }
       history.push({ role: "tool", tool_call_id: tc.id, content: result });
+    }
+    if (tc.name === "set_volume") {
+      await invokeTool(tc, "set_volume", { level: tc.args.level, mute: tc.args.mute });
+    }
+    if (tc.name === "set_reminder") {
+      const minutes = Number(tc.args.minutes) || 1;
+      const message = String(tc.args.message || "时间到了");
+      const ms = Math.max(5000, Math.min(86400000, minutes * 60000));
+      setTimeout(() => {
+        toast(`提醒：${message}`, "info");
+      }, ms);
+      history.push({ role: "tool", tool_call_id: tc.id, content: `已设定 ${minutes} 分钟后提醒：${message}` });
+    }
+    if (tc.name === "get_weather") {
+      await invokeTool(tc, "get_weather");
+    }
+    if (tc.name === "schedule_shutdown") {
+      await invokeTool(tc, "schedule_shutdown", { minutes: Number(tc.args.minutes) || 60 });
+    }
+    if (tc.name === "cancel_shutdown") {
+      await invokeTool(tc, "cancel_shutdown");
+    }
+    if (tc.name === "search_web") {
+      const query = String(tc.args.query || "");
+      const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+      try {
+        await invoke("open_url", { url });
+        history.push({ role: "tool", tool_call_id: tc.id, content: `已打开浏览器搜索：${query}` });
+      } catch (e) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: `打开失败：${e}` });
+      }
     }
   }
 }
