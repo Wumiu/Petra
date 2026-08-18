@@ -308,6 +308,7 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
     // 便携运行（exe 旁 resources/）与安装版布局可能不同，依次尝试候选路径
     let mut tried: Vec<String> = Vec::new();
     for rel in [
+        format!("_up_/public/models/{file}"),
         format!("resources/models/{file}"),
         format!("models/{file}"),
         format!("{file}"),
