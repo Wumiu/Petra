@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Petra",
-        "width": 300,
-        "height": 300,
+        "width": 700,
+        "height": 700,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -24,6 +24,19 @@
         "shadow": false,
         "dragDropEnabled": true,
         "center": true
+      },
+      {
+        "label": "input-overlay",
+        "width": 300,
+        "height": 300,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "url": "input.html"
       }
     ],
     "security": {

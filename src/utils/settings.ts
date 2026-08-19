@@ -3,6 +3,13 @@ const KEY = "live2d-pet-settings";
 export type ActivityLevel = "low" | "mid" | "high";
 export type AssistantProvider = "deepseek" | "custom";
 
+export interface BoundsPadding {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
@@ -17,6 +24,10 @@ export interface Settings {
   mouseTrack: boolean;
   idleMode: boolean;
   modelScale: number;
+  /** 每个模型单独记录的大小（key = 模型名，用户调整过才记录） */
+  modelScales: Record<string, number>;
+  boundsPadding: BoundsPadding;
+  passthrough: boolean;
   assistant: AssistantSettings;
 }
 
@@ -26,6 +37,9 @@ const DEFAULTS: Settings = {
   mouseTrack: false,
   idleMode: false,
   modelScale: 1,
+  modelScales: {},
+  boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
+  passthrough: false,
   assistant: {
     enabled: false,
     provider: "deepseek",

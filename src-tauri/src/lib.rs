@@ -21,12 +21,29 @@ pub struct PetMotion {
     pub target: std::sync::Mutex<Option<(f64, f64, f64)>>,
 }
 
+/// 菜单/面板打开状态（watcher 据此强制不穿透，菜单期间鼠标移出绿框也能操作）
+pub struct MenuOpen {
+    pub active: std::sync::atomic::AtomicBool,
+}
+
+/// 输入模式：输入框交互时临时取消穿透（watcher 检查此状态）
+pub struct InputMode {
+    pub active: std::sync::atomic::AtomicBool,
+}
+
+/// 交互状态：左键摸了桌宠后进入"不穿透"交互模式（watcher 暂停自动穿透，保证菜单/面板可点）
+pub struct Interacting {
+    pub active: std::sync::atomic::AtomicBool,
+}
+
 /// 拖动状态：开始后由 8ms 线程直接 GetCursorPos 跟随（零每帧 IPC）。
 /// locked_y 为待机边缘滑动：y 锁定在该值（物理），只随鼠标水平移动。
 pub struct DragState {
     pub active: std::sync::atomic::AtomicBool,
     pub offset: std::sync::Mutex<(i32, i32)>,
     pub locked_y: std::sync::Mutex<Option<i32>>,
+    /// 模型边界（窗口内像素）：拖拽时用于计算窗口硬边界
+    pub model_bounds: std::sync::Mutex<(i32, i32, i32, i32)>, // (left, top, right, bottom)
 }
 
 #[derive(Serialize, Clone)]
@@ -251,6 +268,34 @@ fn read_psd(app: AppHandle, name: String) -> Result<Vec<u8>, String> {
     std::fs::read(dir.join(&file_name)).map_err(|e| e.to_string())
 }
 
+/// 读取内置模型 manifest.json（多路径尝试，适配便携版和安装版）
+#[tauri::command]
+fn read_model_manifest(app: AppHandle) -> Result<String, String> {
+    // 候选路径：资源目录 + exe 同级目录（覆盖便携/安装/NSIS 场景）
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(base) = app.path().resource_dir() {
+        candidates.push(base.join("_up_/public/models/manifest.json"));
+        candidates.push(base.join("models/manifest.json"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("_up_/public/models/manifest.json"));
+            candidates.push(dir.join("models/manifest.json"));
+            candidates.push(dir.join("resources/models/manifest.json"));
+        }
+    }
+    for p in &candidates {
+        if p.exists() {
+            log_line(&format!("read_model_manifest: {}", p.display()));
+            return std::fs::read_to_string(p).map_err(|e| e.to_string());
+        }
+    }
+    Err(format!(
+        "manifest.json 未找到，尝试: {}",
+        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("; ")
+    ))
+}
+
 /// 列出数据目录中已导入的 PSD 模型文件名（模型设置面板用）。
 #[tauri::command]
 fn list_models(app: AppHandle) -> Vec<String> {
@@ -300,6 +345,13 @@ fn delete_model_file(models_dir: &std::path::Path, name: &str) -> Result<(), Str
     Ok(())
 }
 
+/// 读取内置 PSD 模型字节（通过 model_resource_path 找到文件后直接 read，不走 asset protocol）
+#[tauri::command]
+fn read_builtin_psd(app: AppHandle, name: String) -> Result<Vec<u8>, String> {
+    let path = model_resource_path(app, name)?;
+    std::fs::read(&path).map_err(|e| format!("读取 PSD 失败: {e}"))
+}
+
 /// 返回内置 PSD 模型在资源目录的绝对路径（供前端 convertFileSrc 读取）。
 /// 内置模型作为 bundle.resources 打包为真实文件，不走二进制嵌入（嵌入对大文件有限制）。
 #[tauri::command]
@@ -308,31 +360,36 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
     if !file.to_lowercase().ends_with(".psd") {
         return Err("只支持 PSD 模型".into());
     }
-    // 便携运行（exe 旁 resources/）与安装版布局可能不同，依次尝试候选路径
+    // 多路径尝试：资源目录 + exe 同级（跟 read_model_manifest 逻辑一致）
     let mut tried: Vec<String> = Vec::new();
-    for rel in [
-        format!("_up_/public/models/{file}"),
-        format!("resources/models/{file}"),
-        format!("models/{file}"),
-        format!("{file}"),
-    ] {
-        if let Ok(p) = app.path().resolve(&rel, tauri::path::BaseDirectory::Resource) {
-            let exists = p.exists();
-            tried.push(format!("{rel} -> {} (exists={})", p.display(), exists));
-            if exists {
-                log_line(&format!("model_resource_path: {file} -> {} (candidate: {rel})", p.display()));
-                return Ok(p.to_string_lossy().to_string());
+    let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if let Ok(base) = app.path().resource_dir() {
+        for rel in [format!("resources/models/{file}"), format!("models/{file}"), format!("{file}")] {
+            paths.push((rel.clone(), base.join(&rel)));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for rel in [
+                format!("_up_/public/models/{file}"),
+                format!("models/{file}"),
+                format!("resources/models/{file}"),
+                format!("{file}"),
+            ] {
+                paths.push((rel.clone(), dir.join(&rel)));
             }
         }
     }
-    // 失败时给出明确提示：可能是 Tauri 资源目录结构变更或资源文件缺失
-    log_line(&format!(
-        "model_resource_path: {file} 未找到，尝试的候选路径: {}",
-        tried.join("; ")
-    ));
-    Err(format!(
-        "模型资源不存在: {file}（可能资源目录结构变更，请检查安装完整性）"
-    ))
+    for (rel, p) in &paths {
+        let exists = p.exists();
+        tried.push(format!("{rel} -> {} (exists={})", p.display(), exists));
+        if exists {
+            log_line(&format!("model_resource_path: {file} -> {}", p.display()));
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    log_line(&format!("model_resource_path: {file} 未找到，尝试: {}", tried.join("; ")));
+    Err(format!("模型资源不存在: {file}"))
 }
 
 /// 删除已导入模型（模型设置面板「删除」按钮调用）。
@@ -370,6 +427,12 @@ fn set_pet_target(state: State<'_, PetMotion>, x: f64, y: f64) {
 #[tauri::command]
 fn set_pet_target_speed(state: State<'_, PetMotion>, x: f64, y: f64, speed: f64) {
     *state.target.lock().unwrap() = Some((x, y, speed.max(100.0)));
+}
+
+/// 更新拖拽时的模型边界（前端每帧调用，用于拖拽时夹紧窗口不让模型出屏）
+#[tauri::command]
+fn set_model_bounds(state: State<'_, DragState>, left: i32, top: i32, right: i32, bottom: i32) {
+    *state.model_bounds.lock().unwrap() = (left, top, right, bottom);
 }
 
 /// 拖动开始：记录抓取偏移（鼠标 - 窗口左上角），进入跟随模式。
@@ -422,7 +485,9 @@ fn spawn_drag_follower(app: AppHandle) {
         };
         let off = *drag.offset.lock().unwrap();
         let locked = *drag.locked_y.lock().unwrap();
-        screen::drag_follow(&win, off.0, off.1, locked);
+        let bounds = *drag.model_bounds.lock().unwrap();
+        let scale = get_window_scale_factor(&app);
+        screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
     });
 }
 
@@ -752,6 +817,45 @@ public class Vol {{ [DllImport("winmm.dll")] public static extern int waveOutSet
 }
 
 /// 获取当前天气信息（调用 wttr.in 纯文本接口，无需 API Key）。
+/// 发送 Windows 托盘通知（用 NotifyIcon 气泡，不依赖 WinRT AUMID）
+#[tauri::command]
+fn send_notification(title: String, body: String) {
+    // 自定义美化弹窗（Windows Forms）：浅粉圆角、标题+内容、6 秒自动关闭
+    // 不用系统 Toast（请勿打扰模式会屏蔽），不受打扰设置影响
+    let script = format!(
+        r#"Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;
+        $form = New-Object System.Windows.Forms.Form;
+        $form.Text = 'Petra'; $form.FormBorderStyle = 'None';
+        $form.BackColor = [System.Drawing.Color]::FromArgb(255,245,248);
+        $form.Size = New-Object System.Drawing.Size(340,120);
+        $form.StartPosition = 'CenterScreen'; $form.TopMost = $true;
+        $t = New-Object System.Windows.Forms.Label;
+        $t.Text = '{}';
+        $t.Font = New-Object System.Drawing.Font('Microsoft YaHei',11,[System.Drawing.FontStyle]::Bold);
+        $t.ForeColor = [System.Drawing.Color]::FromArgb(208,106,154);
+        $t.AutoSize = $true; $t.Location = New-Object System.Drawing.Point(22,12);
+        $form.Controls.Add($t);
+        $c = New-Object System.Windows.Forms.Label;
+        $c.Text = '{}';
+        $c.Font = New-Object System.Drawing.Font('Microsoft YaHei',12);
+        $c.ForeColor = [System.Drawing.Color]::FromArgb(90,60,90);
+        $c.AutoSize = $true; $c.Location = New-Object System.Drawing.Point(22,40);
+        $form.Controls.Add($c);
+        $tm = New-Object System.Windows.Forms.Timer; $tm.Interval = 6000;
+        $tm.Add_Tick({{ $form.Close() }}); $tm.Start();
+        $form.ShowDialog()"#,
+        title.replace('\'', "''"),
+        body.replace('\'', "''")
+    );
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    crate::log_line(&format!("send_notification: {title} | {body}"));
+}
+
 #[tauri::command]
 fn get_weather() -> Result<String, String> {
     use std::io::Read;
@@ -1025,14 +1129,149 @@ fn toggle_window(app: &AppHandle) {
 
 /// 每 16ms 轮询光标位置，光标进入窗口矩形时取消点击穿透（可交互），
 /// 离开时恢复 WS_EX_TRANSPARENT。16ms 保证拖文件划过窗口时及时响应。
+fn get_window_scale_factor(app: &AppHandle) -> f64 {
+    app.get_webview_window("main")
+        .and_then(|w| w.scale_factor().ok())
+        .unwrap_or(1.0)
+}
+
+/// 双窗口方案：主窗口永远穿透（点击穿到桌面），
+/// 鼠标事件由 input-overlay 覆盖窗口捕获后转发（input_event 命令）。
+/// 这样绿框外穿透到桌面 + 模型/菜单可点击两全。
 fn spawn_clickthrough_watcher(app: AppHandle) {
     std::thread::spawn(move || loop {
         if let Some(win) = app.get_webview_window("main") {
-            screen::keep_clickthrough_synced(&win);
+            // 输入模式下不穿透（输入框/日历需要真实事件）；否则主窗口穿透
+            let input_mode = app.try_state::<InputMode>()
+                .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(false);
+            screen::set_ignore_cursor(&win, !input_mode);
+            // 菜单打开时：鼠标移出主窗口矩形 → 关闭菜单（点击窗口外/桌面）
+            let menu_open = app.try_state::<MenuOpen>()
+                .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
+                .unwrap_or(false);
+            if menu_open {
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                    let mut pt = windows::Win32::Foundation::POINT::default();
+                    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
+                    let outside = pt.x < pos.x || pt.x > pos.x + size.width as i32
+                        || pt.y < pos.y || pt.y > pos.y + size.height as i32;
+                    if outside {
+                        crate::log_line(&format!(
+                            "menu_hide: mouse outside win=({},{}){}x{} pt=({},{})",
+                            pos.x, pos.y, size.width, size.height, pt.x, pt.y
+                        ));
+                        let _ = win.eval("document.dispatchEvent(new CustomEvent('menu-hide-request'))");
+                    }
+                }
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(std::time::Duration::from_millis(150));
     });
 }
+
+/// 设置指定窗口的位置和大小（物理像素，input-overlay 跟随模型用）
+#[tauri::command]
+fn set_window_pos_size(app: AppHandle, label: String, x: i32, y: i32, width: u32, height: u32) {
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
+        let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(width, height)));
+    }
+}
+
+/// 显示指定窗口
+#[tauri::command]
+fn show_window_by_label(app: AppHandle, label: String) {
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+    }
+}
+
+/// 设置交互状态：左键摸了桌宠后进入"不穿透"交互模式（watcher 暂停自动穿透）。
+/// 设置菜单/面板打开状态（watcher 据此强制不穿透，菜单期间鼠标移出绿框也能操作）
+#[tauri::command]
+fn set_menu_open(app: AppHandle, open: bool) {
+    if let Some(m) = app.try_state::<MenuOpen>() {
+        m.active.store(open, std::sync::atomic::Ordering::SeqCst);
+    }
+    log_line(&format!("set_menu_open: open={open}"));
+}
+
+#[tauri::command]
+fn set_interacting(app: AppHandle, active: bool) {
+    if let Some(it) = app.try_state::<Interacting>() {
+        it.active.store(active, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        if active {
+            let _ = screen::set_ignore_cursor(&win, false);
+        } else {
+            // 交互结束：立即恢复穿透（watcher 按鼠标位置校正）
+            let _ = screen::set_ignore_cursor(&win, true);
+        }
+    }
+    log_line(&format!("set_interacting: active={active}"));
+}
+
+/// 原子设置交互+菜单状态（合并调用，避免 watcher 在两个 invoke 之间误开穿透）
+#[tauri::command]
+fn set_interaction_state(app: AppHandle, menu_open: bool, interacting: bool) {
+    if let Some(m) = app.try_state::<MenuOpen>() {
+        m.active.store(menu_open, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Some(it) = app.try_state::<Interacting>() {
+        it.active.store(interacting, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        if menu_open || interacting {
+            // 打开：立即关闭穿透（同步生效，菜单/面板可点）
+            let _ = screen::set_ignore_cursor(&win, false);
+        } else {
+            // 关闭：立即恢复穿透（不等 watcher；watcher 会按鼠标位置快速校正）
+            let _ = screen::set_ignore_cursor(&win, true);
+        }
+    }
+    log_line(&format!("set_interaction_state: menu_open={menu_open} interacting={interacting}"));
+}
+
+/// 输入模式：临时取消主窗口穿透 + 隐藏覆盖窗口（输入框/日历需要真实鼠标键盘事件）
+#[tauri::command]
+fn set_input_mode(app: AppHandle, mode: bool) {
+    if let Some(im) = app.try_state::<InputMode>() {
+        im.active.store(mode, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = screen::set_ignore_cursor(&win, !mode); // mode=true → 不穿透
+        if mode {
+            // 激活主窗口（输入框获得真实焦点/键盘）
+            let _ = win.set_focus();
+        }
+    }
+    if let Some(overlay) = app.get_webview_window("input-overlay") {
+        if mode {
+            let _ = overlay.hide();
+        } else {
+            let _ = overlay.show();
+        }
+    }
+    log_line(&format!("set_input_mode: {mode}"));
+}
+
+/// 转发输入事件（input-overlay 窗口捕获后通过 IPC 调用）
+#[tauri::command]
+fn input_event(app: AppHandle, r#type: String, x: f64, y: f64, button: Option<u8>, delta_y: Option<f64>, value: Option<String>) {
+    if let Some(win) = app.get_webview_window("main") {
+        let v = value.unwrap_or_default();
+        let js = format!(
+            "document.dispatchEvent(new CustomEvent('input-overlay', {{detail:{{type:\"{}\",x:{},y:{},button:{},deltaY:{},value:\"{}\"}}}}))",
+            r#type, x, y, button.unwrap_or(0), delta_y.unwrap_or(0.0),
+            v.replace('\"', "\\\"").replace('\n', "\\n")
+        );
+        let _ = win.eval(&js);
+    }
+}
+
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1056,12 +1295,23 @@ pub fn run() {
         .manage(PetMotion {
             target: std::sync::Mutex::new(None),
         })
+        .manage(Interacting {
+            active: std::sync::atomic::AtomicBool::new(false),
+        })
+        .manage(MenuOpen {
+            active: std::sync::atomic::AtomicBool::new(false),
+        })
+        .manage(InputMode {
+            active: std::sync::atomic::AtomicBool::new(false),
+        })
+        
         .manage(DragState {
             active: std::sync::atomic::AtomicBool::new(false),
             offset: std::sync::Mutex::new((0, 0)),
             locked_y: std::sync::Mutex::new(None),
+            model_bounds: std::sync::Mutex::new((0, 0, 700, 700)),
         })
-        .invoke_handler(tauri::generate_handler![
+.invoke_handler(tauri::generate_handler![
             trash_files,
             work_area_at,
             cursor_pos,
@@ -1074,6 +1324,8 @@ pub fn run() {
             save_psd,
             read_psd,
             list_models,
+            read_model_manifest,
+            read_builtin_psd,
             model_resource_path,
             delete_imported_model,
             set_audio_enabled,
@@ -1081,6 +1333,7 @@ pub fn run() {
             set_pet_target_speed,
             clear_pet_target,
             drag_start,
+            set_model_bounds,
             drag_end,
             set_window_size,
             run_shell,
@@ -1093,7 +1346,15 @@ pub fn run() {
             export_feedback,
             get_autostart,
             set_autostart,
+            input_event,
+            set_input_mode,
+            set_interacting,
+            set_menu_open,
+            set_interaction_state,
+            set_window_pos_size,
+            show_window_by_label,
             set_volume,
+            send_notification,
             get_weather,
             schedule_shutdown,
             cancel_shutdown,

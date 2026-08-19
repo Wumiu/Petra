@@ -195,12 +195,23 @@ function trimBubbles() {
   }
 }
 
-export function openAssistant() {
+export function openAssistant(modelRect?: { left: number; top: number; right: number; bottom: number }) {
   ensureInput();
   ensureBubbles();
   loadMemory();
   loadHistory();
   inputBar!.classList.remove("hidden");
+  void invoke("set_menu_open", { open: true }).catch(() => {});
+  // 定位到模型（绿框）底部，不依赖 DOM 元素
+  if (modelRect) {
+    inputBar!.style.left = `${Math.round(modelRect.left)}px`;
+    inputBar!.style.bottom = "auto";
+    inputBar!.style.top = `${Math.min(modelRect.bottom + 10, window.innerHeight - 60)}px`;
+  } else {
+    inputBar!.style.left = "";
+    inputBar!.style.bottom = "";
+    inputBar!.style.top = "";
+  }
   input.focus();
   resetTimer();
   lifecycleOnOpen?.();
@@ -209,6 +220,8 @@ export function openAssistant() {
 export function closeAssistant() {
   if (timer) clearTimeout(timer);
   inputBar?.classList.add("hidden");
+  void invoke("set_menu_open", { open: false }).catch(() => {});
+  void invoke("set_interacting", { active: false }).catch(() => {});
   lifecycleOnClose?.();
 }
 

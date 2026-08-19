@@ -1,0 +1,68 @@
+<!doctype html>
+<html style="background:transparent;overflow:hidden">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;background:transparent;cursor:default;overflow:hidden">
+<input id="proxy" style="position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;border:none;background:transparent" autocomplete="off">
+<script>
+// 禁用滚动条（覆盖窗口透明，滚动条会透出来）
+document.documentElement.style.overflow = 'hidden';
+document.body.style.overflow = 'hidden';
+// 输入代理：主窗口输入框通过这里接收键盘（穿透窗口无法获得键盘焦点）
+const proxy = document.getElementById('proxy');
+document.addEventListener('pointerdown', () => { proxy.focus(); });
+document.addEventListener('focus', () => { proxy.focus(); });
+proxy.addEventListener('input', () => {
+  window.__TAURI_INTERNALS__.invoke('input_event', { type: 'overlay-text', value: proxy.value });
+});
+// 点击窗口时确保代理获得焦点（键盘可用）
+window.addEventListener('mousedown', () => { proxy.focus(); });
+proxy.focus();
+// 转发所有指针事件到主窗口逻辑（通过 IPC）
+let pressed = false;
+let moved = false;
+document.addEventListener("pointerdown", (e) => {
+  if (e.button === 2) return; // 右键不拦截
+  pressed = true;
+  moved = false;
+  // 左键立即切换输入模式（主窗口获得焦点+覆盖窗口隐藏），不用等转发
+  if (e.button === 0) {
+    window.__TAURI_INTERNALS__.invoke("set_input_mode", { mode: true }).catch(() => {});
+  }
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "pointerdown", x: e.clientX, y: e.clientY, button: e.button });
+  e.preventDefault();
+});
+let lastMove = 0;
+document.addEventListener("pointermove", (e) => {
+  // 始终转发（hover 需要），节流到 ~60Hz
+  const now = Date.now();
+  if (now - lastMove < 16) return;
+  lastMove = now;
+  if (pressed) moved = true;
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "pointermove", x: e.clientX, y: e.clientY });
+});
+document.addEventListener("pointerup", (e) => {
+  if (e.button === 2) return;
+  pressed = false;
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "pointerup", x: e.clientX, y: e.clientY, button: e.button });
+  // 无移动 = 点击：额外合成 click（浏览器不会为合成事件生成 click）
+  if (!moved) {
+    window.__TAURI_INTERNALS__.invoke("input_event", { type: "click", x: e.clientX, y: e.clientY, button: e.button });
+  }
+  moved = false;
+  e.preventDefault();
+});
+document.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "contextmenu", x: e.clientX, y: e.clientY });
+});
+// 滚轮滚动转发（菜单/面板滚动条可用）
+document.addEventListener("wheel", (e) => {
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "wheel", x: e.clientX, y: e.clientY, deltaY: e.deltaY });
+});
+// 覆盖窗口失焦（点了主窗口外/桌面）→ 通知主窗口关闭菜单
+window.addEventListener("blur", () => {
+  window.__TAURI_INTERNALS__.invoke("input_event", { type: "menu-hide" });
+});
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@ interface XY {
   y: number;
 }
 
-const DEFAULT_WIN = 300;
+const DEFAULT_WIN = 700;
 const EDGE_PAD = 4; // 离屏幕边缘留 4px 间隙
 const POLL_CURSOR_MS = 60;
 const TARGET_INTERVAL = 100;
@@ -16,8 +16,8 @@ const CHASE_SPEED = 160;   // 逗猫棒追鼠标速度 px/s
 const FLEE_SPEED = 140;    // 逃跑速度 px/s
 const BOUNCE_DAMP = 0.55;  // 撞墙后速度衰减
 
-const EXPOSE_TOP = 150;    // 顶部待机露出 px（旋转后多露一点，到眼睛）
-const EXPOSE_BOTTOM = 95;  // 底部待机露出 px（少露一点，从肩头缩回）
+const EXPOSE_TOP = 340;    // 顶部待机：头朝下，多露一些看到头
+const EXPOSE_BOTTOM = 310; // 底部待机：只露一点点头
 
 // 活动频率三档显著区分（休息时长/长歇概率/移动半径/闲逛速度）
 interface ActivityParams {
@@ -63,6 +63,8 @@ export class BehaviorEngine {
   private lastPushSpeed = ACTIVITY_LEVELS.mid.speed;
   // 模型边缘露出：窗口可探出屏幕，模型自动偏移保持可见
   modelOffset: XY = { x: 0, y: 0 };
+  private charBoundsCache: { left: number; top: number; right: number; bottom: number } | null = null;
+  rawOffset: XY = { x: 0, y: 0 }; // 未平滑 offset（约束用）
   // 绿框在窗口内的位置（main.ts 每帧更新），用于约束 modelOffset
   lastBoundsOnScreen: { left: number; top: number; right: number; bottom: number } | null = null;
   // 窗口实际左上角（逻辑坐标，Rust cursor_pos 权威上报，供模型边缘补偿判断真实出屏量）
@@ -72,7 +74,7 @@ export class BehaviorEngine {
   private idleTop = false;
   private idlePos: XY = { x: 100, y: 100 };
   private scaleFactor = 1; // 物理↔逻辑（IPC 边界转换用）；引擎内部全逻辑坐标
-  private win = DEFAULT_WIN; // 当前窗口边长（模型缩放时窗口跟随，默认 300）
+  private win = DEFAULT_WIN; // 当前窗口边长（700x700）
 
   /** 是否待机 + 是否倒挂（顶部） */
   get isIdle(): boolean {
@@ -80,6 +82,14 @@ export class BehaviorEngine {
   }
   get isIdleTop(): boolean {
     return this.idleTop;
+  }
+  /** 窗口实际左上角（逻辑屏幕坐标，Rust cursor_pos 权威上报） */
+  get windowScreenPos(): XY {
+    return { ...this.windowPos };
+  }
+  /** 屏幕工作区（逻辑坐标，pollArea 更新） */
+  get workArea(): { left: number; top: number; width: number; height: number } | null {
+    return this.area ? { ...this.area } : null;
   }
   /** 待机定位目标（main 用 win.setPosition 移动，绕过 mover 的 clamp） */
   get idleTarget(): XY {
@@ -402,8 +412,8 @@ export class BehaviorEngine {
     this.vel = { x: velX, y: velY };
 
     // 边界约束：窗口可探出屏幕，模型偏移保持可见
-    this.constrainPosition();
 
+    this.constrainPosition();
     this.vx = Math.max(-1, Math.min(1, velX / 160));
     this.bob =
       Math.abs(this.vx) > 0.02 && now >= this.dwellUntil
@@ -419,28 +429,9 @@ export class BehaviorEngine {
   }
 
   /** 边界约束：漫游限屏内（窗口不自动探出；自由出屏仅靠用户拖拽 + modelOffset 补偿） */
-  private constrainPosition() {
-    if (!this.area) return;
-    const a = this.area;
-    const lo = a.left + EDGE_PAD;
-    const hi = a.left + a.width - this.win - EDGE_PAD;
-    const to = a.top + EDGE_PAD;
-    const bo = a.top + a.height - this.win - EDGE_PAD;
-    this.pos.x = clamp(this.pos.x, lo, hi);
-    this.pos.y = clamp(this.pos.y, to, bo);
-
-    // 速度反向（撞边界时减速，类似原 bounceCollide）
-    if (this.pos.x <= lo || this.pos.x >= hi) {
-      this.vel.x *= -BOUNCE_DAMP;
-    }
-    if (this.pos.y <= to || this.pos.y >= bo) {
-      this.vel.y *= -BOUNCE_DAMP;
-    }
-  }
 
   /** 模型偏移补偿：窗口出屏时，模型反向偏移保持角色不出屏（每帧调用） */
   syncModelOffset(bounds?: { left: number; top: number; right: number; bottom: number }) {
-    // 待机是故意出屏（沉到边缘露头顶/眼睛），不做补偿
     if (this.idle) {
       this.modelOffset.x = 0;
       this.modelOffset.y = 0;
@@ -449,45 +440,67 @@ export class BehaviorEngine {
     const a = this.area;
     if (!a) return;
     const b = bounds ?? { left: 0, top: 0, right: this.win, bottom: this.win };
+    this.charBoundsCache = b;
     const wx = this.windowPos.x;
     const wy = this.windowPos.y;
-    // 模型在屏幕上的位置 = 窗口位置 + 模型偏移 + 角色在窗口内的边界
+    // 计算目标偏移：模型越出屏幕就反向补偿
     const ml = wx + this.modelOffset.x + b.left;
     const mr = wx + this.modelOffset.x + b.right;
     const mt = wy + this.modelOffset.y + b.top;
     const mb = wy + this.modelOffset.y + b.bottom;
-    // 模型越出屏幕工作区 → 反向补偿
     let offX = this.modelOffset.x;
     let offY = this.modelOffset.y;
     if (ml < a.left) offX += a.left - ml;
     else if (mr > a.left + a.width) offX -= mr - (a.left + a.width);
     if (mt < a.top) offY += a.top - mt;
     else if (mb > a.top + a.height) offY -= mb - (a.top + a.height);
-    // 限制在窗口内可偏移范围（角色不能从窗口另一侧出去）
-    const loX = -b.left, hiX = this.win - b.right;
-    const loY = -b.top, hiY = this.win - b.bottom;
-    const prevX = offX, prevY = offY;
-    offX = clamp(offX, loX, hiX);
-    offY = clamp(offY, loY, hiY);
-    // offset 顶到极限 = 绿框到红框边界，窗口和 mover 全停下来，顶死
-    const hitEdgeX = offX !== prevX || Math.abs(offX - loX) < 1 || Math.abs(offX - hiX) < 1;
-    const hitEdgeY = offY !== prevY || Math.abs(offY - loY) < 1 || Math.abs(offY - hiY) < 1;
-    if (hitEdgeX || hitEdgeY) {
-      // 窗口位置硬钳：绿框顶死在屏幕边界上
-      if (wx + offX + b.left <= a.left) this.pos.x = a.left - offX - b.left;
-      if (wx + offX + b.right >= a.left + a.width) this.pos.x = a.left + a.width - offX - b.right;
-      if (wy + offY + b.top <= a.top) this.pos.y = a.top - offY - b.top;
-      if (wy + offY + b.bottom >= a.top + a.height) this.pos.y = a.top + a.height - offY - b.bottom;
-      // 停止 Rust mover，否则窗口还会被继续推动
-      this.clearTarget();
-    }
-    // 平滑过渡
+    // 限制在窗口内
+    offX = clamp(offX, -b.left, this.win - b.right);
+    offY = clamp(offY, -b.top, this.win - b.bottom);
+    // 保存原始 offset（约束/Rust 用），渲染用平滑后的 modelOffset
+    this.rawOffset.x = offX;
+    this.rawOffset.y = offY;
     this.modelOffset.x += (offX - this.modelOffset.x) * 0.3;
     this.modelOffset.y += (offY - this.modelOffset.y) * 0.3;
+  }
+
+  /** 硬边界约束：窗口不越过屏幕边缘（左/上给偏移量，不会提前卡住） */
+  constrainPosition() {
+    if (!this.area) return;
+    const a = this.area;
+    const b = this.charBoundsCache;
+    if (!b) return;
+    const sox = this.rawOffset.x;
+    const soy = this.rawOffset.y;
+    // 左/上边界给正向偏移（窗口能多探出去，补偿角色在窗口内偏左上）
+    const loX = a.left - sox - b.left;
+    const hiX = a.left + a.width - sox - b.right;
+    const loY = a.top - soy - b.top;
+    const hiY = a.top + a.height - soy - b.bottom;
+    if (this.pos.x < loX) { this.pos.x = loX; this.vel.x *= -BOUNCE_DAMP; }
+    if (this.pos.x > hiX) { this.pos.x = hiX; this.vel.x *= -BOUNCE_DAMP; }
+    if (this.pos.y < loY) { this.pos.y = loY; this.vel.y *= -BOUNCE_DAMP; }
+    if (this.pos.y > hiY) { this.pos.y = hiY; this.vel.y *= -BOUNCE_DAMP; }
   }
 
   /** 窗口边长（模型缩放时跟随更新） */
   setWindowSize(w: number) {
     this.win = Math.max(100, Math.round(w));
+  }
+
+  /** 返回模型边界对应的窗口硬边界（供拖拽时实时钳制） */
+  getModelScreenBounds(): { loX: number; hiX: number; loY: number; hiY: number } | null {
+    const a = this.area;
+    if (!a) return null;
+    const b = this.charBoundsCache;
+    if (!b) return null;
+    const ox = clamp(this.modelOffset.x, -b.left, this.win - b.right);
+    const oy = clamp(this.modelOffset.y, -b.top, this.win - b.bottom);
+    return {
+      loX: a.left - ox - b.left,
+      hiX: a.left + a.width - ox - b.right,
+      loY: a.top - oy - b.top,
+      hiY: a.top + a.height - oy - b.bottom,
+    };
   }
 }

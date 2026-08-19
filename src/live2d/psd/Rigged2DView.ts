@@ -339,15 +339,20 @@ export class Rigged2DView implements PetView {
     const cb = this.runtime.characterBounds;
     if (!cb) return null;
     const s = this.displayW / this.runtime.canvasWidth;
-    // canvas 居中偏移（CSS transform: translate(-50%, -50%) + left:50% top:50%）
-    // 窗口边长 = WIN (300)，canvas 内容实际显示宽高 = displayW
-    const offsetX = (300 - this.displayW) / 2;
-    const offsetY = (300 - this.displayW) / 2;
+    const offsetX = (700 - this.displayW) / 2;
+    const offsetY = (700 - this.displayW) / 2;
+    // 用户自定义边界微调（正 = 放大框，负 = 收紧框）
+    const pad = this.boundsPad;
     return {
-      left: offsetX + cb.left * s,
-      top: offsetY + cb.top * s,
-      right: offsetX + cb.right * s,
-      bottom: offsetY + cb.bottom * s,
+      left: offsetX + cb.left * s - pad.left,
+      top: offsetY + cb.top * s - pad.top,
+      right: offsetX + cb.right * s + pad.right,
+      bottom: offsetY + cb.bottom * s + pad.bottom,
     };
+  }
+
+  private boundsPad = { left: 0, right: 0, top: 0, bottom: 0 };
+  setBoundsPadding(p: { left: number; right: number; top: number; bottom: number }) {
+    this.boundsPad = p;
   }
 }

@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -18,8 +18,103 @@ import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
 import { listModels } from "./assistant/AssistantClient";
+import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
 
-const WIN = 300;
+// 禁用页面滚动（桌宠窗口内容不应滚动）
+document.documentElement.style.overflow = "hidden";
+document.body.style.overflow = "hidden";
+
+// 当前聚焦的主窗口输入框（输入代理/输入模式标记，模块级共享）
+let activeInput: HTMLInputElement | HTMLTextAreaElement | null = null;
+// 输入模式激活标志（Rust InputMode 的 JS 镜像，控制覆盖窗口显示）
+let inputModeActive = false;
+// 输入模式超时自动退出（防卡住，5秒无操作恢复穿透）
+let inputModeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 统一退出输入模式（恢复穿透 + 覆盖窗口） */
+function exitInputMode() {
+  if (!inputModeActive && !activeInput) return;
+  activeInput = null;
+  inputModeActive = false;
+  if (inputModeTimer) { clearTimeout(inputModeTimer); inputModeTimer = null; }
+  void invoke("set_input_mode", { mode: false }).catch(() => {});
+  void syncOverlayToUI();
+}
+
+const WIN = 700;
+
+// ---------- 陪伴时间 ----------
+const COMPANION_KEY = "petra-companion-start";
+const companionStart = (() => {
+  const saved = localStorage.getItem(COMPANION_KEY);
+  if (saved) return parseInt(saved, 10);
+  const now = Date.now();
+  localStorage.setItem(COMPANION_KEY, String(now));
+  return now;
+})();
+
+function formatDuration(ms: number): string {
+  const hours = Math.floor(ms / 3600000);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}天${hours % 24}小时`;
+  if (hours > 0) return `${hours}小时`;
+  return `${Math.floor(ms / 60000)}分钟`;
+}
+
+// ---------- 待办提醒：模型头顶大气泡 + 提示音 ----------
+/** 播放提示音（两个短哔声，Web Audio 生成） */
+function playReminderSound() {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new Ctx();
+    const t = ctx.currentTime;
+    for (let i = 0; i < 2; i++) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = i === 0 ? 880 : 660;
+      const gain = ctx.createGain();
+      const start = t + i * 0.25;
+      gain.gain.setValueAtTime(0.35, start);
+      gain.gain.exponentialRampToValueAtTime(0.01, start + 0.2);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.22);
+    }
+    setTimeout(() => ctx.close(), 1500);
+  } catch { /* 忽略 */ }
+}
+
+/** 模型头顶大 toast（2 秒消失） */
+function showBigReminder(text: string) {
+  const el = document.createElement("div");
+  el.className = "big-toast";
+  el.textContent = text;
+  document.body.appendChild(el);
+  // 定位：模型顶部上方居中
+  const mr = getModelRect();
+  el.style.left = `${Math.round(mr.left + mr.width / 2)}px`;
+  el.style.bottom = `${Math.round(window.innerHeight - mr.top + 14)}px`;
+  el.style.transform = "translateX(-50%)";
+  // 2 秒消失
+  setTimeout(() => {
+    el.classList.add("bye");
+    setTimeout(() => el.remove(), 300);
+  }, 2000);
+  playReminderSound();
+}
+
+// 待办到期 → 大气泡 + 提示音
+document.addEventListener("reminder-due", ((e: CustomEvent) => {
+  showBigReminder((e.detail as any).text ?? "提醒时间到！");
+}) as EventListener);
+
+// 主窗口失焦（点击窗口外/桌面）→ 退出输入模式（防止穿透卡住）
+window.addEventListener("blur", () => {
+  exitInputMode();
+});
+
+
 // 交互时间常量（ms）
 const PROACTIVE_GREET_INTERVAL = 20 * 60 * 1000; // 小助手主动问候间隔
 const DRAG_SUSPEND_MS = 30000; // 拖拽暂停自主漫游时长
@@ -66,6 +161,7 @@ let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
 let debugBorderVisible = false;
 // 调试模型边框（绿框勾勒角色边界，验证"模型不出屏"）
 let debugModelBoundsVisible = false;
+// 交互模式：左键摸头后进入"不穿透"，再次摸头恢复自动穿透
 // 当前实际模型来源（面板高亮用）
 let currentModel: { type: "import" | "manifest" | "live2d"; name?: string } = {
   type: "manifest",
@@ -79,17 +175,20 @@ function attachView(v: PetView) {
   v.attachTo(stage, app.app.stage);
 }
 
-/** 应用模型缩放：窗口保持 WIN x WIN 不变，仅缩放 canvas 内容 */
-async function applyModelScale(s: number) {
+/** 应用模型缩放：窗口固定 700x700，模型显示大小按基准 300px 缩放 */
+async function applyModelScale(s: number, record = false) {
   const clamped = clamp(s, 0.2, 2.0);
   settings.modelScale = clamped;
+  // 用户调整时按模型记录（切换模型时恢复各自大小）
+  if (record) {
+    const key = currentModel.name ?? "";
+    if (key) settings.modelScales[key] = clamped;
+  }
   saveSettings(settings);
-  const w = Math.round(WIN * clamped);
-  winSize = w;
-  // 窗口尺寸不跟随缩放（红框 = 窗口边界保持不动）
-  // 仅缩放 canvas 渲染内容（绿框 = 角色边界跟着变）
+  const modelW = Math.round(300 * clamped); // 模型视觉大小以 300 为基准
+  winSize = WIN; // 窗口始终 700x700
   engine.setWindowSize(WIN);
-  view.setScale(w);
+  view.setScale(modelW);
 }
 
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
@@ -132,6 +231,120 @@ function updateModelBounds(bounds?: { left: number; top: number; right: number; 
   engine.lastBoundsOnScreen = { left: l, top: t, right: l + w, bottom: t + h };
 }
 
+/** 检查鼠标事件是否在模型区域内（绿框内），不是则忽略 */
+function isInsideModel(e: { clientX: number; clientY: number }): boolean {
+  const r = getModelRect();
+  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+}
+
+/** 获取模型在窗口中的矩形（不依赖 DOM，始终可用） */
+function getModelRect(): { left: number; top: number; right: number; bottom: number; width: number; height: number } {
+  const cb = view.getCharacterBounds?.();
+  if (!cb) return { left: 200, top: 200, right: 500, bottom: 500, width: 300, height: 300 };
+  const ox = engine.modelOffset.x;
+  const oy = engine.modelOffset.y;
+  return {
+    left: ox + cb.left,
+    top: oy + cb.top,
+    right: ox + cb.right,
+    bottom: oy + cb.bottom,
+    width: cb.right - cb.left,
+    height: cb.bottom - cb.top,
+  };
+}
+
+/** 窗口在屏幕工作区内的可见区域（窗口本地坐标），供菜单/面板往屏幕内侧定位 */
+function getWindowVisibleRect(): { left: number; top: number; right: number; bottom: number } {
+  const a = engine.workArea;
+  const wx = engine.windowScreenPos.x;
+  const wy = engine.windowScreenPos.y;
+  if (!a) return { left: 0, top: 0, right: winSize, bottom: winSize };
+  return {
+    left: Math.max(0, a.left - wx),
+    top: Math.max(0, a.top - wy),
+    right: Math.min(winSize, a.left + a.width - wx),
+    bottom: Math.min(winSize, a.top + a.height - wy),
+  };
+}
+
+/** 将面板定位到模型旁边：往屏幕内侧（空间大的方向），不挡住模型、不出屏 */
+function positionPanelNearModel(panel: HTMLElement) {
+  const mr = getModelRect();
+  const vr = getWindowVisibleRect();
+  const pw = panel.offsetWidth || 230;
+  const ph = panel.offsetHeight || 200;
+
+  // 屏幕中心（逻辑坐标）
+  const a = engine.workArea;
+  const screenCx = a ? a.left + a.width / 2 : window.innerWidth / 2;
+  const screenCy = a ? a.top + a.height / 2 : window.innerHeight / 2;
+  // 窗口中心（屏幕坐标）
+  const winCx = engine.windowScreenPos.x + winSize / 2;
+  const winCy = engine.windowScreenPos.y + winSize / 2;
+  // 屏幕内侧：窗口在左半 → 往右；右半 → 往左；上半 → 往下；下半 → 往上
+  const preferRight = winCx <= screenCx;
+  const preferBottom = winCy <= screenCy;
+
+  // 候选位置按屏幕内侧优先排序
+  const candidates: { left: number; top: number }[] = [];
+  const hor = preferRight
+    ? [
+        { left: mr.right + 10, top: mr.top },
+        { left: mr.left - pw - 10, top: mr.top },
+      ]
+    : [
+        { left: mr.left - pw - 10, top: mr.top },
+        { left: mr.right + 10, top: mr.top },
+      ];
+  const ver = preferBottom
+    ? [
+        { left: mr.left + (mr.width - pw) / 2, top: mr.bottom + 10 },
+        { left: mr.left + (mr.width - pw) / 2, top: mr.top - ph - 10 },
+      ]
+    : [
+        { left: mr.left + (mr.width - pw) / 2, top: mr.top - ph - 10 },
+        { left: mr.left + (mr.width - pw) / 2, top: mr.bottom + 10 },
+      ];
+  candidates.push(...hor, ...ver);
+
+  // 选第一个完整落在可见区内的位置
+  for (const c of candidates) {
+    const l = Math.round(c.left);
+    const t = Math.round(c.top);
+    if (l >= vr.left && l + pw <= vr.right && t >= vr.top && t + ph <= vr.bottom) {
+      panel.style.left = `${l}px`;
+      panel.style.top = `${t}px`;
+      panel.style.bottom = "auto";
+      panel.style.transform = "none";
+      return;
+    }
+  }
+
+  // 兜底：clamp 到可见区
+  const left = Math.max(vr.left, Math.min(preferRight ? mr.right + 10 : mr.left - pw - 10, vr.right - pw));
+  const top = Math.max(vr.top, Math.min(preferBottom ? mr.bottom + 10 : mr.top - ph - 10, vr.bottom - ph));
+  panel.style.left = `${Math.round(left)}px`;
+  panel.style.top = `${Math.round(top)}px`;
+  panel.style.bottom = "auto";
+  panel.style.transform = "none";
+}
+
+/** 将通知定位到模型头顶（不挡住模型） */
+function positionAboveModel(el: HTMLElement) {
+  const mr = getModelRect();
+  el.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+  el.style.bottom = `${Math.round(window.innerHeight - mr.top + 10)}px`;
+  el.style.top = "auto";
+  el.style.transform = "translateX(-50%)";
+}
+
+/** 换模型后重置边界到默认（view 可能还没初始化，安全检查） */
+function resetBoundsOnModelSwitch() {
+  settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
+  saveSettings(settings);
+  if (view) (view as any).setBoundsPadding?.(settings.boundsPadding);
+}
+
 async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
   const v = await Rigged2DView.create(bytes);
   v.warnings.forEach((w) => toast(w, "warn"));
@@ -155,29 +368,19 @@ async function createView(): Promise<PetView> {
   }
   // 2) 打包的 PSD 模型（public/models/<file>）
   try {
-    const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json())
-      .catch((err) => { void invoke("debug_mark", { msg: `[diag] manifest fetch 抛错: ${err}` }).catch(() => {}); throw err; });
+    const m = await invoke<string>("read_model_manifest")
+      .then((s) => JSON.parse(s as string))
+      .catch(() => null);
     if (m?.type === "psd" && m.file) {
       // 默认模型：优先用用户上次选择的内置模型（须在 files 列表内）
       const saved = localStorage.getItem(BUILTIN_KEY);
       const file = saved && Array.isArray(m.files) && m.files.includes(saved) ? saved : m.file;
       try {
-        if (import.meta.env.DEV) {
-          // dev 模式：直接从 Vite 开发服务器 fetch（public/models/）
-          const res = await fetch(`/models/${file}`);
-          if (res.ok) {
-            currentModel = { type: "manifest", name: file };
-            return await makePsdView(new Uint8Array(await res.arrayBuffer()));
-          }
-        } else {
-          // release 模式：通过 model_resource_path 获取资源文件路径，用 asset protocol 读取
-          const path = await invoke<string>("model_resource_path", { name: file });
-          const res = await fetch(convertFileSrc(path));
-          if (res.ok) {
-            currentModel = { type: "manifest", name: file };
-            return await makePsdView(new Uint8Array(await res.arrayBuffer()));
-          }
-        }
+        // 统一走 Rust 命令读取（dev/release 都通过 exe/resource 目录找文件）
+        const bytes = await invoke<number[]>("read_builtin_psd", { name: file });
+        currentModel = { type: "manifest", name: file };
+        resetBoundsOnModelSwitch();
+        return await makePsdView(new Uint8Array(bytes));
       } catch (err) {
         console.error(`内置模型 ${file} 加载失败:`, err);
       }
@@ -213,6 +416,7 @@ async function importPsdBytes(name: string, bytes: Uint8Array) {
   try {
     const saved = await invoke<string>("save_psd", { name, bytes });
     localStorage.setItem(PSD_KEY, saved);
+    resetBoundsOnModelSwitch();
     await reloadView();
   } catch (err) {
     toast(`导入失败：${err}`, "warn");
@@ -232,12 +436,17 @@ async function importPsdFromPath(path: string) {
 async function mountView() {
   view = await createView();
   view.setSwayEnabled(settings.audioEnabled);
+  (view as any).setBoundsPadding?.(settings.boundsPadding);
   attachView(view);
 }
 
 async function reloadView() {
   view.unmount();
   await mountView();
+  // 切换模型：恢复该模型自己的大小（无记录用默认 100%）
+  const key = currentModel.name ?? "";
+  const scale = settings.modelScales[key] ?? 1;
+  void applyModelScale(scale, false);
 }
 
 async function boot() {
@@ -307,6 +516,176 @@ async function boot() {
     }
     await analyzer.ctx.resume().catch(() => {});
   };
+  // ========== 输入窗口（捕获模型区域输入） ==========
+  // 输入窗口通过 label 获取（用于后续定位）
+  // 覆盖窗口逻辑已移到模块顶层（双窗口方案）
+
+  // 转发输入事件监听
+  
+
+// slider 合成拖动状态（原生 range 不吃合成事件，手动驱动）
+let sliderDrag: HTMLInputElement | null = null;
+// 滚动条拖动状态（原生滚动条不吃合成事件，手动驱动 scrollTop/Left）
+let scrollDrag: { el: HTMLElement; axis: "x" | "y" } | null = null;
+
+/** 查找点击位置是否在滚动容器的滚动条区域 */
+function findScrollbarTarget(x: number, y: number): { el: HTMLElement; axis: "x" | "y" } | null {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return null;
+  let cur: HTMLElement | null = el as HTMLElement;
+  while (cur && cur !== document.body) {
+    const st = getComputedStyle(cur);
+    const r = cur.getBoundingClientRect();
+    // 垂直滚动条：右侧 16px 宽（容器可纵向滚动）
+    if (st.overflowY === "auto" && cur.scrollHeight > cur.clientHeight + 2) {
+      if (x > r.right - 16 && x <= r.right && y >= r.top && y <= r.bottom) {
+        return { el: cur, axis: "y" };
+      }
+    }
+    // 横向滚动条：底部 16px 高（容器可横向滚动）
+    if (st.overflowX === "auto" && cur.scrollWidth > cur.clientWidth + 2) {
+      if (y > r.bottom - 16 && y <= r.bottom && x >= r.left && x <= r.right) {
+        return { el: cur, axis: "x" };
+      }
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+/** 按鼠标位置更新滚动 */
+function updateScrollFromPos(t: { el: HTMLElement; axis: "x" | "y" }, x: number, y: number) {
+  const r = t.el.getBoundingClientRect();
+  if (t.axis === "y") {
+    const max = t.el.scrollHeight - t.el.clientHeight;
+    if (max <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (y - r.top) / r.height));
+    t.el.scrollTop = ratio * max;
+  } else {
+    const max = t.el.scrollWidth - t.el.clientWidth;
+    if (max <= 0) return;
+    const ratio = Math.min(1, Math.max(0, (x - r.left) / r.width));
+    t.el.scrollLeft = ratio * max;
+  }
+}
+
+function updateSliderFromX(el: HTMLInputElement, clientX: number) {
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const min = Number(el.min || 0);
+  const max = Number(el.max || 100);
+  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const val = Math.round(min + ratio * (max - min));
+  el.value = String(val);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+document.addEventListener("input-overlay", ((e: CustomEvent) => {
+    const { type, x, y, button } = e.detail;
+    // 映射 input-overlay 局部坐标到主窗口坐标（覆盖窗口原点 + 局部坐标）
+    const wx = overlayOrigin.x + x;
+    const wy = overlayOrigin.y + y;
+    // 派发到坐标处的实际元素（e.target 正确 → 菜单项可被 contains 判定、click 冒泡到 row）
+    const target = document.elementFromPoint(wx, wy) ?? document.body;
+    // 点击输入框 → 进入输入模式（取消穿透+隐藏覆盖窗口+激活主窗口）
+    if (type === "pointerdown") {
+      const inp = target.closest?.("input, textarea") as HTMLInputElement | HTMLTextAreaElement | null;
+      if (inp) {
+        // 进入输入模式（取消穿透+隐藏覆盖窗口+激活主窗口）
+        activeInput = inp;
+        inputModeActive = true;
+        // 超时兜底：5秒无操作自动退出输入模式（防止穿透卡住）
+        if (inputModeTimer) clearTimeout(inputModeTimer);
+        inputModeTimer = setTimeout(() => { if (inputModeActive) exitInputMode(); }, 5000);
+        void invoke("set_input_mode", { mode: true }).then(() => {
+          try { inp.focus(); } catch { /* ignore */ }
+        }).catch(() => {});
+        inp.addEventListener("blur", () => {
+          if (activeInput === inp) exitInputMode();
+        }, { once: true });
+      } else if (inputModeActive) {
+        // 非输入框点击：退出输入模式（用 inputModeActive 判断，不依赖 activeInput）
+        exitInputMode();
+      }
+      // slider / 滚动条检测
+      const rng = target.closest?.("input[type=range]") as HTMLInputElement | null;
+      if (rng) {
+        sliderDrag = rng;
+        updateSliderFromX(rng, wx);
+      } else {
+        const st = findScrollbarTarget(wx, wy);
+        if (st) { scrollDrag = st; updateScrollFromPos(st, wx, wy); }
+      }
+    }
+    if (type === "pointermove") {
+      // 手动 hover 管理（合成事件不触发 CSS :hover），继续派发事件（拖拽/slider 需要）
+      document.querySelectorAll(".mi.hover").forEach((el) => el.classList.remove("hover"));
+      const mi = target.closest?.(".mi");
+      if (mi) mi.classList.add("hover");
+      // slider 拖动中：更新值
+      if (sliderDrag) {
+        updateSliderFromX(sliderDrag, wx);
+        return;
+      }
+      // 滚动条拖动中：更新滚动
+      if (scrollDrag) {
+        updateScrollFromPos(scrollDrag, wx, wy);
+        return;
+      }
+    }
+    if (type === "wheel") {
+      // 滚轮滚动：手动设置 scrollTop（合成 WheelEvent 不触发原生滚动）
+      const dy = (e.detail as any).deltaY || 0;
+      let cur: HTMLElement | null = target as HTMLElement;
+      while (cur && cur !== document.body) {
+        const st = getComputedStyle(cur);
+        if ((st.overflowY === "auto" || st.overflowY === "scroll") && cur.scrollHeight > cur.clientHeight) {
+          cur.scrollTop += dy;
+          return;
+        }
+        cur = cur.parentElement;
+      }
+      return;
+    }
+    if (type === "overlay-text") {
+      // 输入代理转发：更新主窗口聚焦的输入框
+      const v = (e.detail as any).value ?? "";
+      if (activeInput) {
+        activeInput.value = v;
+        activeInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      // 正在输入：重置超时（保持输入模式）
+      if (inputModeTimer) clearTimeout(inputModeTimer);
+      inputModeTimer = setTimeout(() => { if (inputModeActive) exitInputMode(); }, 5000);
+      return;
+    }
+    if (type === "menu-hide") {
+      // 点击主窗口外 → 关闭菜单
+      toast("menu-hide 触发"); // 诊断
+      document.dispatchEvent(new CustomEvent("menu-hide-request"));
+      return;
+    }
+    if (type === "pointerup") {
+      sliderDrag = null;
+      scrollDrag = null;
+    }
+    if (type === "contextmenu") {
+      const ev = new MouseEvent("contextmenu", { clientX: wx, clientY: wy, bubbles: true, cancelable: true });
+      target.dispatchEvent(ev);
+    } else if (type === "click") {
+      // 合成的 click（覆盖窗口转发，浏览器不会自动生成）
+      const ev = new MouseEvent("click", { clientX: wx, clientY: wy, bubbles: true, cancelable: true });
+      target.dispatchEvent(ev);
+    } else {
+      const ev = new PointerEvent(type, { clientX: wx, clientY: wy, button: button || 0, bubbles: true, cancelable: true, pointerId: 1 });
+      target.dispatchEvent(ev);
+    }
+  }) as EventListener);
+
+  // 每秒同步覆盖窗口（自动盖住所有可见 UI：模型/菜单/面板）
+  setInterval(() => void syncOverlayToUI(), 1000);
+
   // 启动后自动检查一次更新（静默）
   setTimeout(() => void checkUpdate(false), UPDATE_CHECK_DELAY);
 
@@ -318,32 +697,44 @@ async function boot() {
 
   // ---------- 交互 ----------
   setupTrashDrop(() => view, win, (path) => void importPsdFromPath(path));
-  setupContextMenu(() => buildMenu(engine), onMenuOpen, () => {
-    // 待机时窗口部分在屏外，菜单限制在可见区
-    if (!settings.idleMode) return { top: 0, height: winSize };
-    if (engine.isIdleTop) return { top: 150, height: 150 }; // 顶部待机：可见窗口下部
-    return { top: 0, height: 95 }; // 底部待机：可见窗口上部
-  });
+  setupReminder();
+
+  setupContextMenu(
+    () => buildMenu(engine),
+    onMenuOpen,
+    () => getWindowVisibleRect(),
+    (x: number, y: number) => isInsideModel({ clientX: x, clientY: y }),
+    () => getModelRect(),
+  );
 
   // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应或打开小助手。
   // 非待机：拖动走 Rust 原生跟随线程（GetCursorPos → SetWindowPos，8ms，零每帧 IPC）。
   // 待机中：拖动沿边缘水平滑动（Rust 锁 y 跟随，只移动待机位置，不退出；退出仅靠右键菜单）。
+  let pendingPassthroughRestore: ReturnType<typeof setTimeout> | null = null;
+/** 当前是否有菜单/面板打开（由 set_menu_open 同步，watcher 据此强制不穿透） */
+let menuOpenState = false;
   let drag: { sx: number; sy: number; wx: number; wy: number; moved: boolean; mode: "idleSlide" | "free" } | null = null;
   let dragLastMove = 0;
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
     if (e.button !== 0) return;
-    // 动作试玩面板隐藏中：左键点击恢复面板，不触发拖拽/摸头
+    // 取消之前的穿透恢复（防止异步竞态）
+    if (pendingPassthroughRestore) { clearTimeout(pendingPassthroughRestore); pendingPassthroughRestore = null; }
+    // UI 元素优先响应（菜单/面板/toast 不受绿框限制）
+    if ((e.target as HTMLElement).closest?.("#menu, #toasts, .model-panel, .action-panel, #update-bubble, #as-inputbar, .rm-modal")) return;
+    // 绿框外区域不响应（穿透到下层）
+    if (!isInsideModel(e)) return;
+    // 只有真正点中模型区域才临时不穿透（interacting 由 endDrag 恢复）
+    void invoke("set_interacting", { active: true }).catch(() => {});
     if (actionDebugHidden) {
       actionDebugHidden = false;
       const panel = document.getElementById("action-debug") as HTMLElement | null;
       panel?.classList.remove("hidden");
       return;
     }
-    if ((e.target as HTMLElement).closest?.("#menu, #toasts, #assistant-panel")) return;
     const p = engine.position;
     drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
-    engine.suspend(DRAG_SUSPEND_MS); // 先停自主漫游，拖动结束再恢复
+    engine.suspend(DRAG_SUSPEND_MS);
   });
   document.addEventListener("pointermove", (e) => {
     if (!drag) return;
@@ -353,9 +744,8 @@ async function boot() {
     if (!drag.moved) {
       drag.moved = true;
       if (settings.idleMode) {
-        // 待机中：沿边缘水平滑动（Rust 锁 y 跟随，8ms 原生流畅）
+        // 待机中：直接定位窗口（不用 Rust drag follower，避免边界夹紧干扰待机位置）
         drag.mode = "idleSlide";
-        void invoke("drag_start", { lockedY: Math.round(engine.idleTarget.y * scaleFactor) });
       } else {
         drag.mode = "free";
         // 一次性启动 Rust 原生拖动（此后窗口由 8ms 线程直接跟随鼠标）
@@ -366,26 +756,63 @@ async function boot() {
     if (now - dragLastMove < 16) return;
     dragLastMove = now;
     if (drag.mode === "idleSlide") {
-      // 本地同步：x 跟随鼠标，y 锁待机边缘（窗口由 Rust 线程跟随）
-      const edgeY = engine.idleTarget.y;
+      // 待机滑动：只允许水平移动，Y 锁死在待机边缘，直接设置窗口位置
+      const edgePhys = Math.round(engine.idleTarget.y * scaleFactor);
       const nx = Math.max(4, Math.min(screen.availWidth - winSize - 4, Math.round(drag.wx + dx)));
-      engine.setPos(nx, edgeY);
+      void invoke("set_window_pos_size", { label: "main", x: Math.round(nx * scaleFactor), y: edgePhys, width: winSize * scaleFactor, height: winSize * scaleFactor });
+      engine.setPos(nx, engine.idleTarget.y);
     } else {
-      // 本地位置同步（逻辑坐标：CSS 增量即逻辑增量；窗口实际由 Rust 线程跟随）
-      engine.setPos(Math.round(drag.wx + dx), Math.round(drag.wy + dy));
+      let nx = Math.round(drag.wx + dx);
+      let ny = Math.round(drag.wy + dy);
+      // 先设位置，再算 offset，再约束（同一帧内完成，不留时序差）
+      engine.setPos(nx, ny);
+      const cb = view.getCharacterBounds?.() ?? null;
+      engine.syncModelOffset(cb ?? undefined);
+      engine.constrainPosition();
+      // 实时发送模型边界（含 offset）给 Rust drag_follow，8ms 原生夹紧
+      {
+        const ox = engine.rawOffset.x;
+        const oy = engine.rawOffset.y;
+        const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
+        const b = cb ?? fallback;
+        const s = scaleFactor || 1;
+        void invoke("set_model_bounds", {
+          left: Math.round((ox + b.left) * s),
+          top: Math.round((oy + b.top) * s),
+          right: Math.round((ox + b.right) * s),
+          bottom: Math.round((oy + b.bottom) * s),
+        });
+      }
     }
   });
   const endDrag = () => {
     if (!drag) return;
     const clicked = !drag.moved;
-    if (drag.moved) void invoke("drag_end");
+    if (drag.moved && drag.mode !== "idleSlide") void invoke("drag_end");
     drag = null;
+    // 恢复穿透（交互结束，延迟 500ms，但菜单/面板打开时不恢复）
+    if (pendingPassthroughRestore) clearTimeout(pendingPassthroughRestore);
+    pendingPassthroughRestore = setTimeout(() => {
+      // 只在菜单/面板/信息版都不打开时恢复穿透
+      const uiOpen = (document.querySelector("#menu:not(.hidden)") !== null) ||
+        (document.querySelector(".model-panel:not(.hidden)") !== null) ||
+        (document.querySelector("#action-debug:not(.hidden)") !== null) ||
+        (document.querySelector("#bounds-panel:not(.hidden)") !== null) ||
+        (document.querySelector("#size-panel:not(.hidden)") !== null) ||
+        (document.querySelector("#assistant-settings:not(.hidden)") !== null) ||
+        (document.querySelector("#as-inputbar:not(.hidden)") !== null) ||
+        (document.querySelector("#info-panel:not(.hidden)") !== null);
+      if (!uiOpen) {
+        void invoke("set_interacting", { active: false }).catch(() => {});
+      }
+      pendingPassthroughRestore = null;
+    }, 500);
     if (clicked) {
-      // 小助手开启时轻点打开对话框，否则摸头
       if (settings.assistant.enabled) {
-        openAssistant();
+        openAssistant(getModelRect());
       } else {
         view.playClick();
+        showInfoPanel(); // 展示信息板（5秒后自动消失）
       }
     }
     engine.suspend(1500); // 拖完原地歇一会再乱逛
@@ -412,9 +839,25 @@ async function boot() {
 
     analyzer.tick();
 
-    engine.update(now, dt);
+    // syncModelOffset 先于 update（constrainPosition 在 update 内，需要最新 offset）
     const cb = view.getCharacterBounds?.() ?? null;
     engine.syncModelOffset(cb ?? undefined);
+    engine.update(now, dt);
+    // 每帧同步模型边界给 Rust（click-through 判定必须每帧有值）
+    {
+      const ox = engine.rawOffset.x;
+      const oy = engine.rawOffset.y;
+      // 有 characterBounds → 精确边界；无 → 窗口中心 300x300 作为 fallback
+      const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
+      const b = cb ?? fallback;
+      const s = scaleFactor || 1;
+      void invoke("set_model_bounds", {
+        left: Math.round((ox + b.left) * s),
+        top: Math.round((oy + b.top) * s),
+        right: Math.round((ox + b.right) * s),
+        bottom: Math.round((oy + b.bottom) * s),
+      });
+    }
     updateModelBounds(cb);
     driver.bass = analyzer.bass;
     driver.mid = analyzer.mid;
@@ -435,6 +878,22 @@ async function boot() {
     driver.pressed = !!drag;
     driver.modelOffsetX = engine.modelOffset.x;
     driver.modelOffsetY = engine.modelOffset.y;
+    // 通知区域跟随模型位置（绿框下方）
+    const mr = getModelRect();
+    const toasts = document.getElementById("toasts");
+    if (toasts && toasts.children.length > 0) {
+      toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+      toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
+      toasts.style.transform = "translateX(-50%)";
+    }
+    const bubbles = document.getElementById("as-bubbles");
+    if (bubbles && bubbles.children.length > 0) {
+      bubbles.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+      bubbles.style.top = `${Math.round(mr.top - bubbles.offsetHeight - 12)}px`;
+      bubbles.style.bottom = "auto";
+      bubbles.style.transform = "translateX(-50%)";
+    }
+
     // 调试日志仅 dev 构建输出
     if (import.meta.env.DEV && Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
       console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
@@ -469,7 +928,109 @@ function onMenuOpen() {
   void invoke<boolean>("get_autostart").then((v) => {
     autostartCache = v;
   });
+  // 双窗口方案：菜单在主窗口显示，扩大覆盖窗口盖住模型+菜单，让菜单可点击
+  void expandOverlayForMenu();
 }
+
+// ========== 输入覆盖窗口（双窗口方案） ==========
+// 覆盖窗口原点（覆盖窗口左上角 → 主窗口窗口内坐标），事件坐标换算用
+let overlayOrigin = { x: 0, y: 0 };
+
+/** 设置覆盖窗口位置/尺寸（物理屏幕坐标），并记录其对应的主窗口内坐标原点 */
+async function setOverlayRect(originX: number, originY: number, physX: number, physY: number, physW: number, physH: number) {
+  overlayOrigin = { x: originX, y: originY };
+  console.log("[overlay] set rect origin=(" + originX + "," + originY + ") phys=(" + physX + "," + physY + "," + physW + "x" + physH + ")");
+  await invoke("set_window_pos_size", { label: "input-overlay", x: Math.round(physX), y: Math.round(physY), width: Math.round(physW), height: Math.round(physH) }).catch(() => {});
+  await invoke("show_window_by_label", { label: "input-overlay" }).catch(() => {});
+}
+
+/** 覆盖窗口同步：统一走 syncOverlayToUI（自动盖住所有可见 UI） */
+async function updateInputOverlay() {
+  await syncOverlayToUI();
+}
+
+/** 自动同步覆盖窗口：收集所有可见 UI（菜单/面板/信息版/模态框）+ 模型，合并盖住 */
+async function syncOverlayToUI() {
+  // 输入模式下：覆盖窗口保持隐藏（否则重新盖住主窗口，输入中断）
+  if (inputModeActive) return;
+  const scale = scaleFactor || 1;
+  // 模型矩形（窗口内坐标，getModelRect 有 fallback）
+  const mr = getModelRect();
+  const rects: { left: number; top: number; right: number; bottom: number }[] = [mr];
+  // 收集所有可见 UI 的矩形
+  let menuVisible = false;
+  for (const sel of ["#menu", ".model-panel", "#info-panel", ".rm-modal", "#as-inputbar", "#update-bubble", "#assistant-settings", "#action-debug", "#bounds-panel", "#size-panel"]) {
+    document.querySelectorAll(sel).forEach((el) => {
+      if (!(el as HTMLElement).classList.contains("hidden")) {
+        if (sel === "#menu") menuVisible = true;
+        const r = (el as HTMLElement).getBoundingClientRect();
+        rects.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+      }
+    });
+  }
+  let left = Math.min(...rects.map((r) => r.left));
+  let top = Math.min(...rects.map((r) => r.top));
+  let right = Math.max(...rects.map((r) => r.right));
+  let bottom = Math.max(...rects.map((r) => r.bottom));
+  // 菜单打开时覆盖整个窗口 → 点任意处都能关闭菜单
+  if (menuVisible) {
+    left = 0; top = 0; right = WIN; bottom = WIN;
+  }
+  console.log("[overlay] rects:", rects.length, "l/t/r/b:", left, top, right, bottom, "menuVisible:", menuVisible, "inputMode:", inputModeActive);
+  const w = getCurrentWindow();
+  const winPos = await w.outerPosition().catch(() => ({ x: 0, y: 0 }));
+  await setOverlayRect(
+    Math.round(left), Math.round(top),
+    winPos.x + Math.round(left * scale),
+    winPos.y + Math.round(top * scale),
+    Math.round((right - left) * scale),
+    Math.round((bottom - top) * scale)
+  );
+}
+
+// 监听 UI 可见性变化（hidden class 增删），自动同步覆盖窗口
+new MutationObserver(() => {
+  void syncOverlayToUI();
+}).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
+
+/** 扩大覆盖窗口盖住 模型+菜单 区域（菜单打开时） */
+async function expandOverlayForMenu() {
+  const cb = view?.getCharacterBounds?.();
+  console.log("[overlay] expand called, cb=", !!cb);
+  if (!cb) { toast("覆盖窗口: cb 为空"); return; }
+  const scale = scaleFactor || 1;
+  const menuEl = document.getElementById("menu");
+  const mr = getModelRect();
+  console.log("[overlay] menu hidden=", menuEl?.classList.contains("hidden"), "menu rect=", JSON.stringify(menuEl?.getBoundingClientRect()));
+  if (!menuEl || menuEl.classList.contains("hidden")) { toast("覆盖窗口: 菜单不可见"); return; }
+  // 菜单矩形（viewport 坐标 = 窗口内 CSS 坐标）
+  let menuRect = null;
+  if (menuEl && !menuEl.classList.contains("hidden")) {
+    const r = menuEl.getBoundingClientRect();
+    menuRect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  }
+  // 合并 模型+菜单 的包围盒
+  const left = Math.min(mr.left, menuRect?.left ?? mr.left);
+  const top = Math.min(mr.top, menuRect?.top ?? mr.top);
+  const right = Math.max(mr.right, menuRect?.right ?? mr.right);
+  const bottom = Math.max(mr.bottom, menuRect?.bottom ?? mr.bottom);
+  const w = getCurrentWindow();
+  const winPos = await w.outerPosition().catch(() => ({ x: 0, y: 0 }));
+  const pw = Math.round((right - left) * scale);
+  const ph = Math.round((bottom - top) * scale);
+  await setOverlayRect(
+    Math.round(left), Math.round(top),
+    winPos.x + Math.round(left * scale),
+    winPos.y + Math.round(top * scale),
+    pw, ph
+  );
+  console.log("[overlay] 菜单区域覆盖: " + pw + "x" + ph);
+}
+
+// 菜单关闭 → 重新同步覆盖窗口（盖住可能新打开的面板）
+document.addEventListener("menu-closed", () => {
+  void syncOverlayToUI();
+});
 
 function hiddenPsdInput(): HTMLInputElement {
   let input = document.getElementById("psd-input") as HTMLInputElement | null;
@@ -505,7 +1066,9 @@ async function toggleModelPanel() {
   // 内置模型列表（manifest 配置：files 列表，兼容单 file）
   let builtinNames: string[] = [];
   try {
-    const m = await fetch("/models/manifest.json", { cache: "no-store" }).then((r) => r.json());
+    const m = await invoke<string>("read_model_manifest")
+      .then((s) => JSON.parse(s as string))
+      .catch(() => null);
     if (m?.type === "psd" && Array.isArray(m.files) && m.files.length) builtinNames = m.files;
     else if (m?.type === "psd" && m.file) builtinNames = [m.file];
     else if (m?.active) builtinNames = [m.active];
@@ -607,7 +1170,10 @@ async function toggleModelPanel() {
     const backBtn = document.createElement("button");
     backBtn.className = "as-btn";
     backBtn.textContent = "返回";
-    backBtn.addEventListener("click", () => host.classList.add("hidden"));
+    backBtn.addEventListener("click", () => {
+      host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
+    });
     backRow.appendChild(backBtn);
     host.appendChild(backRow);
   };
@@ -715,73 +1281,113 @@ async function toggleModelPanel() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+    positionPanelNearModel(p);
+    // 强制完整显示：底部超出可见区则翻到模型上方
+    const pr = p.getBoundingClientRect();
+    const vr2 = getWindowVisibleRect();
+    if (pr.bottom > vr2.bottom || pr.top < vr2.top) {
+      const mr2 = getModelRect();
+      // 优先模型上方
+      let nt = mr2.top - pr.height - 10;
+      if (nt < vr2.top) nt = mr2.bottom + 10;
+      nt = Math.max(vr2.top + 4, Math.min(nt, vr2.bottom - pr.height - 4));
+      p.style.top = `${Math.round(nt)}px`;
+      p.style.left = `${Math.round(mr2.left + (mr2.width - pr.width) / 2)}px`;
+    }
   }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 function buildMenu(engine: BehaviorEngine) {
   return [
     {
-      id: "audio",
-      label: "跟随音乐（未完善）",
-      state: settings.audioEnabled ? "开" : "关",
-      onPick: () => toggleAudio(!settings.audioEnabled),
+      id: "model",
+      label: "模型",
+      submenu: [
+        {
+          id: "models",
+          label: "模型设置",
+          noPassthrough: true,
+          onPick: () => void toggleModelPanel(),
+        },
+        {
+          id: "size",
+          label: "模型大小",
+          noPassthrough: true,
+          onPick: () => void toggleSizePanel(),
+        },
+        {
+          id: "bounds",
+          label: "调整模型边界",
+          noPassthrough: true,
+          onPick: () => void toggleBoundsPanel(),
+        },
+        {
+          id: "border",
+          label: "显示边框",
+          state: debugBorderVisible ? "开" : "关",
+          onPick: () => toggleDebugBorder(),
+        },
+        {
+          id: "model-bounds-toggle",
+          label: "显示模型边框",
+          state: debugModelBoundsVisible ? "开" : "关",
+          onPick: () => toggleModelBounds(),
+        },
+      ],
     },
     {
-      id: "activity",
-      label: "活动频率",
-      state: ACTIVITY_LABEL[settings.activity],
-      onPick: () => {
-        const next: ActivityLevel = nextActivity(settings);
-        settings.activity = next;
-        saveSettings(settings);
-        engine.setActivityLevel(next);
-        toast(`活动频率：${ACTIVITY_LABEL[next]}`);
-      },
+      id: "interact",
+      label: "交互",
+      submenu: [
+        {
+          id: "audio",
+          label: "跟随音乐（未完善）",
+          state: settings.audioEnabled ? "开" : "关",
+          onPick: () => toggleAudio(!settings.audioEnabled),
+        },
+        {
+          id: "activity",
+          label: "活动频率",
+          state: ACTIVITY_LABEL[settings.activity],
+          onPick: () => {
+            const next: ActivityLevel = nextActivity(settings);
+            settings.activity = next;
+            saveSettings(settings);
+            engine.setActivityLevel(next);
+            toast(`活动频率：${ACTIVITY_LABEL[next]}`);
+          },
+        },
+        {
+          id: "idle",
+          label: "待机模式",
+          state: settings.idleMode ? "开" : "关",
+          onPick: () => void toggleIdle(),
+        },
+        {
+          id: "track",
+          label: "逗猫棒",
+          state: settings.mouseTrack ? "开" : "关",
+          onPick: () => {
+            settings.mouseTrack = !settings.mouseTrack;
+            saveSettings(settings);
+            engine.setTracking(settings.mouseTrack);
+            if (settings.mouseTrack && settings.activity === "low") {
+              toast("低活动频率下桌宠保持静止，逗猫棒不生效");
+            } else {
+              toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
+            }
+          },
+        },
+        {
+          id: "action-debug",
+          label: "动作试玩",
+          noPassthrough: true,
+          onPick: () => void toggleActionDebug(),
+        },
+      ],
     },
-    {
-      id: "track",
-      label: "逗猫棒",
-      state: settings.mouseTrack ? "开" : "关",
-      onPick: () => {
-        settings.mouseTrack = !settings.mouseTrack;
-        saveSettings(settings);
-        engine.setTracking(settings.mouseTrack);
-        if (settings.mouseTrack && settings.activity === "low") {
-          toast("低活动频率下桌宠保持静止，逗猫棒不生效");
-        } else {
-          toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
-        }
-      },
-    },
-    {
-      id: "idle",
-      label: "待机模式",
-      state: settings.idleMode ? "开" : "关",
-      onPick: () => void toggleIdle(),
-    },
-    {
-      id: "size",
-      label: "模型大小",
-      state: `${Math.round(settings.modelScale * 100)}%`,
-      onPick: () => void toggleSizePanel(),
-    },
-    {
-      id: "border",
-      label: "显示边框",
-      state: debugBorderVisible ? "开" : "关",
-      onPick: () => toggleDebugBorder(),
-    },
-    {
-      id: "model-bounds",
-      label: "显示模型边框",
-      state: debugModelBoundsVisible ? "开" : "关",
-      onPick: () => toggleModelBounds(),
-    },
-    {
-      id: "models",
-      label: "模型设置",
-      onPick: () => void toggleModelPanel(),
-    },
+
     {
       id: "assistant",
       label: "小助手模式",
@@ -790,21 +1396,22 @@ function buildMenu(engine: BehaviorEngine) {
         settings.assistant.enabled = !settings.assistant.enabled;
         saveSettings(settings);
         if (!settings.assistant.enabled) {
-          // 关闭时立即关闭对话框 + 清空气泡
           closeAssistant();
           clearBubbles();
         }
-        toast(settings.assistant.enabled ? "小助手已开启（点我对话）" : "小助手已关闭");
+        toast(settings.assistant.enabled ? "小助手已开启" : "小助手已关闭");
       },
     },
     {
       id: "assistant-settings",
       label: "小助手设置",
+      noPassthrough: true,
       onPick: () => void toggleAssistantSettings(),
     },
     {
       id: "feedback",
       label: "反馈",
+      noPassthrough: true,
       onPick: () => openFeedbackInput(),
     },
     {
@@ -817,7 +1424,7 @@ function buildMenu(engine: BehaviorEngine) {
       label: "隐藏",
       onPick: () => {
         void invoke("hide_pet");
-        toast("我去托盘待会儿 (托盘/Alt+P 唤我)");
+        toast("已隐藏（托盘/Alt+P唤出）");
       },
     },
     {
@@ -830,8 +1437,6 @@ function buildMenu(engine: BehaviorEngine) {
         if (ok) {
           autostartCache = next;
           toast(next ? "已开启开机自启" : "已关闭开机自启");
-        } else {
-          toast("自启设置失败", "warn");
         }
       },
     },
@@ -839,22 +1444,13 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "restart",
       label: "重启",
-      onPick: () => {
-        void invoke("restart_app");
-      },
-    },
-    {
-      id: "action-debug",
-      label: "动作试玩",
-      onPick: () => void toggleActionDebug(),
+      onPick: () => void invoke("restart_app"),
     },
     {
       id: "quit",
       label: "退出",
       danger: true,
-      onPick: () => {
-        void invoke("quit_app");
-      },
+      onPick: () => void invoke("quit_app"),
     },
   ];
 }
@@ -875,6 +1471,155 @@ async function toggleIdle() {
     void getCurrentWindow().setPosition(new LogicalPosition(t.x, t.y));
   }
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
+}
+
+
+// ---------- 信息板（桌宠伴侣信息） ----------
+let infoPanelEl: HTMLElement | null = null;
+let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
+let cachedWeather: { text: string; time: number } | null = null;
+
+async function showInfoPanel() {
+  // 信息版打开期间保持不穿透（按钮可点，绿框外的信息版区域）
+  void invoke("set_interacting", { active: true }).catch(() => {});
+  if (!infoPanelEl) {
+    infoPanelEl = document.createElement("div");
+    infoPanelEl.id = "info-panel";
+    infoPanelEl.className = "info-panel";
+    document.body.appendChild(infoPanelEl);
+  }
+  const el = infoPanelEl;
+
+  // 计算陪伴时间
+  const companionText = formatDuration(Date.now() - companionStart);
+
+  // 天气（缓存 10 分钟）
+  let weatherText = "获取中...";
+  if (cachedWeather && Date.now() - cachedWeather.time < 600000) {
+    weatherText = cachedWeather.text;
+  } else {
+    invoke<string>("get_weather")
+      .then((w) => {
+        weatherText = w || "暂无天气";
+        cachedWeather = { text: weatherText, time: Date.now() };
+        updateInfoPanelContent(el, companionText, weatherText);
+      })
+      .catch(() => {
+        weatherText = "天气获取失败";
+        updateInfoPanelContent(el, companionText, weatherText);
+      });
+  }
+
+  updateInfoPanelContent(el, companionText, weatherText);
+
+  // 先显示再测量实际高度（高度由内容决定，不能假设 200）
+  el.classList.remove("hidden");
+  const panelW = 270;
+  const panelH = el.offsetHeight || 200;
+
+  // 定位：模型在屏幕上半 → 信息版在下方（屏幕内侧），下半 → 上方
+  const mr = getModelRect();
+  const vr = getWindowVisibleRect();
+
+  // 水平居中对齐模型
+  let left = Math.round(mr.left + (mr.width - panelW) / 2);
+  // 模型中心（屏幕坐标）相对屏幕中心判断上下
+  const a = engine.workArea;
+  const screenCy = a ? a.top + a.height / 2 : window.innerHeight / 2;
+  const modelScreenCenterY = engine.windowScreenPos.y + mr.top + mr.height / 2;
+  let top: number;
+  if (modelScreenCenterY <= screenCy) {
+    // 模型在上半屏 → 信息版在下方
+    top = mr.bottom + 6;
+    // 下方放不下 → 翻转到上方紧贴
+    if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
+  } else {
+    // 模型在下半屏 → 信息版在上方
+    top = mr.top - panelH - 6;
+    // 上方放不下（被 clamp 会贴窗口顶产生大空隙）→ 翻转到下方紧贴
+    if (top < vr.top) top = mr.bottom + 6;
+  }
+
+  // 最终兜底（极窄场景）：clamp 到可见区域
+  if (left + panelW > vr.right) left = vr.right - panelW - 8;
+  if (left < vr.left) left = vr.left + 8;
+  if (top < vr.top) top = vr.top + 8;
+  if (top + panelH > vr.bottom) top = vr.bottom - panelH - 8;
+
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.round(top)}px`;
+  el.style.width = `${panelW}px`;
+  el.style.opacity = "1";
+  // 进入动画（从下方滑入）
+  el.style.transform = "translateY(12px)";
+  requestAnimationFrame(() => { el.style.transform = "translateY(0)"; });
+
+  // 5 秒自动消失（消失时恢复穿透）
+  if (infoPanelHideTimer) clearTimeout(infoPanelHideTimer);
+  infoPanelHideTimer = setTimeout(() => {
+    void invoke("set_interacting", { active: false }).catch(() => {});
+    if (el) {
+      el.style.opacity = "0";
+      el.style.transform = "translateY(8px)";
+      setTimeout(() => { if (el) el.classList.add("hidden"); }, 300);
+    }
+  }, 5000);
+}
+
+// 待办变化时刷新信息版（模态框添加后触发）
+document.addEventListener("reminders-changed", () => {
+  const el = document.getElementById("info-panel") as HTMLElement | null;
+  if (el && !el.classList.contains("hidden")) {
+    const c = formatDuration(Date.now() - companionStart);
+    const w = el.querySelector(".info-panel-weather")?.textContent?.replace("🌡 ", "") ?? "";
+    updateInfoPanelContent(el, c, w);
+  }
+});
+
+function updateInfoPanelContent(el: HTMLElement, companion: string, weather: string) {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
+  // 待办列表（前 3 条）
+  const reminders = getReminders().slice(0, 3);
+  const rmHtml = reminders.length > 0
+    ? `<div class="info-panel-reminders">
+        ${reminders.map((r) => `<div class="info-rm-row${r.done ? " done" : ""}">
+          <span class="info-rm-time">${fmtReminderTime(r.time)}</span>
+          <span class="info-rm-text">${escapeHtml(r.text)}</span>
+          <button class="info-rm-del" data-id="${r.id}">✕</button>
+        </div>`).join("")}
+      </div>`
+    : `<div class="info-panel-reminders empty">暂无待办</div>`;
+
+  el.innerHTML = `
+    <div class="info-panel-header">${dateStr}</div>
+    <div class="info-panel-weather">🌡 ${weather}</div>
+    <div class="info-panel-companion">💖 陪伴时间：${companion}</div>
+    <div class="info-panel-rm-title">待办事项 <button class="info-rm-add">＋ 添加</button></div>
+    ${rmHtml}
+  `;
+
+  // 添加按钮 → 弹出填写窗口
+  el.querySelector(".info-rm-add")?.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    openReminderModal();
+  });
+  // 删除按钮
+  el.querySelectorAll(".info-rm-del").forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      const id = Number((btn as HTMLElement).dataset.id);
+      removeReminder(id);
+      // 刷新信息版内容（重新拉一次天气/陪伴）
+      const c = formatDuration(Date.now() - companionStart);
+      const w = document.querySelector(".info-panel-weather")?.textContent?.replace("🌡 ", "") ?? "";
+      updateInfoPanelContent(el, c, w);
+    });
+  });
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 // ---------- 动作调试面板 ----------
@@ -900,6 +1645,7 @@ function toggleActionDebug() {
     backBtn.addEventListener("click", () => {
       view.stopAction();
       host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     head.append(title, backBtn);
     host.appendChild(head);
@@ -936,7 +1682,9 @@ function toggleActionDebug() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+      positionPanelNearModel(p);
   }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 /** 模型大小滑动条面板（20%~200%，拖动实时应用） */
@@ -961,7 +1709,10 @@ function toggleSizePanel() {
     const backBtn = document.createElement("button");
     backBtn.className = "as-btn";
     backBtn.textContent = "返回";
-    backBtn.addEventListener("click", () => host.classList.add("hidden"));
+    backBtn.addEventListener("click", () => {
+      host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
+    });
     head.append(title, val, backBtn);
     host.appendChild(head);
 
@@ -981,7 +1732,7 @@ function toggleSizePanel() {
       void applyModelScale(Number(slider.value) / 100);
     });
     slider.addEventListener("change", () => {
-      void applyModelScale(Number(slider.value) / 100);
+      void applyModelScale(Number(slider.value) / 100, true);
     });
     host.appendChild(slider);
   };
@@ -997,7 +1748,9 @@ function toggleSizePanel() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+    positionPanelNearModel(p);
   }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 // 诊断钩子（CDP 验证待机位置用）
@@ -1030,6 +1783,103 @@ window.__pet = {
     engine.setPos(x, y);
   },
 };
+
+// ---------- 调整模型边界面板 ----------
+function toggleBoundsPanel() {
+  const panel = document.getElementById("bounds-panel") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+  const render = (host: HTMLElement) => {
+    host.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "mp-title";
+    title.textContent = "调整模型边界";
+    host.appendChild(title);
+
+    const hint = document.createElement("div");
+    hint.className = "mp-hint";
+    hint.textContent = "微调绿框（角色边界）四边松紧，正=放大，负=收紧";
+    host.appendChild(hint);
+
+    const mkSlider = (label: string, key: keyof BoundsPadding) => {
+      // 紧凑布局：label + slider + value 一行（减少面板高度，避免滚动条）
+      const row = document.createElement("div");
+      row.className = "as-set-row";
+      const l = document.createElement("span");
+      l.className = "as-set-label";
+      l.textContent = label;
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = "-120";
+      slider.max = "120";
+      slider.step = "1";
+      slider.value = String(settings.boundsPadding[key]);
+      slider.className = "as-input";
+      slider.style.flex = "1";
+      slider.style.minWidth = "0";
+      const val = document.createElement("span");
+      val.className = "as-set-label";
+      val.style.minWidth = "38px";
+      val.style.textAlign = "right";
+      val.textContent = settings.boundsPadding[key] + "px";
+      slider.addEventListener("input", () => {
+        const v = parseInt(slider.value, 10);
+        settings.boundsPadding[key] = v;
+        val.textContent = v + "px";
+        saveSettings(settings);
+        (view as any).setBoundsPadding?.(settings.boundsPadding);
+      });
+      row.append(l, slider, val);
+      host.appendChild(row);
+    };
+    mkSlider("左", "left");
+    mkSlider("右", "right");
+    mkSlider("上", "top");
+    mkSlider("下", "bottom");
+
+    const btns = document.createElement("div");
+    btns.className = "as-set-btns";
+    const reset = document.createElement("button");
+    reset.className = "as-btn";
+    reset.textContent = "重置";
+    reset.addEventListener("click", () => {
+      settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
+      saveSettings(settings);
+      (view as any).setBoundsPadding?.(settings.boundsPadding);
+      host.classList.add("hidden");
+      toggleBoundsPanel();
+    });
+    const done = document.createElement("button");
+    done.className = "as-btn as-btn-primary";
+    done.textContent = "完成";
+    done.addEventListener("click", () => {
+      host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
+    });
+    btns.append(reset, done);
+    host.appendChild(btns);
+  };
+
+  if (panel) {
+    render(panel);
+    panel.classList.remove("hidden");
+  } else {
+    const p = document.createElement("div");
+    p.id = "bounds-panel";
+    p.className = "model-panel hidden";
+    p.addEventListener("pointerdown", (e) => e.stopPropagation());
+    render(p);
+    document.body.appendChild(p);
+    p.classList.remove("hidden");
+      positionPanelNearModel(p);
+  }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
+}
+
+// 导入 BoundsPadding 类型
+import type { BoundsPadding } from "./utils/settings";
 
 // ---------- 小助手设置面板 ----------
 async function toggleAssistantSettings() {
@@ -1177,6 +2027,7 @@ async function toggleAssistantSettings() {
     back.textContent = "返回";
     back.addEventListener("click", () => {
       host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
 
     const save = document.createElement("button");
@@ -1213,7 +2064,9 @@ async function toggleAssistantSettings() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+    positionPanelNearModel(p);
   }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 // ---------- 反馈面板 ----------
@@ -1244,7 +2097,10 @@ function openFeedbackInput() {
     const back = document.createElement("button");
     back.className = "as-btn";
     back.textContent = "返回";
-    back.addEventListener("click", () => host.classList.add("hidden"));
+    back.addEventListener("click", () => {
+      host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
+    });
     const send = document.createElement("button");
     send.className = "as-btn as-btn-primary";
     send.textContent = "发送";
@@ -1255,6 +2111,7 @@ function openFeedbackInput() {
         return;
       }
       host.classList.add("hidden");
+      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
       void doSendFeedback(t);
     });
     btns.append(back, send);
@@ -1272,7 +2129,9 @@ function openFeedbackInput() {
     render(p);
     document.body.appendChild(p);
     p.classList.remove("hidden");
+      positionPanelNearModel(p);
   }
+  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 async function doSendFeedback(message: string) {
