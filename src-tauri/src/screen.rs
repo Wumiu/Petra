@@ -2,20 +2,15 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tauri::Manager;
 use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW,
-    SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW,
-    SWP_NOZORDER, SWP_NOSIZE, WS_EX_TRANSPARENT,
+    GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowPos,
+    GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOZORDER,
+    SWP_NOSIZE, WS_EX_TRANSPARENT,
 };
 
 use crate::{CursorPos, WorkArea};
-
-use std::sync::atomic::{AtomicBool, Ordering};
-
-// 当前是否处于"忽略光标（穿透）"状态（用官方 set_ignore_cursor_events 维护，避免被 Tauri 覆盖）
-static IGNORE_CURSOR: AtomicBool = AtomicBool::new(false);
 
 fn hwnd_of(win: &tauri::WebviewWindow) -> Option<HWND> {
     let handle = win.window_handle().ok()?;
@@ -78,60 +73,39 @@ pub fn work_area_at(x: i32, y: i32) -> WorkArea {
     }
 }
 
-/// 统一设置穿透状态（维护 IGNORE_CURSOR 缓存，避免重复 IPC）。
+/// 唯一的 native 穿透写入口。
+/// 目标状态与真实 WS_EX_TRANSPARENT 一致时，不再调用任何写接口。
 pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
-    IGNORE_CURSOR.store(ignore, Ordering::SeqCst);
+    let Some(hwnd) = hwnd_of(win) else {
+        return;
+    };
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let transparent = style & (WS_EX_TRANSPARENT.0 as isize) != 0;
+    if transparent == ignore {
+        return;
+    }
+
     let _ = win.set_ignore_cursor_events(ignore);
     // 验证 WS_EX_TRANSPARENT 是否真正生效（WebView2 可能静默失败），不一致则重试
-    if let Some(hwnd) = hwnd_of(win) {
-        let mut verified = false;
-        for _ in 0..3 {
-            let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
-            let transparent = style & (WS_EX_TRANSPARENT.0 as isize) != 0;
-            if transparent == ignore {
-                verified = true;
-                break;
-            }
-            // 用 Tauri API 重试（内部会维护 tao flags）
-            let _ = win.set_ignore_cursor_events(ignore);
+    let mut verified = false;
+    for _ in 0..3 {
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        let transparent = style & (WS_EX_TRANSPARENT.0 as isize) != 0;
+        if transparent == ignore {
+            verified = true;
+            break;
         }
-        if !verified {
-            crate::log_line(&format!(
-                "ignore_cursor: {ignore} 设置后未生效！style={:#x}",
-                unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
-            ));
-        }
+        // 用 Tauri API 重试（内部会维护 tao flags）
+        let _ = win.set_ignore_cursor_events(ignore);
+    }
+    if !verified {
+        crate::log_line(&format!(
+            "ignore_cursor: {ignore} 设置后未生效！style={:#x}",
+            unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
+        ));
     }
 }
 
-/// 点击穿透已弃用（set_ignore_cursor_events 与 WebView 内事件处理不可兼得）。
-/// 此函数保留签名兼容性但不再切换穿透状态，模型外区域的"穿透"由 JS 层处理。
-pub fn keep_clickthrough_synced(win: &tauri::WebviewWindow, scale: f64, ext_bounds: Option<(i32, i32, i32, i32)>) {
-    // 用窗口物理坐标 + 模型边界判断光标是否在模型区域内
-    let Ok(win_pos) = win.outer_position() else { return; };
-    let wx_phys = win_pos.x;
-    let wy_phys = win_pos.y;
-    const WIN_LOGICAL: f64 = 700.0;
-    let win_phys = (WIN_LOGICAL * scale) as i32;
-    const MODEL_LOGICAL: f64 = 300.0;
-    let model_phys = (MODEL_LOGICAL * scale) as i32;
-
-    // JS 发来的是窗口内物理坐标（含偏移，未含窗口位置），加窗口位置转屏幕坐标
-    let (bl_abs, bt_abs, br_abs, bb_abs) = if let Some((bl, bt, br, bb)) = ext_bounds {
-        (wx_phys + bl, wy_phys + bt, wx_phys + br, wy_phys + bb)
-    } else {
-        let cx = wx_phys + win_phys / 2;
-        let cy = wy_phys + win_phys / 2;
-        (cx - model_phys / 2, cy - model_phys / 2, cx + model_phys / 2, cy + model_phys / 2)
-    };
-
-    let mut pt = windows::Win32::Foundation::POINT::default();
-    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
-    let inside = pt.x >= bl_abs && pt.x <= br_abs && pt.y >= bt_abs && pt.y <= bb_abs;
-    let should_ignore = !inside;
-    // 每次强制同步（WebView2 可能内部重置，16ms 循环纠正）
-    set_ignore_cursor(win, should_ignore);
-}
 pub fn move_window_toward(
     win: &tauri::WebviewWindow,
     tx: f64,
@@ -259,4 +233,18 @@ pub fn set_window_size(win: &tauri::WebviewWindow, width: i32, height: i32) {
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
     }
+}
+
+/// 当前光标在主窗口客户端区内的物理像素坐标。
+/// 前端 CSS logical rect 乘一次窗口 scale factor 后与这里处于同一坐标系。
+pub fn cursor_client_pos(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
+    let hwnd = hwnd_of(win)?;
+    let mut pt = POINT::default();
+    unsafe {
+        GetCursorPos(&mut pt).ok()?;
+        if !ScreenToClient(hwnd, &mut pt).as_bool() {
+            return None;
+        }
+    }
+    Some((pt.x, pt.y))
 }

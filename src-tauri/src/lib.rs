@@ -3,7 +3,7 @@ mod launch;
 mod screen;
 mod trash;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -21,18 +21,34 @@ pub struct PetMotion {
     pub target: std::sync::Mutex<Option<(f64, f64, f64)>>,
 }
 
-/// 菜单/面板打开状态（watcher 据此强制不穿透，菜单期间鼠标移出绿框也能操作）
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractiveRegion {
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub enabled: bool,
+}
+
+#[derive(Clone)]
+struct InteractionSnapshot {
+    regions: Vec<InteractiveRegion>,
+    initialized: bool,
+    last_update: Option<std::time::Instant>,
+}
+
+pub struct InteractionState {
+    snapshot: std::sync::Mutex<InteractionSnapshot>,
+    renderer_locked: std::sync::atomic::AtomicBool,
+}
+
+const INTERACTION_STATE_STALE_AFTER: std::time::Duration =
+    std::time::Duration::from_millis(2500);
+
+/// 右键菜单打开状态，仅用于光标离开主窗口时通知前端关闭菜单。
 pub struct MenuOpen {
-    pub active: std::sync::atomic::AtomicBool,
-}
-
-/// 输入模式：输入框交互时临时取消穿透（watcher 检查此状态）
-pub struct InputMode {
-    pub active: std::sync::atomic::AtomicBool,
-}
-
-/// 交互状态：左键摸了桌宠后进入"不穿透"交互模式（watcher 暂停自动穿透，保证菜单/面板可点）
-pub struct Interacting {
     pub active: std::sync::atomic::AtomicBool,
 }
 
@@ -181,6 +197,73 @@ fn work_area_at(x: i32, y: i32) -> WorkArea {
 #[tauri::command]
 fn cursor_pos(app: AppHandle) -> CursorPos {
     screen::cursor_pos(&app)
+}
+
+fn point_in_interactive_regions(x: i32, y: i32, regions: &[InteractiveRegion]) -> bool {
+    regions.iter().any(|region| {
+        if !region.enabled || region.width <= 0 || region.height <= 0 {
+            return false;
+        }
+        let left = i64::from(region.x);
+        let top = i64::from(region.y);
+        let right = left + i64::from(region.width);
+        let bottom = top + i64::from(region.height);
+        let px = i64::from(x);
+        let py = i64::from(y);
+        px >= left && px < right && py >= top && py < bottom
+    })
+}
+
+fn should_accept_input(
+    snapshot: &InteractionSnapshot,
+    renderer_locked: bool,
+    native_dragging: bool,
+    cursor: Option<(i32, i32)>,
+    now: std::time::Instant,
+) -> bool {
+    if !snapshot.initialized || renderer_locked || native_dragging {
+        return true;
+    }
+    let Some(last_update) = snapshot.last_update else {
+        return true;
+    };
+    if now.duration_since(last_update) > INTERACTION_STATE_STALE_AFTER {
+        return true;
+    }
+    let Some((x, y)) = cursor else {
+        return true;
+    };
+    point_in_interactive_regions(x, y, &snapshot.regions)
+}
+
+#[tauri::command]
+fn sync_interaction_regions(
+    state: State<'_, InteractionState>,
+    regions: Vec<InteractiveRegion>,
+) -> Result<(), String> {
+    if regions.len() > 128 {
+        return Err("交互区域数量超过上限".into());
+    }
+    for region in &regions {
+        if region.id.is_empty() || region.id.len() > 128 {
+            return Err("交互区域 id 无效".into());
+        }
+        if region.width <= 0 || region.height <= 0 {
+            return Err(format!("交互区域尺寸无效: {}", region.id));
+        }
+        if region.x.unsigned_abs() > 100_000
+            || region.y.unsigned_abs() > 100_000
+            || region.width > 100_000
+            || region.height > 100_000
+        {
+            return Err(format!("交互区域坐标超出范围: {}", region.id));
+        }
+    }
+    let mut snapshot = state.snapshot.lock().unwrap();
+    snapshot.regions = regions;
+    snapshot.initialized = true;
+    snapshot.last_update = Some(std::time::Instant::now());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1127,50 +1210,80 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-/// 每 16ms 轮询光标位置，光标进入窗口矩形时取消点击穿透（可交互），
-/// 离开时恢复 WS_EX_TRANSPARENT。16ms 保证拖文件划过窗口时及时响应。
 fn get_window_scale_factor(app: &AppHandle) -> f64 {
     app.get_webview_window("main")
         .and_then(|w| w.scale_factor().ok())
         .unwrap_or(1.0)
 }
 
-/// 双窗口方案：主窗口永远穿透（点击穿到桌面），
-/// 鼠标事件由 input-overlay 覆盖窗口捕获后转发（input_event 命令）。
-/// 这样绿框外穿透到桌面 + 模型/菜单可点击两全。
+/// 唯一的光标穿透决策线程。region 与光标均使用物理客户端坐标。
 fn spawn_clickthrough_watcher(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        if let Some(win) = app.get_webview_window("main") {
-            // 输入模式下不穿透（输入框/日历需要真实事件）；否则主窗口穿透
-            let input_mode = app.try_state::<InputMode>()
-                .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
-                .unwrap_or(false);
-            screen::set_ignore_cursor(&win, !input_mode);
-            // 菜单打开时：鼠标移出主窗口矩形 → 关闭菜单（点击窗口外/桌面）
-            let menu_open = app.try_state::<MenuOpen>()
-                .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
-                .unwrap_or(false);
-            if menu_open {
-                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
-                    let mut pt = windows::Win32::Foundation::POINT::default();
-                    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
-                    let outside = pt.x < pos.x || pt.x > pos.x + size.width as i32
-                        || pt.y < pos.y || pt.y > pos.y + size.height as i32;
-                    if outside {
-                        crate::log_line(&format!(
-                            "menu_hide: mouse outside win=({},{}){}x{} pt=({},{})",
-                            pos.x, pos.y, size.width, size.height, pt.x, pt.y
-                        ));
-                        let _ = win.eval("document.dispatchEvent(new CustomEvent('menu-hide-request'))");
+    std::thread::spawn(move || {
+        let mut menu_outside_notified = false;
+        loop {
+            if let Some(win) = app.get_webview_window("main") {
+                let cursor = screen::cursor_client_pos(&win);
+                let native_dragging = app
+                    .try_state::<DragState>()
+                    .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(false);
+                let (snapshot, renderer_locked) = app
+                    .try_state::<InteractionState>()
+                    .map(|state| {
+                        (
+                            state.snapshot.lock().unwrap().clone(),
+                            state
+                                .renderer_locked
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            InteractionSnapshot {
+                                regions: Vec::new(),
+                                initialized: false,
+                                last_update: None,
+                            },
+                            false,
+                        )
+                    });
+                let accepts_input = should_accept_input(
+                    &snapshot,
+                    renderer_locked,
+                    native_dragging,
+                    cursor,
+                    std::time::Instant::now(),
+                );
+                screen::set_ignore_cursor(&win, !accepts_input);
+
+                // 菜单打开后，光标离开整个主窗口时通知前端关闭菜单。
+                let menu_open = app
+                    .try_state::<MenuOpen>()
+                    .map(|s| s.active.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(false);
+                if menu_open {
+                    if let (Some((x, y)), Ok(size)) = (cursor, win.inner_size()) {
+                        let outside =
+                            x < 0 || y < 0 || x >= size.width as i32 || y >= size.height as i32;
+                        if outside && !menu_outside_notified {
+                            let _ = win.eval(
+                                "document.dispatchEvent(new CustomEvent('menu-hide-request'))",
+                            );
+                            menu_outside_notified = true;
+                        } else if !outside {
+                            menu_outside_notified = false;
+                        }
                     }
+                } else {
+                    menu_outside_notified = false;
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(16));
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
     });
 }
 
-/// 设置指定窗口的位置和大小（物理像素，input-overlay 跟随模型用）
+/// 设置指定窗口的位置和大小（物理像素，主窗口待机滑动使用）
 #[tauri::command]
 fn set_window_pos_size(app: AppHandle, label: String, x: i32, y: i32, width: u32, height: u32) {
     if let Some(win) = app.get_webview_window(&label) {
@@ -1179,16 +1292,7 @@ fn set_window_pos_size(app: AppHandle, label: String, x: i32, y: i32, width: u32
     }
 }
 
-/// 显示指定窗口
-#[tauri::command]
-fn show_window_by_label(app: AppHandle, label: String) {
-    if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.show();
-    }
-}
-
-/// 设置交互状态：左键摸了桌宠后进入"不穿透"交互模式（watcher 暂停自动穿透）。
-/// 设置菜单/面板打开状态（watcher 据此强制不穿透，菜单期间鼠标移出绿框也能操作）
+/// 菜单状态只用于生命周期通知，不直接修改窗口样式。
 #[tauri::command]
 fn set_menu_open(app: AppHandle, open: bool) {
     if let Some(m) = app.try_state::<MenuOpen>() {
@@ -1198,76 +1302,108 @@ fn set_menu_open(app: AppHandle, open: bool) {
 }
 
 #[tauri::command]
-fn set_interacting(app: AppHandle, active: bool) {
-    if let Some(it) = app.try_state::<Interacting>() {
-        it.active.store(active, std::sync::atomic::Ordering::SeqCst);
-    }
-    if let Some(win) = app.get_webview_window("main") {
-        if active {
-            let _ = screen::set_ignore_cursor(&win, false);
-        } else {
-            // 交互结束：立即恢复穿透（watcher 按鼠标位置校正）
-            let _ = screen::set_ignore_cursor(&win, true);
+fn set_interacting(state: State<'_, InteractionState>, active: bool) {
+    state
+        .renderer_locked
+        .store(active, std::sync::atomic::Ordering::SeqCst);
+    if active {
+        if let Ok(mut snapshot) = state.snapshot.lock() {
+            snapshot.last_update = Some(std::time::Instant::now());
         }
     }
     log_line(&format!("set_interacting: active={active}"));
 }
 
-/// 原子设置交互+菜单状态（合并调用，避免 watcher 在两个 invoke 之间误开穿透）
-#[tauri::command]
-fn set_interaction_state(app: AppHandle, menu_open: bool, interacting: bool) {
-    if let Some(m) = app.try_state::<MenuOpen>() {
-        m.active.store(menu_open, std::sync::atomic::Ordering::SeqCst);
-    }
-    if let Some(it) = app.try_state::<Interacting>() {
-        it.active.store(interacting, std::sync::atomic::Ordering::SeqCst);
-    }
-    if let Some(win) = app.get_webview_window("main") {
-        if menu_open || interacting {
-            // 打开：立即关闭穿透（同步生效，菜单/面板可点）
-            let _ = screen::set_ignore_cursor(&win, false);
-        } else {
-            // 关闭：立即恢复穿透（不等 watcher；watcher 会按鼠标位置快速校正）
-            let _ = screen::set_ignore_cursor(&win, true);
-        }
-    }
-    log_line(&format!("set_interaction_state: menu_open={menu_open} interacting={interacting}"));
-}
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
 
-/// 输入模式：临时取消主窗口穿透 + 隐藏覆盖窗口（输入框/日历需要真实鼠标键盘事件）
-#[tauri::command]
-fn set_input_mode(app: AppHandle, mode: bool) {
-    if let Some(im) = app.try_state::<InputMode>() {
-        im.active.store(mode, std::sync::atomic::Ordering::SeqCst);
-    }
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = screen::set_ignore_cursor(&win, !mode); // mode=true → 不穿透
-        if mode {
-            // 激活主窗口（输入框获得真实焦点/键盘）
-            let _ = win.set_focus();
+    fn region(id: &str, x: i32, y: i32, width: i32, height: i32) -> InteractiveRegion {
+        InteractiveRegion {
+            id: id.into(),
+            x,
+            y,
+            width,
+            height,
+            enabled: true,
         }
     }
-    if let Some(overlay) = app.get_webview_window("input-overlay") {
-        if mode {
-            let _ = overlay.hide();
-        } else {
-            let _ = overlay.show();
-        }
-    }
-    log_line(&format!("set_input_mode: {mode}"));
-}
 
-/// 转发输入事件（input-overlay 窗口捕获后通过 IPC 调用）
-#[tauri::command]
-fn input_event(app: AppHandle, r#type: String, x: f64, y: f64, button: Option<u8>, delta_y: Option<f64>, value: Option<String>) {
-    if let Some(win) = app.get_webview_window("main") {
-        let v = value.unwrap_or_default();
-        let js = format!(
-            "document.dispatchEvent(new CustomEvent('input-overlay', {{detail:{{type:\"{}\",x:{},y:{},button:{},deltaY:{},value:\"{}\"}}}}))",
-            r#type, x, y, button.unwrap_or(0), delta_y.unwrap_or(0.0),
-            v.replace('\"', "\\\"").replace('\n', "\\n")
+    fn fresh_snapshot(regions: Vec<InteractiveRegion>, now: std::time::Instant) -> InteractionSnapshot {
+        InteractionSnapshot {
+            regions,
+            initialized: true,
+            last_update: Some(now),
+        }
+    }
+
+    #[test]
+    fn point_in_rect_uses_half_open_edges() {
+        let regions = [region("pet", 100, 100, 100, 100)];
+        assert!(point_in_interactive_regions(100, 100, &regions));
+        assert!(point_in_interactive_regions(199, 199, &regions));
+        assert!(!point_in_interactive_regions(200, 150, &regions));
+        assert!(!point_in_interactive_regions(150, 200, &regions));
+    }
+
+    #[test]
+    fn multiple_regions_are_a_union_not_a_bounding_box() {
+        let regions = [
+            region("pet", 100, 100, 100, 100),
+            region("menu", 300, 100, 100, 100),
+        ];
+        assert!(point_in_interactive_regions(150, 150, &regions));
+        assert!(point_in_interactive_regions(350, 150, &regions));
+        assert!(!point_in_interactive_regions(250, 150, &regions));
+    }
+
+    #[test]
+    fn disabled_regions_are_ignored() {
+        let mut disabled = region("disabled", 10, 10, 50, 50);
+        disabled.enabled = false;
+        assert!(!point_in_interactive_regions(20, 20, &[disabled]));
+    }
+
+    #[test]
+    fn uninitialized_state_fails_open() {
+        let now = std::time::Instant::now();
+        let snapshot = InteractionSnapshot {
+            regions: Vec::new(),
+            initialized: false,
+            last_update: None,
+        };
+        assert!(should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+    }
+
+    #[test]
+    fn stale_state_fails_open() {
+        let now = std::time::Instant::now();
+        let snapshot = fresh_snapshot(
+            vec![region("pet", 100, 100, 100, 100)],
+            now - INTERACTION_STATE_STALE_AFTER - std::time::Duration::from_millis(1),
         );
-        let _ = win.eval(&js);
+        assert!(should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+    }
+
+    #[test]
+    fn renderer_lock_fails_open() {
+        let now = std::time::Instant::now();
+        let snapshot = fresh_snapshot(Vec::new(), now);
+        assert!(should_accept_input(&snapshot, true, false, Some((0, 0)), now));
+    }
+
+    #[test]
+    fn native_drag_fails_open() {
+        let now = std::time::Instant::now();
+        let snapshot = fresh_snapshot(Vec::new(), now);
+        assert!(should_accept_input(&snapshot, false, true, Some((0, 0)), now));
+    }
+
+    #[test]
+    fn cursor_read_failure_fails_open() {
+        let now = std::time::Instant::now();
+        let snapshot = fresh_snapshot(Vec::new(), now);
+        assert!(should_accept_input(&snapshot, false, false, None, now));
     }
 }
 
@@ -1295,14 +1431,16 @@ pub fn run() {
         .manage(PetMotion {
             target: std::sync::Mutex::new(None),
         })
-        .manage(Interacting {
-            active: std::sync::atomic::AtomicBool::new(false),
-        })
         .manage(MenuOpen {
             active: std::sync::atomic::AtomicBool::new(false),
         })
-        .manage(InputMode {
-            active: std::sync::atomic::AtomicBool::new(false),
+        .manage(InteractionState {
+            snapshot: std::sync::Mutex::new(InteractionSnapshot {
+                regions: Vec::new(),
+                initialized: false,
+                last_update: None,
+            }),
+            renderer_locked: std::sync::atomic::AtomicBool::new(false),
         })
         
         .manage(DragState {
@@ -1346,13 +1484,10 @@ pub fn run() {
             export_feedback,
             get_autostart,
             set_autostart,
-            input_event,
-            set_input_mode,
+            sync_interaction_regions,
             set_interacting,
             set_menu_open,
-            set_interaction_state,
             set_window_pos_size,
-            show_window_by_label,
             set_volume,
             send_notification,
             get_weather,

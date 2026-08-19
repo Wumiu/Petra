@@ -17,6 +17,8 @@ export class Live2DController implements PetView {
   private model: Live2DModel | null = null;
   private baseScale = 1;
   private displayW = 300;
+  private modelOffsetX = 0;
+  private modelOffsetY = 0;
   private swayEnabled = true;
   private gobble = 0;
   private click = 0;
@@ -97,7 +99,9 @@ export class Live2DController implements PetView {
     this.click = Math.max(0, this.click - dt * 6);
 
     // 模型边缘露出偏移
-    m.position.set(150 + (d.modelOffsetX || 0), 150 + (d.modelOffsetY || 0));
+    this.modelOffsetX = d.modelOffsetX || 0;
+    this.modelOffsetY = d.modelOffsetY || 0;
+    m.position.set(150 + this.modelOffsetX, 150 + this.modelOffsetY);
 
     // 移动时镜像翻转
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;
@@ -229,6 +233,19 @@ export class Live2DController implements PetView {
   setScale(displayW: number) {
     this.displayW = displayW;
     if (this.model) this.fit();
+  }
+
+  /** 标准 Live2D 在 700×700 Pixi stage 内的真实可见 bounds。 */
+  getCharacterBounds(): { left: number; top: number; right: number; bottom: number } | null {
+    const m = this.model;
+    if (!m || !m.parent) return null;
+    const bounds = m.getBounds();
+    const left = bounds.x - this.modelOffsetX;
+    const top = bounds.y - this.modelOffsetY;
+    const right = left + bounds.width;
+    const bottom = top + bounds.height;
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
+    return { left, top, right, bottom };
   }
 
   attachTo(_stage: HTMLElement, pixiStage: PIXI.Container) {

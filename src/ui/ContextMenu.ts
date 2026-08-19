@@ -1,12 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import { toast } from "./Toast";
 export interface MenuItemSpec {
   id: string;
   label?: string;
   state?: string;
   danger?: boolean;
   separator?: boolean;
-  noPassthrough?: boolean;  // 点击后不恢复穿透（适合打开面板的菜单项）
   submenu?: MenuItemSpec[];  // 子菜单
   onPick?: () => void;
 }
@@ -75,12 +73,7 @@ export function setupContextMenu(
           }
           sr.addEventListener("click", (ev) => {
             ev.stopPropagation();
-            if (!child.noPassthrough) hide();
-            else {
-              // 打开面板的项：只隐藏菜单，不恢复穿透（面板打开后保持 menu_open）
-              menu.classList.add("hidden");
-              visible = false;
-            }
+            hide("submenu-click");
             child.onPick?.();
           });
           sub.appendChild(sr);
@@ -110,12 +103,7 @@ export function setupContextMenu(
         document.addEventListener("click", closeAllSubs, { once: true });
       } else {
         row.addEventListener("click", () => {
-          if (!item.noPassthrough) hide("row-click");
-          else {
-            // 保持交互模式，只隐藏菜单不恢复穿透
-            menu.classList.add("hidden");
-            visible = false;
-          }
+          hide("row-click");
           item.onPick?.();
         });
       }
@@ -151,22 +139,15 @@ export function setupContextMenu(
     if (!visible) return;
     menu.classList.add("hidden");
     visible = false;
-    // 通知 main.ts 覆盖窗口缩回模型区域（多次通知确保覆盖窗口及时缩回）
+    // 通知 main.ts 立即移除 menuRect。
     document.dispatchEvent(new CustomEvent("menu-closed"));
-    void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
-    setTimeout(() => document.dispatchEvent(new CustomEvent("menu-closed")), 50);
+    void invoke("set_menu_open", { open: false }).catch(() => {});
   };
 
-  document.addEventListener("contextmenu", async (e) => {
+  document.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    toast("handler!"); // 诊断
-    if (isInsideModel && !isInsideModel(e.clientX, e.clientY)) { toast("rejected outside"); return; }
-    try {
-      await invoke("set_interaction_state", { menuOpen: true, interacting: true });
-      toast("menu_open OK");
-    } catch (err) {
-      toast("menu_open FAIL: " + err);
-    }
+    if (isInsideModel && !isInsideModel(e.clientX, e.clientY)) return;
+    void invoke("set_menu_open", { open: true }).catch(() => {});
     showAt(e.clientX, e.clientY);
   });
 
@@ -182,8 +163,8 @@ export function setupContextMenu(
   document.addEventListener("click", (e) => {
   });
 
-  // 覆盖窗口失焦 / watcher 检测鼠标移出 → 关闭菜单
+  // Native watcher 检测光标移出整个窗口后关闭菜单。
   document.addEventListener("menu-hide-request", () => {
-    if (visible) hide("overlay-blur");
+    if (visible) hide("cursor-outside");
   });
 }

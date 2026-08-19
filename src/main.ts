@@ -19,27 +19,16 @@ import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
 import { listModels } from "./assistant/AssistantClient";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
+import {
+  logicalRectToPhysicalRegion,
+  regionFingerprint,
+  type LogicalRect,
+  type PhysicalInteractiveRegion,
+} from "./input/regions";
 
 // 禁用页面滚动（桌宠窗口内容不应滚动）
 document.documentElement.style.overflow = "hidden";
 document.body.style.overflow = "hidden";
-
-// 当前聚焦的主窗口输入框（输入代理/输入模式标记，模块级共享）
-let activeInput: HTMLInputElement | HTMLTextAreaElement | null = null;
-// 输入模式激活标志（Rust InputMode 的 JS 镜像，控制覆盖窗口显示）
-let inputModeActive = false;
-// 输入模式超时自动退出（防卡住，5秒无操作恢复穿透）
-let inputModeTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** 统一退出输入模式（恢复穿透 + 覆盖窗口） */
-function exitInputMode() {
-  if (!inputModeActive && !activeInput) return;
-  activeInput = null;
-  inputModeActive = false;
-  if (inputModeTimer) { clearTimeout(inputModeTimer); inputModeTimer = null; }
-  void invoke("set_input_mode", { mode: false }).catch(() => {});
-  void syncOverlayToUI();
-}
 
 const WIN = 700;
 
@@ -108,12 +97,6 @@ function showBigReminder(text: string) {
 document.addEventListener("reminder-due", ((e: CustomEvent) => {
   showBigReminder((e.detail as any).text ?? "提醒时间到！");
 }) as EventListener);
-
-// 主窗口失焦（点击窗口外/桌面）→ 退出输入模式（防止穿透卡住）
-window.addEventListener("blur", () => {
-  exitInputMode();
-});
-
 
 // 交互时间常量（ms）
 const PROACTIVE_GREET_INTERVAL = 20 * 60 * 1000; // 小助手主动问候间隔
@@ -463,6 +446,12 @@ async function boot() {
 
   const win = getCurrentWindow();
   scaleFactor = await win.scaleFactor().catch(() => 1);
+  void win.onScaleChanged(({ payload }) => {
+    scaleFactor = payload.scaleFactor;
+    engine?.setScale(scaleFactor);
+    requestInteractionRegionSync(true);
+  });
+  window.addEventListener("resize", () => requestInteractionRegionSync(true));
   const pos = await currentLogicalPos(win);
 
   engine = new BehaviorEngine(pos);
@@ -471,16 +460,17 @@ async function boot() {
   engine.setTracking(settings.mouseTrack);
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
   void applyModelScale(settings.modelScale);
-  // 调试边框元素（红线勾勒窗口边界）
-  const border = document.createElement("div");
-  border.id = "debug-border";
-  border.className = "hidden";
-  document.body.appendChild(border);
-  // 调试模型边框元素（绿框勾勒角色边界）
-  const mb = document.createElement("div");
-  mb.id = "model-bounds";
-  mb.className = "hidden";
-  document.body.appendChild(mb);
+  if (import.meta.env.DEV) {
+    // 红框/绿框只在 dev 构建创建，release 不显示调试边界。
+    const border = document.createElement("div");
+    border.id = "debug-border";
+    border.className = "hidden";
+    document.body.appendChild(border);
+    const mb = document.createElement("div");
+    mb.id = "model-bounds";
+    mb.className = "hidden";
+    document.body.appendChild(mb);
+  }
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
     () => engine.suspend(3600_000),
@@ -516,176 +506,6 @@ async function boot() {
     }
     await analyzer.ctx.resume().catch(() => {});
   };
-  // ========== 输入窗口（捕获模型区域输入） ==========
-  // 输入窗口通过 label 获取（用于后续定位）
-  // 覆盖窗口逻辑已移到模块顶层（双窗口方案）
-
-  // 转发输入事件监听
-  
-
-// slider 合成拖动状态（原生 range 不吃合成事件，手动驱动）
-let sliderDrag: HTMLInputElement | null = null;
-// 滚动条拖动状态（原生滚动条不吃合成事件，手动驱动 scrollTop/Left）
-let scrollDrag: { el: HTMLElement; axis: "x" | "y" } | null = null;
-
-/** 查找点击位置是否在滚动容器的滚动条区域 */
-function findScrollbarTarget(x: number, y: number): { el: HTMLElement; axis: "x" | "y" } | null {
-  const el = document.elementFromPoint(x, y);
-  if (!el) return null;
-  let cur: HTMLElement | null = el as HTMLElement;
-  while (cur && cur !== document.body) {
-    const st = getComputedStyle(cur);
-    const r = cur.getBoundingClientRect();
-    // 垂直滚动条：右侧 16px 宽（容器可纵向滚动）
-    if (st.overflowY === "auto" && cur.scrollHeight > cur.clientHeight + 2) {
-      if (x > r.right - 16 && x <= r.right && y >= r.top && y <= r.bottom) {
-        return { el: cur, axis: "y" };
-      }
-    }
-    // 横向滚动条：底部 16px 高（容器可横向滚动）
-    if (st.overflowX === "auto" && cur.scrollWidth > cur.clientWidth + 2) {
-      if (y > r.bottom - 16 && y <= r.bottom && x >= r.left && x <= r.right) {
-        return { el: cur, axis: "x" };
-      }
-    }
-    cur = cur.parentElement;
-  }
-  return null;
-}
-
-/** 按鼠标位置更新滚动 */
-function updateScrollFromPos(t: { el: HTMLElement; axis: "x" | "y" }, x: number, y: number) {
-  const r = t.el.getBoundingClientRect();
-  if (t.axis === "y") {
-    const max = t.el.scrollHeight - t.el.clientHeight;
-    if (max <= 0) return;
-    const ratio = Math.min(1, Math.max(0, (y - r.top) / r.height));
-    t.el.scrollTop = ratio * max;
-  } else {
-    const max = t.el.scrollWidth - t.el.clientWidth;
-    if (max <= 0) return;
-    const ratio = Math.min(1, Math.max(0, (x - r.left) / r.width));
-    t.el.scrollLeft = ratio * max;
-  }
-}
-
-function updateSliderFromX(el: HTMLInputElement, clientX: number) {
-  const rect = el.getBoundingClientRect();
-  if (rect.width <= 0) return;
-  const min = Number(el.min || 0);
-  const max = Number(el.max || 100);
-  const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  const val = Math.round(min + ratio * (max - min));
-  el.value = String(val);
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
-document.addEventListener("input-overlay", ((e: CustomEvent) => {
-    const { type, x, y, button } = e.detail;
-    // 映射 input-overlay 局部坐标到主窗口坐标（覆盖窗口原点 + 局部坐标）
-    const wx = overlayOrigin.x + x;
-    const wy = overlayOrigin.y + y;
-    // 派发到坐标处的实际元素（e.target 正确 → 菜单项可被 contains 判定、click 冒泡到 row）
-    const target = document.elementFromPoint(wx, wy) ?? document.body;
-    // 点击输入框 → 进入输入模式（取消穿透+隐藏覆盖窗口+激活主窗口）
-    if (type === "pointerdown") {
-      const inp = target.closest?.("input, textarea") as HTMLInputElement | HTMLTextAreaElement | null;
-      if (inp) {
-        // 进入输入模式（取消穿透+隐藏覆盖窗口+激活主窗口）
-        activeInput = inp;
-        inputModeActive = true;
-        // 超时兜底：5秒无操作自动退出输入模式（防止穿透卡住）
-        if (inputModeTimer) clearTimeout(inputModeTimer);
-        inputModeTimer = setTimeout(() => { if (inputModeActive) exitInputMode(); }, 5000);
-        void invoke("set_input_mode", { mode: true }).then(() => {
-          try { inp.focus(); } catch { /* ignore */ }
-        }).catch(() => {});
-        inp.addEventListener("blur", () => {
-          if (activeInput === inp) exitInputMode();
-        }, { once: true });
-      } else if (inputModeActive) {
-        // 非输入框点击：退出输入模式（用 inputModeActive 判断，不依赖 activeInput）
-        exitInputMode();
-      }
-      // slider / 滚动条检测
-      const rng = target.closest?.("input[type=range]") as HTMLInputElement | null;
-      if (rng) {
-        sliderDrag = rng;
-        updateSliderFromX(rng, wx);
-      } else {
-        const st = findScrollbarTarget(wx, wy);
-        if (st) { scrollDrag = st; updateScrollFromPos(st, wx, wy); }
-      }
-    }
-    if (type === "pointermove") {
-      // 手动 hover 管理（合成事件不触发 CSS :hover），继续派发事件（拖拽/slider 需要）
-      document.querySelectorAll(".mi.hover").forEach((el) => el.classList.remove("hover"));
-      const mi = target.closest?.(".mi");
-      if (mi) mi.classList.add("hover");
-      // slider 拖动中：更新值
-      if (sliderDrag) {
-        updateSliderFromX(sliderDrag, wx);
-        return;
-      }
-      // 滚动条拖动中：更新滚动
-      if (scrollDrag) {
-        updateScrollFromPos(scrollDrag, wx, wy);
-        return;
-      }
-    }
-    if (type === "wheel") {
-      // 滚轮滚动：手动设置 scrollTop（合成 WheelEvent 不触发原生滚动）
-      const dy = (e.detail as any).deltaY || 0;
-      let cur: HTMLElement | null = target as HTMLElement;
-      while (cur && cur !== document.body) {
-        const st = getComputedStyle(cur);
-        if ((st.overflowY === "auto" || st.overflowY === "scroll") && cur.scrollHeight > cur.clientHeight) {
-          cur.scrollTop += dy;
-          return;
-        }
-        cur = cur.parentElement;
-      }
-      return;
-    }
-    if (type === "overlay-text") {
-      // 输入代理转发：更新主窗口聚焦的输入框
-      const v = (e.detail as any).value ?? "";
-      if (activeInput) {
-        activeInput.value = v;
-        activeInput.dispatchEvent(new Event("input", { bubbles: true }));
-      }
-      // 正在输入：重置超时（保持输入模式）
-      if (inputModeTimer) clearTimeout(inputModeTimer);
-      inputModeTimer = setTimeout(() => { if (inputModeActive) exitInputMode(); }, 5000);
-      return;
-    }
-    if (type === "menu-hide") {
-      // 点击主窗口外 → 关闭菜单
-      toast("menu-hide 触发"); // 诊断
-      document.dispatchEvent(new CustomEvent("menu-hide-request"));
-      return;
-    }
-    if (type === "pointerup") {
-      sliderDrag = null;
-      scrollDrag = null;
-    }
-    if (type === "contextmenu") {
-      const ev = new MouseEvent("contextmenu", { clientX: wx, clientY: wy, bubbles: true, cancelable: true });
-      target.dispatchEvent(ev);
-    } else if (type === "click") {
-      // 合成的 click（覆盖窗口转发，浏览器不会自动生成）
-      const ev = new MouseEvent("click", { clientX: wx, clientY: wy, bubbles: true, cancelable: true });
-      target.dispatchEvent(ev);
-    } else {
-      const ev = new PointerEvent(type, { clientX: wx, clientY: wy, button: button || 0, bubbles: true, cancelable: true, pointerId: 1 });
-      target.dispatchEvent(ev);
-    }
-  }) as EventListener);
-
-  // 每秒同步覆盖窗口（自动盖住所有可见 UI：模型/菜单/面板）
-  setInterval(() => void syncOverlayToUI(), 1000);
-
   // 启动后自动检查一次更新（静默）
   setTimeout(() => void checkUpdate(false), UPDATE_CHECK_DELAY);
 
@@ -706,32 +526,34 @@ document.addEventListener("input-overlay", ((e: CustomEvent) => {
     (x: number, y: number) => isInsideModel({ clientX: x, clientY: y }),
     () => getModelRect(),
   );
+  startInteractionRegionSync();
 
   // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应或打开小助手。
   // 非待机：拖动走 Rust 原生跟随线程（GetCursorPos → SetWindowPos，8ms，零每帧 IPC）。
   // 待机中：拖动沿边缘水平滑动（Rust 锁 y 跟随，只移动待机位置，不退出；退出仅靠右键菜单）。
-  let pendingPassthroughRestore: ReturnType<typeof setTimeout> | null = null;
-/** 当前是否有菜单/面板打开（由 set_menu_open 同步，watcher 据此强制不穿透） */
-let menuOpenState = false;
   let drag: { sx: number; sy: number; wx: number; wy: number; moved: boolean; mode: "idleSlide" | "free" } | null = null;
+  let nativeDragStart: Promise<unknown> | null = null;
+  let uiPointerLocked = false;
   let dragLastMove = 0;
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
     if (e.button !== 0) return;
-    // 取消之前的穿透恢复（防止异步竞态）
-    if (pendingPassthroughRestore) { clearTimeout(pendingPassthroughRestore); pendingPassthroughRestore = null; }
-    // UI 元素优先响应（菜单/面板/toast 不受绿框限制）
-    if ((e.target as HTMLElement).closest?.("#menu, #toasts, .model-panel, .action-panel, #update-bubble, #as-inputbar, .rm-modal")) return;
+    // UI 按压期间也临时锁定，保证 slider/scroll/pointer capture 越出 rect 后不中断。
+    if ((e.target as HTMLElement).closest?.("#menu, .model-panel, #info-panel, #update-bubble, #as-inputbar, #as-bubbles, .rm-modal-box, [data-petra-interactive]")) {
+      uiPointerLocked = true;
+      void invoke("set_interacting", { active: true }).catch(() => {});
+      return;
+    }
     // 绿框外区域不响应（穿透到下层）
     if (!isInsideModel(e)) return;
-    // 只有真正点中模型区域才临时不穿透（interacting 由 endDrag 恢复）
-    void invoke("set_interacting", { active: true }).catch(() => {});
     if (actionDebugHidden) {
       actionDebugHidden = false;
       const panel = document.getElementById("action-debug") as HTMLElement | null;
       panel?.classList.remove("hidden");
       return;
     }
+    // 按下宠物后锁住输入，直到 pointerup/cancel/blur；拖出原 petRect 也不会中断。
+    void invoke("set_interacting", { active: true }).catch(() => {});
     const p = engine.position;
     drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
     engine.suspend(DRAG_SUSPEND_MS);
@@ -749,7 +571,7 @@ let menuOpenState = false;
       } else {
         drag.mode = "free";
         // 一次性启动 Rust 原生拖动（此后窗口由 8ms 线程直接跟随鼠标）
-        void invoke("drag_start", {});
+        nativeDragStart = invoke("drag_start", {}).catch(() => {});
       }
     }
     const now = performance.now();
@@ -785,28 +607,15 @@ let menuOpenState = false;
       }
     }
   });
-  const endDrag = () => {
+  const endDrag = (cancelled = false) => {
     if (!drag) return;
-    const clicked = !drag.moved;
-    if (drag.moved && drag.mode !== "idleSlide") void invoke("drag_end");
+    const clicked = !cancelled && !drag.moved;
+    if (drag.moved && drag.mode !== "idleSlide") {
+      const start = nativeDragStart ?? Promise.resolve();
+      void start.finally(() => invoke("drag_end").catch(() => {}));
+    }
+    nativeDragStart = null;
     drag = null;
-    // 恢复穿透（交互结束，延迟 500ms，但菜单/面板打开时不恢复）
-    if (pendingPassthroughRestore) clearTimeout(pendingPassthroughRestore);
-    pendingPassthroughRestore = setTimeout(() => {
-      // 只在菜单/面板/信息版都不打开时恢复穿透
-      const uiOpen = (document.querySelector("#menu:not(.hidden)") !== null) ||
-        (document.querySelector(".model-panel:not(.hidden)") !== null) ||
-        (document.querySelector("#action-debug:not(.hidden)") !== null) ||
-        (document.querySelector("#bounds-panel:not(.hidden)") !== null) ||
-        (document.querySelector("#size-panel:not(.hidden)") !== null) ||
-        (document.querySelector("#assistant-settings:not(.hidden)") !== null) ||
-        (document.querySelector("#as-inputbar:not(.hidden)") !== null) ||
-        (document.querySelector("#info-panel:not(.hidden)") !== null);
-      if (!uiOpen) {
-        void invoke("set_interacting", { active: false }).catch(() => {});
-      }
-      pendingPassthroughRestore = null;
-    }, 500);
     if (clicked) {
       if (settings.assistant.enabled) {
         openAssistant(getModelRect());
@@ -815,10 +624,21 @@ let menuOpenState = false;
         showInfoPanel(); // 展示信息板（5秒后自动消失）
       }
     }
+    void invoke("set_interacting", { active: false }).catch(() => {});
+    requestInteractionRegionSync(true);
     engine.suspend(1500); // 拖完原地歇一会再乱逛
   };
-  document.addEventListener("pointerup", endDrag);
-  document.addEventListener("pointercancel", endDrag);
+  const releasePointerInteraction = (cancelled: boolean) => {
+    if (uiPointerLocked) {
+      uiPointerLocked = false;
+      void invoke("set_interacting", { active: false }).catch(() => {});
+      requestInteractionRegionSync(true);
+    }
+    endDrag(cancelled);
+  };
+  document.addEventListener("pointerup", () => releasePointerInteraction(false));
+  document.addEventListener("pointercancel", () => releasePointerInteraction(true));
+  window.addEventListener("blur", () => releasePointerInteraction(true));
 
   // ---------- Astrobot 预留钩子 ----------
   astrobotOn((msg) => {
@@ -843,8 +663,8 @@ let menuOpenState = false;
     const cb = view.getCharacterBounds?.() ?? null;
     engine.syncModelOffset(cb ?? undefined);
     engine.update(now, dt);
-    // 每帧同步模型边界给 Rust（click-through 判定必须每帧有值）
-    {
+    // 仅拖拽期间同步给 Rust drag follower；穿透判定使用独立 regions。
+    if (drag?.moved && drag.mode !== "idleSlide") {
       const ox = engine.rawOffset.x;
       const oy = engine.rawOffset.y;
       // 有 characterBounds → 精确边界；无 → 窗口中心 300x300 作为 fallback
@@ -928,109 +748,124 @@ function onMenuOpen() {
   void invoke<boolean>("get_autostart").then((v) => {
     autostartCache = v;
   });
-  // 双窗口方案：菜单在主窗口显示，扩大覆盖窗口盖住模型+菜单，让菜单可点击
-  void expandOverlayForMenu();
+  requestInteractionRegionSync(true);
 }
 
-// ========== 输入覆盖窗口（双窗口方案） ==========
-// 覆盖窗口原点（覆盖窗口左上角 → 主窗口窗口内坐标），事件坐标换算用
-let overlayOrigin = { x: 0, y: 0 };
+const INTERACTION_UI_SELECTORS: ReadonlyArray<readonly [string, string]> = [
+  ["menu", "#menu"],
+  ["model-panel", ".model-panel"],
+  ["info-add", ".info-rm-add"],
+  ["info-delete", ".info-rm-del"],
+  ["reminder-dialog", ".rm-modal-box"],
+  ["assistant-input", "#as-inputbar"],
+  ["assistant-bubble", "#as-bubbles > .as-bubble"],
+  ["update", "#update-bubble"],
+  ["custom", "[data-petra-interactive]"],
+];
 
-/** 设置覆盖窗口位置/尺寸（物理屏幕坐标），并记录其对应的主窗口内坐标原点 */
-async function setOverlayRect(originX: number, originY: number, physX: number, physY: number, physW: number, physH: number) {
-  overlayOrigin = { x: originX, y: originY };
-  console.log("[overlay] set rect origin=(" + originX + "," + originY + ") phys=(" + physX + "," + physY + "," + physW + "x" + physH + ")");
-  await invoke("set_window_pos_size", { label: "input-overlay", x: Math.round(physX), y: Math.round(physY), width: Math.round(physW), height: Math.round(physH) }).catch(() => {});
-  await invoke("show_window_by_label", { label: "input-overlay" }).catch(() => {});
+let interactionSyncRunning = false;
+let interactionSyncPending = false;
+let interactionSyncForce = false;
+let lastInteractionFingerprint = "";
+let lastInteractionSyncAt = 0;
+let interactionSyncStarted = false;
+
+function visibleElementRect(element: Element): LogicalRect | null {
+  const el = element as HTMLElement;
+  if (!el.isConnected || el.hidden || el.classList.contains("hidden")) return null;
+  const style = getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none" || style.opacity === "0") return null;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
-/** 覆盖窗口同步：统一走 syncOverlayToUI（自动盖住所有可见 UI） */
-async function updateInputOverlay() {
-  await syncOverlayToUI();
-}
+function collectInteractionRegions(): PhysicalInteractiveRegion[] {
+  const scale = scaleFactor || window.devicePixelRatio || 1;
+  const clientPhysicalWidth = Math.round(window.innerWidth * scale);
+  const clientPhysicalHeight = Math.round(window.innerHeight * scale);
+  const regions: PhysicalInteractiveRegion[] = [];
 
-/** 自动同步覆盖窗口：收集所有可见 UI（菜单/面板/信息版/模态框）+ 模型，合并盖住 */
-async function syncOverlayToUI() {
-  // 输入模式下：覆盖窗口保持隐藏（否则重新盖住主窗口，输入中断）
-  if (inputModeActive) return;
-  const scale = scaleFactor || 1;
-  // 模型矩形（窗口内坐标，getModelRect 有 fallback）
-  const mr = getModelRect();
-  const rects: { left: number; top: number; right: number; bottom: number }[] = [mr];
-  // 收集所有可见 UI 的矩形
-  let menuVisible = false;
-  for (const sel of ["#menu", ".model-panel", "#info-panel", ".rm-modal", "#as-inputbar", "#update-bubble", "#assistant-settings", "#action-debug", "#bounds-panel", "#size-panel"]) {
-    document.querySelectorAll(sel).forEach((el) => {
-      if (!(el as HTMLElement).classList.contains("hidden")) {
-        if (sel === "#menu") menuVisible = true;
-        const r = (el as HTMLElement).getBoundingClientRect();
-        rects.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
-      }
+  const pet = getModelRect();
+  const petRegion = logicalRectToPhysicalRegion(
+    "pet",
+    pet,
+    scale,
+    clientPhysicalWidth,
+    clientPhysicalHeight,
+  );
+  if (petRegion) regions.push(petRegion);
+
+  const seen = new Set<Element>();
+  for (const [kind, selector] of INTERACTION_UI_SELECTORS) {
+    document.querySelectorAll(selector).forEach((element, index) => {
+      if (seen.has(element)) return;
+      const rect = visibleElementRect(element);
+      if (!rect) return;
+      seen.add(element);
+      const el = element as HTMLElement;
+      const customId = el.dataset.petraInteractive;
+      const id = `ui:${customId || el.id || `${kind}-${index}`}`;
+      const region = logicalRectToPhysicalRegion(
+        id,
+        rect,
+        scale,
+        clientPhysicalWidth,
+        clientPhysicalHeight,
+        2,
+      );
+      if (region) regions.push(region);
     });
   }
-  let left = Math.min(...rects.map((r) => r.left));
-  let top = Math.min(...rects.map((r) => r.top));
-  let right = Math.max(...rects.map((r) => r.right));
-  let bottom = Math.max(...rects.map((r) => r.bottom));
-  // 菜单打开时覆盖整个窗口 → 点任意处都能关闭菜单
-  if (menuVisible) {
-    left = 0; top = 0; right = WIN; bottom = WIN;
-  }
-  console.log("[overlay] rects:", rects.length, "l/t/r/b:", left, top, right, bottom, "menuVisible:", menuVisible, "inputMode:", inputModeActive);
-  const w = getCurrentWindow();
-  const winPos = await w.outerPosition().catch(() => ({ x: 0, y: 0 }));
-  await setOverlayRect(
-    Math.round(left), Math.round(top),
-    winPos.x + Math.round(left * scale),
-    winPos.y + Math.round(top * scale),
-    Math.round((right - left) * scale),
-    Math.round((bottom - top) * scale)
-  );
+  return regions;
 }
 
-// 监听 UI 可见性变化（hidden class 增删），自动同步覆盖窗口
-new MutationObserver(() => {
-  void syncOverlayToUI();
-}).observe(document.body, { subtree: true, attributes: true, attributeFilter: ["class"] });
-
-/** 扩大覆盖窗口盖住 模型+菜单 区域（菜单打开时） */
-async function expandOverlayForMenu() {
-  const cb = view?.getCharacterBounds?.();
-  console.log("[overlay] expand called, cb=", !!cb);
-  if (!cb) { toast("覆盖窗口: cb 为空"); return; }
-  const scale = scaleFactor || 1;
-  const menuEl = document.getElementById("menu");
-  const mr = getModelRect();
-  console.log("[overlay] menu hidden=", menuEl?.classList.contains("hidden"), "menu rect=", JSON.stringify(menuEl?.getBoundingClientRect()));
-  if (!menuEl || menuEl.classList.contains("hidden")) { toast("覆盖窗口: 菜单不可见"); return; }
-  // 菜单矩形（viewport 坐标 = 窗口内 CSS 坐标）
-  let menuRect = null;
-  if (menuEl && !menuEl.classList.contains("hidden")) {
-    const r = menuEl.getBoundingClientRect();
-    menuRect = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-  }
-  // 合并 模型+菜单 的包围盒
-  const left = Math.min(mr.left, menuRect?.left ?? mr.left);
-  const top = Math.min(mr.top, menuRect?.top ?? mr.top);
-  const right = Math.max(mr.right, menuRect?.right ?? mr.right);
-  const bottom = Math.max(mr.bottom, menuRect?.bottom ?? mr.bottom);
-  const w = getCurrentWindow();
-  const winPos = await w.outerPosition().catch(() => ({ x: 0, y: 0 }));
-  const pw = Math.round((right - left) * scale);
-  const ph = Math.round((bottom - top) * scale);
-  await setOverlayRect(
-    Math.round(left), Math.round(top),
-    winPos.x + Math.round(left * scale),
-    winPos.y + Math.round(top * scale),
-    pw, ph
-  );
-  console.log("[overlay] 菜单区域覆盖: " + pw + "x" + ph);
+function requestInteractionRegionSync(force = false) {
+  interactionSyncPending = true;
+  interactionSyncForce ||= force;
+  if (interactionSyncRunning) return;
+  void flushInteractionRegions();
 }
 
-// 菜单关闭 → 重新同步覆盖窗口（盖住可能新打开的面板）
-document.addEventListener("menu-closed", () => {
-  void syncOverlayToUI();
-});
+async function flushInteractionRegions() {
+  interactionSyncRunning = true;
+  try {
+    while (interactionSyncPending) {
+      interactionSyncPending = false;
+      const force = interactionSyncForce;
+      interactionSyncForce = false;
+      const regions = collectInteractionRegions();
+      const fingerprint = regionFingerprint(regions);
+      const now = performance.now();
+      if (!force && fingerprint === lastInteractionFingerprint && now - lastInteractionSyncAt < 1000) {
+        continue;
+      }
+      await invoke("sync_interaction_regions", { regions });
+      lastInteractionFingerprint = fingerprint;
+      lastInteractionSyncAt = now;
+    }
+  } catch (err) {
+    if (import.meta.env.DEV) console.warn("interaction region sync failed", err);
+  } finally {
+    interactionSyncRunning = false;
+    if (interactionSyncPending) requestInteractionRegionSync();
+  }
+}
+
+function startInteractionRegionSync() {
+  if (interactionSyncStarted) return;
+  interactionSyncStarted = true;
+  new MutationObserver(() => requestInteractionRegionSync()).observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["class", "style", "hidden", "data-petra-interactive"],
+  });
+  window.setInterval(() => requestInteractionRegionSync(), 33);
+  requestInteractionRegionSync(true);
+}
+
+document.addEventListener("menu-closed", () => requestInteractionRegionSync(true));
 
 function hiddenPsdInput(): HTMLInputElement {
   let input = document.getElementById("psd-input") as HTMLInputElement | null;
@@ -1172,7 +1007,6 @@ async function toggleModelPanel() {
     backBtn.textContent = "返回";
     backBtn.addEventListener("click", () => {
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     backRow.appendChild(backBtn);
     host.appendChild(backRow);
@@ -1295,7 +1129,6 @@ async function toggleModelPanel() {
       p.style.left = `${Math.round(mr2.left + (mr2.width - pr.width) / 2)}px`;
     }
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 function buildMenu(engine: BehaviorEngine) {
@@ -1307,33 +1140,32 @@ function buildMenu(engine: BehaviorEngine) {
         {
           id: "models",
           label: "模型设置",
-          noPassthrough: true,
           onPick: () => void toggleModelPanel(),
         },
         {
           id: "size",
           label: "模型大小",
-          noPassthrough: true,
           onPick: () => void toggleSizePanel(),
         },
         {
           id: "bounds",
           label: "调整模型边界",
-          noPassthrough: true,
           onPick: () => void toggleBoundsPanel(),
         },
-        {
-          id: "border",
-          label: "显示边框",
-          state: debugBorderVisible ? "开" : "关",
-          onPick: () => toggleDebugBorder(),
-        },
-        {
-          id: "model-bounds-toggle",
-          label: "显示模型边框",
-          state: debugModelBoundsVisible ? "开" : "关",
-          onPick: () => toggleModelBounds(),
-        },
+        ...(import.meta.env.DEV ? [
+          {
+            id: "border",
+            label: "显示边框",
+            state: debugBorderVisible ? "开" : "关",
+            onPick: () => toggleDebugBorder(),
+          },
+          {
+            id: "model-bounds-toggle",
+            label: "显示模型边框",
+            state: debugModelBoundsVisible ? "开" : "关",
+            onPick: () => toggleModelBounds(),
+          },
+        ] : []),
       ],
     },
     {
@@ -1382,7 +1214,6 @@ function buildMenu(engine: BehaviorEngine) {
         {
           id: "action-debug",
           label: "动作试玩",
-          noPassthrough: true,
           onPick: () => void toggleActionDebug(),
         },
       ],
@@ -1405,13 +1236,11 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "assistant-settings",
       label: "小助手设置",
-      noPassthrough: true,
       onPick: () => void toggleAssistantSettings(),
     },
     {
       id: "feedback",
       label: "反馈",
-      noPassthrough: true,
       onPick: () => openFeedbackInput(),
     },
     {
@@ -1480,8 +1309,6 @@ let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWeather: { text: string; time: number } | null = null;
 
 async function showInfoPanel() {
-  // 信息版打开期间保持不穿透（按钮可点，绿框外的信息版区域）
-  void invoke("set_interacting", { active: true }).catch(() => {});
   if (!infoPanelEl) {
     infoPanelEl = document.createElement("div");
     infoPanelEl.id = "info-panel";
@@ -1554,10 +1381,9 @@ async function showInfoPanel() {
   el.style.transform = "translateY(12px)";
   requestAnimationFrame(() => { el.style.transform = "translateY(0)"; });
 
-  // 5 秒自动消失（消失时恢复穿透）
+  // 5 秒自动消失；region collector 会自动移除信息版区域。
   if (infoPanelHideTimer) clearTimeout(infoPanelHideTimer);
   infoPanelHideTimer = setTimeout(() => {
-    void invoke("set_interacting", { active: false }).catch(() => {});
     if (el) {
       el.style.opacity = "0";
       el.style.transform = "translateY(8px)";
@@ -1645,7 +1471,6 @@ function toggleActionDebug() {
     backBtn.addEventListener("click", () => {
       view.stopAction();
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     head.append(title, backBtn);
     host.appendChild(head);
@@ -1684,7 +1509,6 @@ function toggleActionDebug() {
     p.classList.remove("hidden");
       positionPanelNearModel(p);
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 /** 模型大小滑动条面板（20%~200%，拖动实时应用） */
@@ -1711,7 +1535,6 @@ function toggleSizePanel() {
     backBtn.textContent = "返回";
     backBtn.addEventListener("click", () => {
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     head.append(title, val, backBtn);
     host.appendChild(head);
@@ -1750,7 +1573,6 @@ function toggleSizePanel() {
     p.classList.remove("hidden");
     positionPanelNearModel(p);
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 // 诊断钩子（CDP 验证待机位置用）
@@ -1856,7 +1678,6 @@ function toggleBoundsPanel() {
     done.textContent = "完成";
     done.addEventListener("click", () => {
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     btns.append(reset, done);
     host.appendChild(btns);
@@ -1875,7 +1696,6 @@ function toggleBoundsPanel() {
     p.classList.remove("hidden");
       positionPanelNearModel(p);
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 // 导入 BoundsPadding 类型
@@ -2027,7 +1847,6 @@ async function toggleAssistantSettings() {
     back.textContent = "返回";
     back.addEventListener("click", () => {
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
 
     const save = document.createElement("button");
@@ -2066,7 +1885,6 @@ async function toggleAssistantSettings() {
     p.classList.remove("hidden");
     positionPanelNearModel(p);
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 // ---------- 反馈面板 ----------
@@ -2099,7 +1917,6 @@ function openFeedbackInput() {
     back.textContent = "返回";
     back.addEventListener("click", () => {
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
     });
     const send = document.createElement("button");
     send.className = "as-btn as-btn-primary";
@@ -2111,7 +1928,6 @@ function openFeedbackInput() {
         return;
       }
       host.classList.add("hidden");
-      void invoke("set_interaction_state", { menuOpen: false, interacting: false }).catch(() => {});
       void doSendFeedback(t);
     });
     btns.append(back, send);
@@ -2131,7 +1947,6 @@ function openFeedbackInput() {
     p.classList.remove("hidden");
       positionPanelNearModel(p);
   }
-  void invoke("set_menu_open", { open: true }).catch(() => {});
 }
 
 async function doSendFeedback(message: string) {

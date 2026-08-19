@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./Toast";
 
 /** 待办项 */
@@ -80,8 +79,6 @@ export function checkDue() {
 
 /** 弹出"添加待办"填写窗口（模态框） */
 export function openReminderModal() {
-  // 模态框打开期间不穿透（菜单同款，保证输入框/日历可操作）
-  void invoke("set_interacting", { active: true }).catch(() => {});
   if (modalEl) {
     modalEl.classList.remove("hidden");
     return;
@@ -117,12 +114,6 @@ export function openReminderModal() {
 
   const close = () => {
     modalEl?.classList.add("hidden");
-    // 模态框关闭：如果信息版还可见则保持不穿透（信息版 5 秒后自动恢复），否则立即恢复
-    const infoPanel = document.getElementById("info-panel");
-    const infoVisible = infoPanel && !infoPanel.classList.contains("hidden");
-    if (!infoVisible) {
-      void invoke("set_interacting", { active: false }).catch(() => {});
-    }
   };
 
   cancel.addEventListener("click", close);
