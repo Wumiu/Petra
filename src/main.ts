@@ -1243,6 +1243,7 @@ function buildMenu(engine: BehaviorEngine) {
       label: "反馈",
       onPick: () => openFeedbackInput(),
     },
+
     {
       id: "update",
       label: "检查更新",
@@ -1308,6 +1309,29 @@ let infoPanelEl: HTMLElement | null = null;
 let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWeather: { text: string; time: number } | null = null;
 
+/** 天气描述 → emoji */
+function weatherEmoji(desc: string): string {
+  const d = desc.toLowerCase();
+  if (d.includes("晴") || d.includes("sunny") || d.includes("clear")) return "☀️";
+  if (d.includes("多云") || d.includes("cloud")) return "⛅";
+  if (d.includes("阴") || d.includes("overcast")) return "☁️";
+  if (d.includes("雨") || d.includes("rain")) return "🌧";
+  if (d.includes("雪") || d.includes("snow")) return "❄️";
+  if (d.includes("雷") || d.includes("thunder")) return "⛈";
+  if (d.includes("雾") || d.includes("fog") || d.includes("mist")) return "🌫";
+  return "🌤";
+}
+
+/** 解析 wttr.in 返回的 "城市|描述|温度|最高|最低|降雨%" 格式 */
+function formatWeatherHtml(raw: string): string {
+  const parts = (raw || "").split("|");
+  if (parts.length < 6) return raw || "天气获取失败";
+  const [city, desc, temp, maxT, minT, rain] = parts.map((s) => s.trim());
+  const emoji = weatherEmoji(desc);
+  const displayCity = settings.weatherCity || city;
+  return `${displayCity}　${emoji} ${desc} ${temp}°C\n最高 ${maxT}° / 最低 ${minT}° · 降雨 ${rain}%`;
+}
+
 async function showInfoPanel() {
   if (!infoPanelEl) {
     infoPanelEl = document.createElement("div");
@@ -1321,23 +1345,23 @@ async function showInfoPanel() {
   const companionText = formatDuration(Date.now() - companionStart);
 
   // 天气（缓存 10 分钟）
-  let weatherText = "获取中...";
+  let weatherHtml = "<span class='info-weather-loading'>获取中...</span>";
   if (cachedWeather && Date.now() - cachedWeather.time < 600000) {
-    weatherText = cachedWeather.text;
+    weatherHtml = cachedWeather.text;
   } else {
     invoke<string>("get_weather")
-      .then((w) => {
-        weatherText = w || "暂无天气";
-        cachedWeather = { text: weatherText, time: Date.now() };
-        updateInfoPanelContent(el, companionText, weatherText);
+      .then((raw) => {
+        weatherHtml = formatWeatherHtml(raw);
+        cachedWeather = { text: weatherHtml, time: Date.now() };
+        updateInfoPanelContent(el, companionText, weatherHtml);
       })
       .catch(() => {
-        weatherText = "天气获取失败";
-        updateInfoPanelContent(el, companionText, weatherText);
+        weatherHtml = "天气获取失败";
+        updateInfoPanelContent(el, companionText, weatherHtml);
       });
   }
 
-  updateInfoPanelContent(el, companionText, weatherText);
+  updateInfoPanelContent(el, companionText, weatherHtml);
 
   // 先显示再测量实际高度（高度由内容决定，不能假设 200）
   el.classList.remove("hidden");
@@ -1419,7 +1443,7 @@ function updateInfoPanelContent(el: HTMLElement, companion: string, weather: str
 
   el.innerHTML = `
     <div class="info-panel-header">${dateStr}</div>
-    <div class="info-panel-weather">🌡 ${weather}</div>
+    <div class="info-panel-weather">${weather}</div>
     <div class="info-panel-companion">💖 陪伴时间：${companion}</div>
     <div class="info-panel-rm-title">待办事项 <button class="info-rm-add">＋ 添加</button></div>
     ${rmHtml}

@@ -12,5 +12,5 @@ export function toast(text: string, kind: "info" | "warn" = "info") {
   setTimeout(() => {
     el.classList.add("bye");
     setTimeout(() => el.remove(), 400);
-  }, 2200);
+  }, 4000);
 }

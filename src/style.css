@@ -550,6 +550,8 @@ body {
 .info-panel-weather {
   font-size: 14px;
   margin-bottom: 4px;
+  white-space: pre-line;
+  line-height: 1.5;
 }
 .info-panel-companion {
   font-size: 13px;

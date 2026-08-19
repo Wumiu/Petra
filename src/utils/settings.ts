@@ -26,6 +26,8 @@ export interface Settings {
   modelScale: number;
   /** 每个模型单独记录的大小（key = 模型名，用户调整过才记录） */
   modelScales: Record<string, number>;
+  /** 天气城市名（中文），空则用 API 返回的英文名 */
+  weatherCity: string;
   boundsPadding: BoundsPadding;
   passthrough: boolean;
   assistant: AssistantSettings;
@@ -38,6 +40,7 @@ const DEFAULTS: Settings = {
   idleMode: false,
   modelScale: 1,
   modelScales: {},
+  weatherCity: "",
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
   assistant: {

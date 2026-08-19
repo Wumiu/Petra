@@ -942,10 +942,23 @@ fn send_notification(title: String, body: String) {
 #[tauri::command]
 fn get_weather() -> Result<String, String> {
     use std::io::Read;
+    // 用 wttr.in JSON API 获取详细天气数据
     let mut child = std::process::Command::new("powershell")
         .args([
             "-NoProfile", "-Command",
-            "try { (Invoke-WebRequest -Uri 'https://wttr.in/?format=3&lang=zh' -TimeoutSec 8 -UseBasicParsing).Content } catch { '天气获取失败' }",
+            r#"try {
+                $r = Invoke-WebRequest -Uri 'https://wttr.in/?format=j1&lang=zh' -TimeoutSec 10 -UseBasicParsing;
+                $j = $r.Content | ConvertFrom-Json;
+                $c = $j.current_condition[0];
+                $w = $j.weather[0];
+                $loc = $j.nearest_area[0].areaName[0].value;
+                $desc = $c.weatherDesc[0].value;
+                $temp = $c.temp_C;
+                $max = $w.maxtempC;
+                $min = $w.mintempC;
+                $rain = $w.hourly[4].chanceofrain; # 中午时段降雨概率
+                "$loc|$desc|$temp|$max|$min|$rain"
+            } catch { "获取失败|天气获取失败|—|—|—|—" }"#,
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
