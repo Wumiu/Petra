@@ -30,6 +30,31 @@ body {
   z-index: 2;
 }
 
+/* 调试边框：红线勾勒窗口边界（右键菜单「显示边框」开关） */
+#debug-border {
+  position: fixed;
+  inset: 0;
+  border: 2px solid #ff2d2d;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 9999;
+}
+#debug-border.hidden {
+  display: none;
+}
+
+/* 调试模型边框：绿框勾勒角色边界（右键菜单「显示模型边框」开关） */
+#model-bounds {
+  position: fixed;
+  border: 2px dashed #2dff2d;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 9998;
+}
+#model-bounds.hidden {
+  display: none;
+}
+
 /* ---------- 右键菜单 ---------- */
 .pet-menu {
   position: fixed;
@@ -222,6 +247,19 @@ body {
   background: rgba(255, 255, 255, 0.6);
   border-radius: 999px;
   font-size: 12px;
+}
+
+/* 模型大小滑动条 */
+.action-panel .size-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: #7a4ea0;
+  margin-left: auto;
+}
+
+.action-panel .size-slider {
+  width: 100%;
+  accent-color: #8a63b8;
 }
 
 /* ---------- 小助手：脚下输入条 + 左上角气泡 ---------- */

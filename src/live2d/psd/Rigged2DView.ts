@@ -46,6 +46,7 @@ export class Rigged2DView implements PetView {
   private clickPulse = 0;
   private scalePulse = 0;
   private swayEnabled = true;
+  private displayW = 300; // 当前显示边长（窗口跟随缩放，setScale 更新）
 
   // 随机表情状态机
   private exprT = 0;
@@ -271,13 +272,17 @@ export class Rigged2DView implements PetView {
 
     // 待机顶部 → 整体旋转 180°（露出头顶+眼睛）
     const rot = d.idleTop ? " rotate(180deg)" : "";
+    // 模型边缘露出偏移（窗口探出屏幕时模型自动跟随）
+    const ox = Math.round(d.modelOffsetX || 0);
+    const oy = Math.round(d.modelOffsetY || 0);
+    const shift = ox !== 0 || oy !== 0 ? ` translate(${ox}px, ${oy}px)` : "";
 
     // 吞咽/点击时 canvas 缩放脉冲
     if (this.scalePulse > 0) {
       const s = 1 + this.scalePulse * 0.15 * (this.gobblePulse > 0 ? 1.2 : 0.6);
-      this.canvas.style.transform = `translate(-50%, -50%)${rot} scale(${s})`;
+      this.canvas.style.transform = `translate(-50%, -50%)${shift}${rot} scale(${s})`;
     } else {
-      this.canvas.style.transform = `translate(-50%, -50%)${rot}`;
+      this.canvas.style.transform = `translate(-50%, -50%)${shift}${rot}`;
     }
   }
 
@@ -319,5 +324,30 @@ export class Rigged2DView implements PetView {
 
   setSwayEnabled(on: boolean) {
     this.swayEnabled = on;
+  }
+
+  /** 模型显示尺寸：窗口跟随缩放时，canvas 显示尺寸同步为窗口边长 */
+  setScale(displayW: number) {
+    this.displayW = displayW;
+    const px = `${Math.round(displayW)}px`;
+    this.canvas.style.maxWidth = px;
+    this.canvas.style.maxHeight = px;
+  }
+
+  /** 角色在窗口内的边界（相对窗口左上，逻辑 px，含缩放），供模型边缘补偿 */
+  getCharacterBounds(): { left: number; top: number; right: number; bottom: number } | null {
+    const cb = this.runtime.characterBounds;
+    if (!cb) return null;
+    const s = this.displayW / this.runtime.canvasWidth;
+    // canvas 居中偏移（CSS transform: translate(-50%, -50%) + left:50% top:50%）
+    // 窗口边长 = WIN (300)，canvas 内容实际显示宽高 = displayW
+    const offsetX = (300 - this.displayW) / 2;
+    const offsetY = (300 - this.displayW) / 2;
+    return {
+      left: offsetX + cb.left * s,
+      top: offsetY + cb.top * s,
+      right: offsetX + cb.right * s,
+      bottom: offsetY + cb.bottom * s,
+    };
   }
 }

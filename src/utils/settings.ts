@@ -16,6 +16,7 @@ export interface Settings {
   activity: ActivityLevel;
   mouseTrack: boolean;
   idleMode: boolean;
+  modelScale: number;
   assistant: AssistantSettings;
 }
 
@@ -24,6 +25,7 @@ const DEFAULTS: Settings = {
   activity: "low",
   mouseTrack: false,
   idleMode: false,
+  modelScale: 1,
   assistant: {
     enabled: false,
     provider: "deepseek",

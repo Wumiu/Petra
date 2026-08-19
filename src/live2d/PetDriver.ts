@@ -15,6 +15,8 @@ export interface PetDriver {
   dragging: boolean; // 拖拽中（下半身摆动）
   dragVelX: number; // -1..1 拖拽横向速度（供身体惯性摆动）
   pressed: boolean; // 按住（点中，含未拖动）→ 轻轻晃动 + 眯眼
+  modelOffsetX: number; // 模型水平偏移 px（窗口探出屏幕时保持模型可见）
+  modelOffsetY: number; // 模型垂直偏移 px
 }
 
 import type { Container } from "pixi.js";
@@ -26,6 +28,10 @@ export interface PetView {
   playAction(id: string, loop?: boolean): void; // 播放动作（动作库 id，loop 循环）
   stopAction(): void; // 停止当前动作，回落待机
   setSwayEnabled(on: boolean): void;
+  /** 设置模型显示尺寸（窗口跟随缩放时，canvas 显示尺寸同步为窗口边长） */
+  setScale(displayW: number): void;
+  /** 角色在窗口内的边界（相对窗口左上，逻辑 px），模型边缘补偿用；可选 */
+  getCharacterBounds?(): { left: number; top: number; right: number; bottom: number } | null;
   /** 挂载：rig 系视图挂到 DOM，pixi 系视图挂到 PIXI stage */
   attachTo(stage: HTMLElement, pixiStage: Container): void;
   /** 卸载前清理（删画布 / 销毁容器与 GL 资源） */
@@ -50,5 +56,7 @@ export function idleDriver(): PetDriver {
     dragging: false,
     dragVelX: 0,
     pressed: false,
+    modelOffsetX: 0,
+    modelOffsetY: 0,
   };
 }

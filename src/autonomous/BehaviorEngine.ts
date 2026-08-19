@@ -6,7 +6,7 @@ interface XY {
   y: number;
 }
 
-const WIN = 300;
+const DEFAULT_WIN = 300;
 const EDGE_PAD = 4; // 离屏幕边缘留 4px 间隙
 const POLL_CURSOR_MS = 60;
 const TARGET_INTERVAL = 100;
@@ -61,11 +61,18 @@ export class BehaviorEngine {
   private lastCursor: XY = { x: 0, y: 0 };
   private fleeSpeed = FLEE_SPEED;
   private lastPushSpeed = ACTIVITY_LEVELS.mid.speed;
+  // 模型边缘露出：窗口可探出屏幕，模型自动偏移保持可见
+  modelOffset: XY = { x: 0, y: 0 };
+  // 绿框在窗口内的位置（main.ts 每帧更新），用于约束 modelOffset
+  lastBoundsOnScreen: { left: number; top: number; right: number; bottom: number } | null = null;
+  // 窗口实际左上角（逻辑坐标，Rust cursor_pos 权威上报，供模型边缘补偿判断真实出屏量）
+  private windowPos: XY = { x: 0, y: 0 };
   // 待机模式（沉到屏幕边缘，只露头顶+眼睛，完全静止）
   private idle = false;
   private idleTop = false;
   private idlePos: XY = { x: 100, y: 100 };
   private scaleFactor = 1; // 物理↔逻辑（IPC 边界转换用）；引擎内部全逻辑坐标
+  private win = DEFAULT_WIN; // 当前窗口边长（模型缩放时窗口跟随，默认 300）
 
   /** 是否待机 + 是否倒挂（顶部） */
   get isIdle(): boolean {
@@ -89,15 +96,15 @@ export class BehaviorEngine {
       // 就近边缘：以窗口中心判断（用户直觉：桌宠在屏幕哪半就往哪边沉）
       const a = this.area ?? { left: 0, top: 0, width: 1920, height: 1080 };
       const midY = a.top + a.height / 2;
-      this.idleTop = this.pos.y + WIN / 2 < midY;
+      this.idleTop = this.pos.y + this.win / 2 < midY;
       void invoke("debug_mark", {
         msg: `idle:posY=${Math.round(this.pos.y)} mid=${Math.round(midY)} top=${this.idleTop}`,
       }).catch(() => {});
       const y = this.idleTop
-        ? a.top - WIN + EXPOSE_TOP // 顶部：窗口顶出屏，露窗口底部（旋转后=头部），多露到眼睛
-        : a.top + a.height - EXPOSE_BOTTOM; // 底部：露窗口顶部一小截（到眼睛，不露肩头）
+        ? a.top - this.win + (EXPOSE_TOP * this.win) / DEFAULT_WIN // 顶部：窗口顶出屏，露窗口底部（旋转后=头部），多露到眼睛
+        : a.top + a.height - (EXPOSE_BOTTOM * this.win) / DEFAULT_WIN; // 底部：露窗口顶部一小截（到眼睛，不露肩头）
       // 防御 clamp：确保窗口有部分留在屏内
-      const yClamped = Math.max(a.top - WIN, Math.min(a.top + a.height, y));
+      const yClamped = Math.max(a.top - this.win, Math.min(a.top + a.height, y));
       this.idlePos = { x: this.pos.x, y: yClamped };
       this.pos = { ...this.idlePos };
       this.target = null;
@@ -197,11 +204,12 @@ export class BehaviorEngine {
   /** 光标轮询（独立定时器调用，避免渲染热路径 await IPC） */
   async pollCursor() {
     try {
-      const c = await invoke<{ x: number; y: number; rx: number; ry: number }>("cursor_pos");
+      const c = await invoke<{ x: number; y: number; rx: number; ry: number; left: number; top: number }>("cursor_pos");
       const prev = this.cursor;
       // Rust 返回物理像素 → 转逻辑
       this.cursor = { x: c.x / this.scaleFactor, y: c.y / this.scaleFactor };
       this.cursorRel = { x: c.rx / this.scaleFactor, y: c.ry / this.scaleFactor };
+      this.windowPos = { x: c.left / this.scaleFactor, y: c.top / this.scaleFactor };
       // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
       const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
       this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
@@ -236,9 +244,9 @@ export class BehaviorEngine {
     if (!a) return;
     if (!force && this.target && this.dwellUntil > performance.now()) return;
     const minX = a.left + EDGE_PAD;
-    const maxX = a.left + a.width - WIN - EDGE_PAD;
+    const maxX = a.left + a.width - this.win - EDGE_PAD;
     const minY = a.top + EDGE_PAD;
-    const maxY = a.top + a.height - WIN - EDGE_PAD;
+    const maxY = a.top + a.height - this.win - EDGE_PAD;
     if (maxX <= minX || maxY <= minY) {
       this.target = null;
       return;
@@ -348,8 +356,8 @@ export class BehaviorEngine {
       velY = mdy * inv * speed;
       const a = this.area;
       const fleeDist = 260;
-      const tx = a ? clamp(this.pos.x + mdx * inv * fleeDist, a.left + EDGE_PAD, a.left + a.width - WIN - EDGE_PAD) : this.pos.x + mdx * inv * fleeDist;
-      const ty = a ? clamp(this.pos.y + mdy * inv * fleeDist, a.top + EDGE_PAD, a.top + a.height - WIN - EDGE_PAD) : this.pos.y + mdy * inv * fleeDist;
+      const tx = a ? clamp(this.pos.x + mdx * inv * fleeDist, a.left + EDGE_PAD, a.left + a.width - this.win - EDGE_PAD) : this.pos.x + mdx * inv * fleeDist;
+      const ty = a ? clamp(this.pos.y + mdy * inv * fleeDist, a.top + EDGE_PAD, a.top + a.height - this.win - EDGE_PAD) : this.pos.y + mdy * inv * fleeDist;
       this.target = { x: tx, y: ty };
       this.fleeSpeed = speed;
     } else {
@@ -393,8 +401,8 @@ export class BehaviorEngine {
     // 保存速度供碰撞检测用
     this.vel = { x: velX, y: velY };
 
-    // 边界碰撞反弹
-    this.bounceCollide();
+    // 边界约束：窗口可探出屏幕，模型偏移保持可见
+    this.constrainPosition();
 
     this.vx = Math.max(-1, Math.min(1, velX / 160));
     this.bob =
@@ -410,43 +418,76 @@ export class BehaviorEngine {
     }
   }
 
-  /** 边界碰撞反弹：撞到侧边或任务栏边缘时反向并减速 */
-  private bounceCollide() {
+  /** 边界约束：漫游限屏内（窗口不自动探出；自由出屏仅靠用户拖拽 + modelOffset 补偿） */
+  private constrainPosition() {
     if (!this.area) return;
     const a = this.area;
-    const left = a.left + EDGE_PAD;
-    const right = a.left + a.width - WIN - EDGE_PAD;
-    const top = a.top + EDGE_PAD;
-    const bottom = a.top + a.height - WIN - EDGE_PAD;
+    const lo = a.left + EDGE_PAD;
+    const hi = a.left + a.width - this.win - EDGE_PAD;
+    const to = a.top + EDGE_PAD;
+    const bo = a.top + a.height - this.win - EDGE_PAD;
+    this.pos.x = clamp(this.pos.x, lo, hi);
+    this.pos.y = clamp(this.pos.y, to, bo);
 
-    let bounced = false;
-
-    if (this.pos.x <= left) {
-      this.pos.x = left;
-      this.vel.x = Math.abs(this.vel.x) * BOUNCE_DAMP;
-      bounced = true;
-    } else if (this.pos.x >= right) {
-      this.pos.x = right;
-      this.vel.x = -Math.abs(this.vel.x) * BOUNCE_DAMP;
-      bounced = true;
+    // 速度反向（撞边界时减速，类似原 bounceCollide）
+    if (this.pos.x <= lo || this.pos.x >= hi) {
+      this.vel.x *= -BOUNCE_DAMP;
     }
-
-    if (this.pos.y <= top) {
-      this.pos.y = top;
-      this.vel.y = Math.abs(this.vel.y) * BOUNCE_DAMP;
-      bounced = true;
-    } else if (this.pos.y >= bottom) {
-      this.pos.y = bottom;
-      this.vel.y = -Math.abs(this.vel.y) * BOUNCE_DAMP;
-      bounced = true;
+    if (this.pos.y <= to || this.pos.y >= bo) {
+      this.vel.y *= -BOUNCE_DAMP;
     }
+  }
 
-    if (bounced) {
-      // 撞墙后清除当前目标，稍后重新选方向
-      this.target = null;
-      this.dwellUntil = performance.now() + 2000 + this.rng() * 3000;
-      // 立即清除 Rust mover 目标，防止 mover 继续把窗口推过边界
+  /** 模型偏移补偿：窗口出屏时，模型反向偏移保持角色不出屏（每帧调用） */
+  syncModelOffset(bounds?: { left: number; top: number; right: number; bottom: number }) {
+    // 待机是故意出屏（沉到边缘露头顶/眼睛），不做补偿
+    if (this.idle) {
+      this.modelOffset.x = 0;
+      this.modelOffset.y = 0;
+      return;
+    }
+    const a = this.area;
+    if (!a) return;
+    const b = bounds ?? { left: 0, top: 0, right: this.win, bottom: this.win };
+    const wx = this.windowPos.x;
+    const wy = this.windowPos.y;
+    // 模型在屏幕上的位置 = 窗口位置 + 模型偏移 + 角色在窗口内的边界
+    const ml = wx + this.modelOffset.x + b.left;
+    const mr = wx + this.modelOffset.x + b.right;
+    const mt = wy + this.modelOffset.y + b.top;
+    const mb = wy + this.modelOffset.y + b.bottom;
+    // 模型越出屏幕工作区 → 反向补偿
+    let offX = this.modelOffset.x;
+    let offY = this.modelOffset.y;
+    if (ml < a.left) offX += a.left - ml;
+    else if (mr > a.left + a.width) offX -= mr - (a.left + a.width);
+    if (mt < a.top) offY += a.top - mt;
+    else if (mb > a.top + a.height) offY -= mb - (a.top + a.height);
+    // 限制在窗口内可偏移范围（角色不能从窗口另一侧出去）
+    const loX = -b.left, hiX = this.win - b.right;
+    const loY = -b.top, hiY = this.win - b.bottom;
+    const prevX = offX, prevY = offY;
+    offX = clamp(offX, loX, hiX);
+    offY = clamp(offY, loY, hiY);
+    // offset 顶到极限 = 绿框到红框边界，窗口和 mover 全停下来，顶死
+    const hitEdgeX = offX !== prevX || Math.abs(offX - loX) < 1 || Math.abs(offX - hiX) < 1;
+    const hitEdgeY = offY !== prevY || Math.abs(offY - loY) < 1 || Math.abs(offY - hiY) < 1;
+    if (hitEdgeX || hitEdgeY) {
+      // 窗口位置硬钳：绿框顶死在屏幕边界上
+      if (wx + offX + b.left <= a.left) this.pos.x = a.left - offX - b.left;
+      if (wx + offX + b.right >= a.left + a.width) this.pos.x = a.left + a.width - offX - b.right;
+      if (wy + offY + b.top <= a.top) this.pos.y = a.top - offY - b.top;
+      if (wy + offY + b.bottom >= a.top + a.height) this.pos.y = a.top + a.height - offY - b.bottom;
+      // 停止 Rust mover，否则窗口还会被继续推动
       this.clearTarget();
     }
+    // 平滑过渡
+    this.modelOffset.x += (offX - this.modelOffset.x) * 0.3;
+    this.modelOffset.y += (offY - this.modelOffset.y) * 0.3;
+  }
+
+  /** 窗口边长（模型缩放时跟随更新） */
+  setWindowSize(w: number) {
+    this.win = Math.max(100, Math.round(w));
   }
 }

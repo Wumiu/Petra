@@ -16,6 +16,7 @@ export class Live2DController implements PetView {
 
   private model: Live2DModel | null = null;
   private baseScale = 1;
+  private displayW = 300;
   private swayEnabled = true;
   private gobble = 0;
   private click = 0;
@@ -76,8 +77,8 @@ export class Live2DController implements PetView {
 
   private fit() {
     const m = this.model!;
-    const w = 300;
-    const h = 300;
+    const w = this.displayW;
+    const h = this.displayW;
     const inner = m.internalModel as unknown as { canvasWidth?: number; canvasHeight?: number } | null;
     const cw = inner?.canvasWidth ?? w;
     const ch = inner?.canvasHeight ?? h;
@@ -94,6 +95,9 @@ export class Live2DController implements PetView {
     this.t += dt;
     this.gobble = Math.max(0, this.gobble - dt * 3.2);
     this.click = Math.max(0, this.click - dt * 6);
+
+    // 模型边缘露出偏移
+    m.position.set(150 + (d.modelOffsetX || 0), 150 + (d.modelOffsetY || 0));
 
     // 移动时镜像翻转
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;
@@ -220,6 +224,11 @@ export class Live2DController implements PetView {
 
   setSwayEnabled(on: boolean) {
     this.swayEnabled = on;
+  }
+
+  setScale(displayW: number) {
+    this.displayW = displayW;
+    if (this.model) this.fit();
   }
 
   attachTo(_stage: HTMLElement, pixiStage: PIXI.Container) {

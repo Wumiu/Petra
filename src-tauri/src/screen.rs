@@ -6,8 +6,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW,
-    SetWindowPos, GWL_EXSTYLE, SWP_NOZORDER, SWP_NOSIZE, SWP_NOACTIVATE, SWP_NOREDRAW,
-    WS_EX_TRANSPARENT,
+    SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW,
+    SWP_NOZORDER, SWP_NOSIZE, WS_EX_TRANSPARENT,
 };
 
 use crate::{CursorPos, WorkArea};
@@ -33,12 +33,16 @@ pub fn cursor_pos(app: &tauri::AppHandle) -> CursorPos {
     // 直接基于 GetWindowRect 计算，避免前端引擎本地积分位置与窗口实际位置漂移。
     let mut rx = 0;
     let mut ry = 0;
+    let mut left = 0;
+    let mut top = 0;
     if let Some(win) = app.get_webview_window("main") {
         if let Some(hwnd) = hwnd_of(&win) {
             let mut rect = RECT::default();
             if unsafe { GetWindowRect(hwnd, &mut rect).is_ok() } {
                 rx = pt.x - (rect.left + (rect.right - rect.left) / 2);
                 ry = pt.y - (rect.top + (rect.bottom - rect.top) / 2);
+                left = rect.left;
+                top = rect.top;
             }
         }
     }
@@ -47,6 +51,8 @@ pub fn cursor_pos(app: &tauri::AppHandle) -> CursorPos {
         y: pt.y,
         rx,
         ry,
+        left,
+        top,
     }
 }
 
@@ -192,32 +198,34 @@ pub fn drag_follow(win: &tauri::WebviewWindow, off_x: i32, off_y: i32, locked_y:
         let _ = GetCursorPos(&mut pt);
         let nx = pt.x - off_x;
         let ny = locked_y.unwrap_or(pt.y - off_y);
-        // 夹紧到工作区：非锁定按窗口实际尺寸，避免拖出屏幕；锁定 y 时不夹 y（待机边缘在屏外）
-        let mut rect = RECT::default();
-        if GetWindowRect(hwnd, &mut rect).is_err() {
-            return;
-        }
-        let w = rect.right - rect.left;
-        let h = rect.bottom - rect.top;
-        const EDGE_PAD: i32 = 4;
-        let area = crate::screen::work_area_at(nx, ny);
-        let cx = nx
-            .max(area.left + EDGE_PAD)
-            .min(area.left + area.width - w - EDGE_PAD);
-        let cy = if locked_y.is_some() {
-            ny
-        } else {
-            ny.max(area.top + EDGE_PAD)
-                .min(area.top + area.height - h - EDGE_PAD)
-        };
+        // 自由拖动：不夹紧到工作区，窗口可任意出屏（模型由前端 modelOffset 补偿保持可见）。
+        // locked_y 为待机边缘滑动：y 锁定该值（物理），仅水平跟随鼠标。
         let _ = SetWindowPos(
             hwnd,
             None,
-            cx,
-            cy,
+            nx,
+            ny,
             0,
             0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+        );
+    }
+}
+
+/// 程序化改窗口尺寸（物理像素）。绕开 Tauri setSize 在 resizable:false 下可能失效的限制。
+pub fn set_window_size(win: &tauri::WebviewWindow, width: i32, height: i32) {
+    let Some(hwnd) = hwnd_of(win) else {
+        return;
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            width,
+            height,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         );
     }
 }

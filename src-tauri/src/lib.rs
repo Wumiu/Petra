@@ -44,6 +44,9 @@ pub struct CursorPos {
     /// 光标相对真实窗口中心的偏移（物理像素），供视线跟随使用
     pub rx: i32,
     pub ry: i32,
+    /// 窗口左上角（物理像素），供模型边缘补偿判断窗口实际出屏量
+    pub left: i32,
+    pub top: i32,
 }
 
 #[derive(Serialize, Clone)]
@@ -392,6 +395,15 @@ fn drag_end(state: State<'_, DragState>) {
     if state.active.swap(false, Ordering::SeqCst) {
         *state.locked_y.lock().unwrap() = None;
         log_line("drag:end");
+    }
+}
+
+/// 程序化改窗口尺寸（物理像素，DPI 换算由前端完成）。
+/// 绕开 Tauri setSize 在 resizable:false 下可能失效的限制。
+#[tauri::command]
+fn set_window_size(app: AppHandle, width: u32, height: u32) {
+    if let Some(win) = app.get_webview_window("main") {
+        screen::set_window_size(&win, width as i32, height as i32);
     }
 }
 
@@ -1070,6 +1082,7 @@ pub fn run() {
             clear_pet_target,
             drag_start,
             drag_end,
+            set_window_size,
             run_shell,
             launch_application,
             open_url,

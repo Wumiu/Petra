@@ -57,10 +57,15 @@ class PIXIApp {
 }
 
 const app = new PIXIApp();
-let view: PetView;
+let view!: PetView;
 let settings: Settings = loadSettings();
-let engine: BehaviorEngine;
+let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
+let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
+// 调试边框（红线勾勒窗口边界）
+let debugBorderVisible = false;
+// 调试模型边框（绿框勾勒角色边界，验证"模型不出屏"）
+let debugModelBoundsVisible = false;
 // 当前实际模型来源（面板高亮用）
 let currentModel: { type: "import" | "manifest" | "live2d"; name?: string } = {
   type: "manifest",
@@ -72,6 +77,59 @@ let actionDebugHidden = false;
 function attachView(v: PetView) {
   const stage = document.getElementById("stage")!;
   v.attachTo(stage, app.app.stage);
+}
+
+/** 应用模型缩放：窗口保持 WIN x WIN 不变，仅缩放 canvas 内容 */
+async function applyModelScale(s: number) {
+  const clamped = clamp(s, 0.2, 2.0);
+  settings.modelScale = clamped;
+  saveSettings(settings);
+  const w = Math.round(WIN * clamped);
+  winSize = w;
+  // 窗口尺寸不跟随缩放（红框 = 窗口边界保持不动）
+  // 仅缩放 canvas 渲染内容（绿框 = 角色边界跟着变）
+  engine.setWindowSize(WIN);
+  view.setScale(w);
+}
+
+/** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
+function toggleDebugBorder() {
+  debugBorderVisible = !debugBorderVisible;
+  const el = document.getElementById("debug-border");
+  el?.classList.toggle("hidden", !debugBorderVisible);
+}
+
+/** 调试模型边框开关（绿框勾勒角色边界，验证"模型不出屏"） */
+function toggleModelBounds() {
+  debugModelBoundsVisible = !debugModelBoundsVisible;
+  const el = document.getElementById("model-bounds");
+  el?.classList.toggle("hidden", !debugModelBoundsVisible);
+}
+
+/** 每帧更新模型边框绿框位置（窗口坐标 = modelOffset + 角色边界） */
+function updateModelBounds(bounds?: { left: number; top: number; right: number; bottom: number } | null) {
+  const el = document.getElementById("model-bounds");
+  if (!el || !debugModelBoundsVisible) {
+    engine.lastBoundsOnScreen = null;
+    return;
+  }
+  if (!bounds) {
+    el.classList.add("hidden");
+    engine.lastBoundsOnScreen = null;
+    return;
+  }
+  el.classList.remove("hidden");
+  const ox = engine.modelOffset.x;
+  const oy = engine.modelOffset.y;
+  const l = Math.round(ox + bounds.left);
+  const t = Math.round(oy + bounds.top);
+  const w = Math.round(bounds.right - bounds.left);
+  const h = Math.round(bounds.bottom - bounds.top);
+  el.style.left = `${l}px`;
+  el.style.top = `${t}px`;
+  el.style.width = `${w}px`;
+  el.style.height = `${h}px`;
+  engine.lastBoundsOnScreen = { left: l, top: t, right: l + w, bottom: t + h };
 }
 
 async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
@@ -202,6 +260,18 @@ async function boot() {
   engine.setScale(scaleFactor);
   engine.setActivityLevel(settings.activity);
   engine.setTracking(settings.mouseTrack);
+  // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
+  void applyModelScale(settings.modelScale);
+  // 调试边框元素（红线勾勒窗口边界）
+  const border = document.createElement("div");
+  border.id = "debug-border";
+  border.className = "hidden";
+  document.body.appendChild(border);
+  // 调试模型边框元素（绿框勾勒角色边界）
+  const mb = document.createElement("div");
+  mb.id = "model-bounds";
+  mb.className = "hidden";
+  document.body.appendChild(mb);
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
     () => engine.suspend(3600_000),
@@ -250,7 +320,7 @@ async function boot() {
   setupTrashDrop(() => view, win, (path) => void importPsdFromPath(path));
   setupContextMenu(() => buildMenu(engine), onMenuOpen, () => {
     // 待机时窗口部分在屏外，菜单限制在可见区
-    if (!settings.idleMode) return { top: 0, height: 300 };
+    if (!settings.idleMode) return { top: 0, height: winSize };
     if (engine.isIdleTop) return { top: 150, height: 150 }; // 顶部待机：可见窗口下部
     return { top: 0, height: 95 }; // 底部待机：可见窗口上部
   });
@@ -298,7 +368,7 @@ async function boot() {
     if (drag.mode === "idleSlide") {
       // 本地同步：x 跟随鼠标，y 锁待机边缘（窗口由 Rust 线程跟随）
       const edgeY = engine.idleTarget.y;
-      const nx = Math.max(4, Math.min(screen.availWidth - 300 - 4, Math.round(drag.wx + dx)));
+      const nx = Math.max(4, Math.min(screen.availWidth - winSize - 4, Math.round(drag.wx + dx)));
       engine.setPos(nx, edgeY);
     } else {
       // 本地位置同步（逻辑坐标：CSS 增量即逻辑增量；窗口实际由 Rust 线程跟随）
@@ -343,6 +413,9 @@ async function boot() {
     analyzer.tick();
 
     engine.update(now, dt);
+    const cb = view.getCharacterBounds?.() ?? null;
+    engine.syncModelOffset(cb ?? undefined);
+    updateModelBounds(cb);
     driver.bass = analyzer.bass;
     driver.mid = analyzer.mid;
     driver.treble = analyzer.treble;
@@ -360,6 +433,8 @@ async function boot() {
     driver.dragging = !!drag && drag.moved;
     driver.dragVelX = clamp(engine.cursorVx / 800, -1, 1);
     driver.pressed = !!drag;
+    driver.modelOffsetX = engine.modelOffset.x;
+    driver.modelOffsetY = engine.modelOffset.y;
     // 调试日志仅 dev 构建输出
     if (import.meta.env.DEV && Math.round(now) % 2000 < 20 && (driver.bass > 0.001 || driver.mid > 0.001)) {
       console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
@@ -685,6 +760,24 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => void toggleIdle(),
     },
     {
+      id: "size",
+      label: "模型大小",
+      state: `${Math.round(settings.modelScale * 100)}%`,
+      onPick: () => void toggleSizePanel(),
+    },
+    {
+      id: "border",
+      label: "显示边框",
+      state: debugBorderVisible ? "开" : "关",
+      onPick: () => toggleDebugBorder(),
+    },
+    {
+      id: "model-bounds",
+      label: "显示模型边框",
+      state: debugModelBoundsVisible ? "开" : "关",
+      onPick: () => toggleModelBounds(),
+    },
+    {
       id: "models",
       label: "模型设置",
       onPick: () => void toggleModelPanel(),
@@ -838,6 +931,67 @@ function toggleActionDebug() {
   } else {
     const p = document.createElement("div");
     p.id = "action-debug";
+    p.className = "model-panel action-panel hidden";
+    p.addEventListener("pointerdown", (e) => e.stopPropagation());
+    render(p);
+    document.body.appendChild(p);
+    p.classList.remove("hidden");
+  }
+}
+
+/** 模型大小滑动条面板（20%~200%，拖动实时应用） */
+function toggleSizePanel() {
+  const panel = document.getElementById("size-panel") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const render = (host: HTMLElement) => {
+    clearElement(host);
+
+    const head = document.createElement("div");
+    head.className = "ap-head";
+    const title = document.createElement("span");
+    title.className = "ap-title";
+    title.textContent = "模型大小";
+    const val = document.createElement("span");
+    val.className = "size-val";
+    val.textContent = `${Math.round(settings.modelScale * 100)}%`;
+    const backBtn = document.createElement("button");
+    backBtn.className = "as-btn";
+    backBtn.textContent = "返回";
+    backBtn.addEventListener("click", () => host.classList.add("hidden"));
+    head.append(title, val, backBtn);
+    host.appendChild(head);
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "20";
+    slider.max = "200";
+    slider.step = "1";
+    slider.value = String(Math.round(settings.modelScale * 100));
+    slider.className = "size-slider";
+    let lastApply = 0;
+    slider.addEventListener("input", () => {
+      val.textContent = `${slider.value}%`;
+      const now = performance.now();
+      if (now - lastApply < 80) return; // 节流，避免高频窗口 resize 抖动
+      lastApply = now;
+      void applyModelScale(Number(slider.value) / 100);
+    });
+    slider.addEventListener("change", () => {
+      void applyModelScale(Number(slider.value) / 100);
+    });
+    host.appendChild(slider);
+  };
+
+  if (panel) {
+    render(panel);
+    panel.classList.remove("hidden");
+  } else {
+    const p = document.createElement("div");
+    p.id = "size-panel";
     p.className = "model-panel action-panel hidden";
     p.addEventListener("pointerdown", (e) => e.stopPropagation());
     render(p);
