@@ -1152,20 +1152,18 @@ function buildMenu(engine: BehaviorEngine) {
           label: "调整模型边界",
           onPick: () => void toggleBoundsPanel(),
         },
-        ...(import.meta.env.DEV ? [
-          {
-            id: "border",
-            label: "显示边框",
-            state: debugBorderVisible ? "开" : "关",
-            onPick: () => toggleDebugBorder(),
-          },
-          {
-            id: "model-bounds-toggle",
-            label: "显示模型边框",
-            state: debugModelBoundsVisible ? "开" : "关",
-            onPick: () => toggleModelBounds(),
-          },
-        ] : []),
+        {
+          id: "border",
+          label: "显示边框",
+          state: debugBorderVisible ? "开" : "关",
+          onPick: () => toggleDebugBorder(),
+        },
+        {
+          id: "model-bounds-toggle",
+          label: "显示模型边框",
+          state: debugModelBoundsVisible ? "开" : "关",
+          onPick: () => toggleModelBounds(),
+        },
       ],
     },
     {
