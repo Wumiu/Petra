@@ -101,6 +101,24 @@ src-tauri/target/release/bundle/msi/Petra_<版本>_x64_en-US.msi.sig    # update
 
 其中 `signature` 字段 = **`.sig` 文件的完整内容**（base64，非路径）。
 
+### 4.1 Legacy updater 兼容性约束（重要）
+
+> **Petra v0.1.5 legacy updater 固定读取 `platforms["windows-x86_64"]`，
+> 且只能直接启动 EXE**（把下载内容保存为 `.exe` 后 `Command::new(path).spawn()`）。
+
+因此在仍需兼容 v0.1.5 的时期：
+
+```text
+platforms["windows-x86_64"]      必须指向 NSIS updater（Petra_*_x64-setup.exe）
+platforms["windows-x86_64-nsis"] 指向 NSIS（同上，保持一致）
+platforms["windows-x86_64-msi"]  指向 MSI（供支持 MSI 的客户端 / 人工安装）
+```
+
+- **不要**让 `windows-x86_64` 指向 MSI（Tauri 默认行为）——否则旧客户端会下载 MSI 却当作 EXE 启动而失败
+- GitHub Actions workflow 已加入 **normalization 步骤**（`scripts/normalize-updater-metadata.mjs`），
+  在 `latest.json` 生成后自动把 `windows-x86_64` 覆盖为 `windows-x86_64-nsis` 的 url/signature，
+  永久保证每次发布都满足此约束，无需手工维护
+
 更新后提交 `release/latest.json` 并 push（这是唯一需要入库的更新相关文件）。
 
 ---

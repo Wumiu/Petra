@@ -48,3 +48,26 @@ jobs:
           # tauri-action 自动:构建 + 用 TAURI_SIGNING_PRIVATE_KEY 签名 updater artifacts
           # + 生成 latest.json(含 signature/url)作为 Release 附件
           includeUpdaterJson: true
+
+      # 兼容性归一化：tauri-action 生成的 latest.json 中 windows-x86_64 默认指向 MSI，
+      # 而 v0.1.5 legacy updater 固定读取该 key 并当作 .exe 启动。
+      # 因此把 windows-x86_64 覆盖为 NSIS（与 windows-x86_64-nsis 一致），
+      # 保留 windows-x86_64-msi。不硬编码版本/URL/signature，从 JSON 动态复制。
+      - name: Normalize updater metadata (legacy compat)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          # 下载 tauri-action 生成的 latest.json
+          gh release download "${{ github.ref_name }}" -p latest.json -R "${{ github.repository }}" -D /tmp/ --clobber
+          # 归一化: windows-x86_64 → NSIS
+          node scripts/normalize-updater-metadata.mjs /tmp/latest.json /tmp/latest-fixed.json
+          # 以正确文件名重新生成（gh upload 按文件名命名 asset）
+          cp /tmp/latest-fixed.json /tmp/latest.json
+          # 删除旧的 latest.json asset
+          ASSET_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" --jq '.assets[] | select(.name=="latest.json") | .id')
+          gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$ASSET_ID"
+          # 上传归一化后的 latest.json（仅替换 metadata，不动 installer）
+          gh release upload "${{ github.ref_name }}" /tmp/latest.json --clobber -R "${{ github.repository }}"
+          echo "latest.json 已归一化并重新上传（windows-x86_64 → NSIS）"
