@@ -628,6 +628,87 @@ fn active_window_title() -> String {
     }
 }
 
+/// 返回用户空闲秒数（鼠标键盘无输入的时间）。
+/// 主动问候场景触发用：空闲太久回来时打招呼、久坐提醒等。
+#[tauri::command]
+fn get_idle_seconds() -> u64 {
+    // 使用 raw FFI 调用 GetLastInputInfo，避免 windows crate feature 依赖问题
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct LASTINPUTINFO {
+        cbSize: u32,
+        dwTime: u32,
+    }
+    extern "system" {
+        fn GetLastInputInfo(plii: *mut LASTINPUTINFO) -> i32;
+        fn GetTickCount() -> u32;
+    }
+    unsafe {
+        let mut li = LASTINPUTINFO { cbSize: 8, dwTime: 0 };
+        if GetLastInputInfo(&mut li) != 0 {
+            let tick = GetTickCount();
+            return tick.saturating_sub(li.dwTime) as u64 / 1000;
+        }
+    }
+    0
+}
+
+/// 通过 Rust 发起 HTTP 请求（绕过浏览器 CORS 限制）
+#[tauri::command]
+fn http_get(url: String) -> Result<String, String> {
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 15).Content",
+            url.replace("'", "''")
+        )])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+}
+
+/// 下载文件为字节数组（绕过 CORS）
+#[tauri::command]
+fn http_download(url: String) -> Result<Vec<u8>, String> {
+    let tmp = std::env::temp_dir().join("petra-dl.tmp");
+    let ps_cmd = format!("
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;
+        Invoke-WebRequest -Uri '{url}' -UseBasicParsing -TimeoutSec 120 -OutFile '{path}';
+    ", url = url.replace("'", "''"), path = tmp.display());
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &ps_cmd])
+        .output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let bytes = std::fs::read(&tmp).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(bytes)
+}
+
+
+/// 将下载的更新安装包写入临时目录
+#[tauri::command]
+fn write_update_installer(_app: AppHandle, file_name: String, bytes: Vec<u8>) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("petra-update");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&file_name);
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 启动更新安装包并退出当前应用
+#[tauri::command]
+fn launch_update_installer(app: AppHandle, file_name: String) -> Result<(), String> {
+    let path = std::env::temp_dir().join("petra-update").join(&file_name);
+    if !path.exists() { return Err("安装包不存在".into()); }
+    std::process::Command::new(&path).spawn().map_err(|e| e.to_string())?;
+    app.exit(0);
+    Ok(())
+}
+
 /// 用 Windows DPAPI 加密数据（绑定当前用户，无需额外密钥）。
 fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
     use windows::Win32::Foundation::LocalFree;
@@ -1424,16 +1505,10 @@ mod interaction_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Rust panic 也进诊断通道
-    std::panic::set_hook(Box::new(|info| {
-        let loc = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_default();
-        log_line(&format!("PANIC: {loc} {info}"));
-    }));
-
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    #[cfg(not(debug_assertions))]
+    { builder = builder.plugin(tauri_plugin_updater::Builder::new().build()); }
+    builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1455,57 +1530,28 @@ pub fn run() {
             }),
             renderer_locked: std::sync::atomic::AtomicBool::new(false),
         })
-        
         .manage(DragState {
             active: std::sync::atomic::AtomicBool::new(false),
             offset: std::sync::Mutex::new((0, 0)),
             locked_y: std::sync::Mutex::new(None),
             model_bounds: std::sync::Mutex::new((0, 0, 700, 700)),
         })
-.invoke_handler(tauri::generate_handler![
-            trash_files,
-            work_area_at,
-            cursor_pos,
-            hide_pet,
-            show_pet,
-            quit_app,
-            restart_app,
-            debug_mark,
-            read_file_bytes,
-            save_psd,
-            read_psd,
-            list_models,
-            read_model_manifest,
-            read_builtin_psd,
-            model_resource_path,
-            delete_imported_model,
-            set_audio_enabled,
-            set_pet_target,
-            set_pet_target_speed,
-            clear_pet_target,
-            drag_start,
-            set_model_bounds,
-            drag_end,
-            set_window_size,
-            run_shell,
-            launch_application,
-            open_url,
-            active_window_title,
-            set_api_key,
-            get_api_key,
-            send_feedback,
-            export_feedback,
-            get_autostart,
-            set_autostart,
-            sync_interaction_regions,
-            set_interacting,
-            set_menu_open,
-            set_window_pos_size,
-            set_volume,
-            send_notification,
-            get_weather,
-            schedule_shutdown,
-            cancel_shutdown,
+        .invoke_handler(tauri::generate_handler![
+            trash_files, work_area_at, cursor_pos, hide_pet, show_pet,
+            quit_app, restart_app, debug_mark, read_file_bytes, save_psd,
+            read_psd, list_models, read_model_manifest, read_builtin_psd,
+            model_resource_path, delete_imported_model, set_audio_enabled,
+            set_pet_target, set_pet_target_speed, clear_pet_target,
+            drag_start, set_model_bounds, drag_end, set_window_size,
+            run_shell, launch_application, open_url, active_window_title,
+            get_idle_seconds, http_get,
+            http_download,
+            write_update_installer, launch_update_installer,
+            set_api_key, get_api_key, send_feedback, export_feedback,
+            get_autostart, set_autostart, sync_interaction_regions,
+            set_interacting, set_menu_open, set_window_pos_size,
+            set_volume, send_notification, get_weather,
+            schedule_shutdown, cancel_shutdown,
         ])
         .setup(|app| {
             LOG_DIR.get_or_init(|| {
@@ -1614,3 +1660,8 @@ mod tests {
         std::fs::remove_file(&outside).ok();
     }
 }
+
+
+
+
+

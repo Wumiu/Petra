@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Petra",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.wumiu.petra",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -30,14 +30,30 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$RESOURCE/**"]
+        "scope": [
+          "$RESOURCE/**"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5MzE3MjlBQzRDNkM3NUYKUldSZng4YkVtbkl4V2JCTHRMZ2dTNnl0blVOdWQ5cW9adU1WZ09jdG4zSnRhU3RFOGhkWndrU3QK",
+      "endpoints": [
+        "https://github.com/Wumiu/Petra/releases/latest/download/latest.json",
+        "https://mirror.ghproxy.com/https://github.com/Wumiu/Petra/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": ["../public/models/"],
+    "resources": [
+      "../public/models/"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

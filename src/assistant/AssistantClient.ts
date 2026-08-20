@@ -12,6 +12,21 @@ export interface ChatMessage {
   }>;
 }
 
+
+/** 结构化记忆条目 */
+export interface MemoryEntry {
+  id: string;                          // 唯一标识
+  category: "identity" | "preference" | "habit" | "schedule" | "relationship" | "event" | "other";
+  content: string;                     // "用户叫小明"
+  keywords: string[];                  // ["名字", "小明"]
+  source: "user_said" | "ai_inferred"; // 谁发现的
+  createdAt: number;                   // 首次记录时间戳
+  lastUsedAt: number;                  // 最近一次被引用的时间
+  importance: 1 | 2 | 3;              // 1=核心 2=重要 3=琐碎
+}
+
+export type MemoryStore = MemoryEntry[];
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -41,8 +56,8 @@ const BASE_PROMPT =
   "1. 路径一律用反斜杠（如 C:\\Program Files\\xxx），严禁使用 //；\n" +
   "2. 命令必须一条完整可执行，不要加 // 或任何注释，不要输出解释文字到命令里；\n" +
   "3. 拿不准确切路径时，宁可提示用户不要乱猜路径。\n" +
-  "当用户透露出重要个人信息、偏好或习惯时（如名字、作息、喜欢的东西），请自动调用 remember 工具归档到长期记忆。" +
-  "用户明确说\"记住 xx\"时也必须调用 remember。\n" +
+  "当用户透露出任何个人信息、偏好、习惯、情绪、计划时（如名字、生日、作息、喜欢的东西、最近在忙什么、心情如何），请主动调用 remember 工具归档到长期记忆。" +
+  "即使用户只是随口提到（如\"今天好累\"\"我在学吉他\"），也要记录。用户明确说\"记住 xx\"时必须调用 remember。\n" +
   "4. 用户说\"帮我搜/查 xxx\"时调用 search_web 打开浏览器搜索。\n" +
   "5. 用户说\"提醒我/xx分钟后叫我\"时调用 set_reminder。\n" +
   "6. 用户问天气时调用 get_weather 获取实时天气。\n" +
@@ -81,11 +96,15 @@ const TOOLS = [
     type: "function",
     function: {
       name: "remember",
-      description: "把用户的个人信息/偏好/习惯归档到长期记忆，之后一直记得。",
+      description: "把用户的个人信息/偏好/习惯归档到长期记忆。category 可选：identity(身份如名字生日)、preference(偏好如喜欢咖啡)、habit(习惯如熬夜)、schedule(作息)、relationship(人际关系)、event(事件)、other。importance: 1=核心(名字生日等不会变的)、2=重要(习惯偏好)、3=琐碎。",
       parameters: {
         type: "object",
-        properties: { content: { type: "string", description: "要记住的内容" } },
-        required: ["content"],
+        properties: {
+          content: { type: "string", description: "要记住的内容，用简洁的中文陈述句" },
+          category: { type: "string", enum: ["identity", "preference", "habit", "schedule", "relationship", "event", "other"], description: "记忆分类" },
+          importance: { type: "number", description: "重要度 1-3，1=核心 2=重要 3=琐碎" },
+        },
+        required: ["content", "category", "importance"],
       },
     },
   },
@@ -165,19 +184,25 @@ const TOOLS = [
   },
 ];
 
-function systemPrompt(persona: string, memory: string[]): string {
-  const mem =
-    memory.length > 0 ? `\n\n用户的长期记忆：\n${memory.map((m) => `- ${m}`).join("\n")}` : "";
+function systemPrompt(persona: string, memory: MemoryStore): string {
+  let mem = "";
+  if (memory.length > 0) {
+    // 按重要度排序，核心记忆在前
+    const sorted = [...memory].sort((a, b) => a.importance - b.importance);
+    mem = "\n\n关于用户的记忆（按重要度排序）：\n" +
+      sorted.map((m) => {
+        const age = Date.now() - m.createdAt;
+        const days = Math.floor(age / 86400000);
+        const timeNote = days > 30 ? `（${Math.floor(days / 30)}个月前）` : days > 0 ? `（${days}天前）` : "（今天）";
+        return `- [${m.category}] ${m.content} ${timeNote}`;
+      }).join("\n");
+  }
   return `${persona ? persona + "\n\n" : ""}${BASE_PROMPT}${mem}`;
 }
 
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
  *  截断时不切断 tool_calls 序列（不删除紧跟 tool 消息的 assistant 消息）。 */
-function buildMessages(
-  history: ChatMessage[],
-  persona: string,
-  memory: string[],
-): ChatMessage[] {
+function buildMessages(history: ChatMessage[], persona: string, memory: MemoryStore): ChatMessage[] {
   const MAX_MSGS = 20;
   const MAX_CHARS = 6000;
   let msgs = history.slice(-MAX_MSGS);
@@ -198,8 +223,7 @@ export async function chatStream(
   model: string,
   history: ChatMessage[],
   persona: string,
-  memory: string[],
-  customBaseUrl: string,
+  memory: MemoryStore, customBaseUrl: string,
   onDelta: (t: string) => void,
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const base = resolveBase(provider, customBaseUrl);

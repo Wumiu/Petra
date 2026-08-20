@@ -136,6 +136,13 @@ body {
   overflow-y: auto;
 }
 
+
+/* 对话记录面板：面板自身不限高，内部列表滚动 */
+#chat-history-panel {
+  max-height: none;
+  overflow: visible;
+}
+
 .model-panel.hidden {
   display: none;
 }
@@ -363,6 +370,20 @@ body {
   word-break: break-word;
   animation: toast-in 0.25s ease;
   box-shadow: 0 4px 14px rgba(40, 20, 60, 0.18);
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 100, 140, 0.3) transparent;
+}
+.as-bubble::-webkit-scrollbar {
+  width: 4px;
+}
+.as-bubble::-webkit-scrollbar-track {
+  background: transparent;
+}
+.as-bubble::-webkit-scrollbar-thumb {
+  background: rgba(120, 100, 140, 0.3);
+  border-radius: 4px;
 }
 .as-ai {
   align-self: flex-start;
@@ -711,3 +732,5 @@ body {
   opacity: 0;
   transform: translateX(-50%) translateY(-8px);
 }
+
+

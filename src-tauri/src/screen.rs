@@ -76,6 +76,8 @@ pub fn work_area_at(x: i32, y: i32) -> WorkArea {
 /// 唯一的 native 穿透写入口。
 /// 目标状态与真实 WS_EX_TRANSPARENT 一致时，不再调用任何写接口。
 pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST_LOG_AT: AtomicU64 = AtomicU64::new(0);
     let Some(hwnd) = hwnd_of(win) else {
         return;
     };
@@ -99,10 +101,15 @@ pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
         let _ = win.set_ignore_cursor_events(ignore);
     }
     if !verified {
-        crate::log_line(&format!(
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+        let last = LAST_LOG_AT.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) > 10000 {
+            LAST_LOG_AT.store(now_ms, Ordering::Relaxed);
+            crate::log_line(&format!(
             "ignore_cursor: {ignore} 设置后未生效！style={:#x}",
             unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
-        ));
+            ));
+        }
     }
 }
 

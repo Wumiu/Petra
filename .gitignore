@@ -45,3 +45,6 @@ Petra_*.zip
 
 # Tauri 打包资源（构建产物）
 src-tauri/resources/
+
+# Tauri updater signing key (NEVER commit)
+.tauri/

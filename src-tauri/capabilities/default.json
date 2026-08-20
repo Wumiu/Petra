@@ -13,6 +13,7 @@
     "core:window:allow-show",
     "core:window:allow-set-always-on-top",
     "core:event:default",
-    "autostart:default"
+    "autostart:default",
+    "updater:default"
   ]
 }

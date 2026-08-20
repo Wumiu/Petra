@@ -18,6 +18,7 @@ import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
 import { listModels } from "./assistant/AssistantClient";
+import { checkForUpdate, performUpdate } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
 import {
   logicalRectToPhysicalRegion,
@@ -26,11 +27,53 @@ import {
   type PhysicalInteractiveRegion,
 } from "./input/regions";
 
-// 禁用页面滚动（桌宠窗口内容不应滚动）
+
+// ---------- 性能优化工具函数 ----------
+/** 防抖函数：在指定时间内多次调用只执行最后一次 */
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): (...args: Parameters<T>) => void {
+  let timeout: number | null = null;
+  return (...args: Parameters<T>) => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      func(...args);
+      timeout = null;
+    }, wait);
+  };
+}
+
+/** 节流函数：在指定时间内最多执行一次 */
+function throttle<T extends (...args: any[]) => any>(
+  func: T,
+  limit: number
+): (...args: Parameters<T>) => void {
+  let inThrottle = false;
+  return (...args: Parameters<T>) => {
+    if (!inThrottle) {
+      func(...args);
+      inThrottle = true;
+      setTimeout(() => { inThrottle = false; }, limit);
+    }
+  };
+}
+
+// 优化后的IPC调用
+const setInteractingDebounced = debounce((active: boolean) => {
+  invoke("set_interacting", { active }).catch(() => {});
+}, 50);
+
+const setModelBoundsThrottled = throttle((bounds: {
+  left: number; top: number; right: number; bottom: number;
+}) => {
+  invoke("set_model_bounds", bounds).catch(() => {});
+}, 100);// 禁用页面滚动（桌宠窗口内容不应滚动）
 document.documentElement.style.overflow = "hidden";
 document.body.style.overflow = "hidden";
 
 const WIN = 700;
+
 
 // ---------- 陪伴时间 ----------
 const COMPANION_KEY = "petra-companion-start";
@@ -252,10 +295,23 @@ function getWindowVisibleRect(): { left: number; top: number; right: number; bot
 
 /** 将面板定位到模型旁边：往屏幕内侧（空间大的方向），不挡住模型、不出屏 */
 function positionPanelNearModel(panel: HTMLElement) {
+  panel.style.position = "fixed"; // 确保 fixed 定位
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
-  const pw = panel.offsetWidth || 230;
-  const ph = panel.offsetHeight || 200;
+  // 先让面板按自身内容撑开
+  panel.style.maxWidth = `${vr.right - vr.left - 40}px`;
+  panel.style.maxHeight = `${vr.bottom - vr.top - 40}px`;
+  let pw = panel.offsetWidth || 230;
+  let ph = panel.offsetHeight || 200;
+  // 面板比可见区大则缩小
+  const maxW = vr.right - vr.left - 40;
+  const maxH = vr.bottom - vr.top - 40;
+  if (pw > maxW || ph > maxH) {
+    panel.style.maxWidth = `${maxW}px`;
+    panel.style.maxHeight = `${maxH}px`;
+    pw = Math.min(pw, maxW);
+    ph = Math.min(ph, maxH);
+  }
 
   // 屏幕中心（逻辑坐标）
   const a = engine.workArea;
@@ -487,9 +543,75 @@ async function boot() {
   }
 
   // 小助手主动问候：每 20 分钟，若开启且空闲则智能打招呼（识别当前窗口）
-  setInterval(() => {
-    if (settings.assistant.enabled) void triggerProactive();
-  }, PROACTIVE_GREET_INTERVAL);
+  // 主动问候：场景触发（替代固定 20 分钟）
+  let lastGreetAt = 0;
+  let activeStartAt = Date.now();   // 当前连续活跃段的起始时间
+  let lastActiveAt = Date.now();    // 最近一次检测到用户活跃的时间
+  let wasIdle = false;              // 上次检查时是否处于空闲
+
+  // 每 5 分钟检查一次场景
+  setInterval(async () => {
+    if (!settings.assistant.enabled) return;
+    let idleSec = 0;
+    try { idleSec = await invoke<number>("get_idle_seconds"); } catch {}
+
+    const now = Date.now();
+    const isIdle = idleSec > 3600; // 空闲超过 5 分钟才算"离开"
+
+    if (isIdle) {
+      // 用户离开了
+      if (!wasIdle) {
+        // 刚离开，记录
+        wasIdle = true;
+      }
+    } else {
+      // 用户活跃
+      if (wasIdle) {
+        // 从离开状态回来 → 重置活跃段
+        activeStartAt = now;
+        wasIdle = false;
+        // 回归问候：离开超过 15 分钟才触发
+        const awayMs = now - lastActiveAt;
+        if (awayMs > 15 * 60 * 1000 && now - lastGreetAt > 15 * 60 * 1000) {
+          lastGreetAt = now;
+          void triggerProactive();
+          return;
+        }
+      }
+      lastActiveAt = now;
+    }
+
+    const sinceGreet = now - lastGreetAt;
+    const activeMs = now - activeStartAt; // 连续活跃时长
+    const hour = new Date().getHours();
+
+    // 久坐提醒：连续活跃超过 90 分钟且没离开过
+    if (activeMs > 90 * 60 * 1000 && sinceGreet > 60 * 60 * 1000 && !wasIdle) {
+      lastGreetAt = now;
+      void triggerProactive();
+      return;
+    }
+
+    // 深夜关怀
+    if ((hour >= 23 || hour < 2) && sinceGreet > 30 * 60 * 1000) {
+      lastGreetAt = now;
+      void triggerProactive();
+      return;
+    }
+
+    // 早晨首次
+    if (hour >= 6 && hour < 10 && lastGreetAt === 0) {
+      lastGreetAt = now;
+      void triggerProactive();
+      return;
+    }
+
+    // 兜底
+    if (sinceGreet > 60 * 60 * 1000) {
+      lastGreetAt = now;
+      void triggerProactive();
+    }
+  }, 5 * 60 * 1000);
 
   // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
   setInterval(() => void engine.pollCursor(), 60);
@@ -541,7 +663,7 @@ async function boot() {
     // UI 按压期间也临时锁定，保证 slider/scroll/pointer capture 越出 rect 后不中断。
     if ((e.target as HTMLElement).closest?.("#menu, .model-panel, #info-panel, #update-bubble, #as-inputbar, #as-bubbles, .rm-modal-box, [data-petra-interactive]")) {
       uiPointerLocked = true;
-      void invoke("set_interacting", { active: true }).catch(() => {});
+      setInteractingDebounced(true);
       return;
     }
     // 绿框外区域不响应（穿透到下层）
@@ -553,9 +675,9 @@ async function boot() {
       return;
     }
     // 按下宠物后锁住输入，直到 pointerup/cancel/blur；拖出原 petRect 也不会中断。
-    void invoke("set_interacting", { active: true }).catch(() => {});
+    setInteractingDebounced(true);
     const p = engine.position;
-    drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
+      drag = { sx: e.clientX, sy: e.clientY, wx: p.x, wy: p.y, moved: false, mode: "free" };
     engine.suspend(DRAG_SUSPEND_MS);
   });
   document.addEventListener("pointermove", (e) => {
@@ -619,19 +741,19 @@ async function boot() {
     if (clicked) {
       if (settings.assistant.enabled) {
         openAssistant(getModelRect());
-      } else {
+        showInfoPanel();
         view.playClick();
         showInfoPanel(); // 展示信息板（5秒后自动消失）
       }
     }
-    void invoke("set_interacting", { active: false }).catch(() => {});
+    setInteractingDebounced(false);
     requestInteractionRegionSync(true);
     engine.suspend(1500); // 拖完原地歇一会再乱逛
   };
   const releasePointerInteraction = (cancelled: boolean) => {
     if (uiPointerLocked) {
       uiPointerLocked = false;
-      void invoke("set_interacting", { active: false }).catch(() => {});
+      setInteractingDebounced(false);
       requestInteractionRegionSync(true);
     }
     endDrag(cancelled);
@@ -702,16 +824,45 @@ async function boot() {
     const mr = getModelRect();
     const toasts = document.getElementById("toasts");
     if (toasts && toasts.children.length > 0) {
-      toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
-      toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
-      toasts.style.transform = "translateX(-50%)";
+      if (!drag || !drag.moved) {
+        toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+        toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
+        toasts.style.transform = "translateX(-50%)";
+      }
     }
     const bubbles = document.getElementById("as-bubbles");
-    if (bubbles && bubbles.children.length > 0) {
+    if (bubbles && bubbles.children.length > 0 && (!drag || !drag.moved)) {
       bubbles.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
       bubbles.style.top = `${Math.round(mr.top - bubbles.offsetHeight - 12)}px`;
       bubbles.style.bottom = "auto";
       bubbles.style.transform = "translateX(-50%)";
+    }
+    // 拖拽中所有打开的面板跟随模型位置
+    if (drag && drag.moved) {
+      // 输入框
+      const ib = document.getElementById("as-inputbar");
+      if (ib && !ib.classList.contains("hidden")) {
+        ib.style.left = `${Math.round(mr.left)}px`;
+        ib.style.top = `${Math.min(mr.bottom + 10, window.innerHeight - 60)}px`;
+        ib.style.bottom = "auto";
+      }
+      // 气泡
+      if (bubbles && bubbles.children.length > 0) {
+        bubbles.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+        bubbles.style.top = `${Math.round(mr.top - bubbles.offsetHeight - 12)}px`;
+        bubbles.style.bottom = "auto";
+        bubbles.style.transform = "translateX(-50%)";
+      }
+      // 通知
+      if (toasts && toasts.children.length > 0) {
+        toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
+        toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
+        toasts.style.transform = "translateX(-50%)";
+      }
+      // 其他面板（model-panel、chat-history 等）
+      document.querySelectorAll(".model-panel:not(.hidden), #chat-history-panel").forEach(el => {
+        positionPanelNearModel(el as HTMLElement);
+      });
     }
 
     // 调试日志仅 dev 构建输出
@@ -1237,6 +1388,11 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => void toggleAssistantSettings(),
     },
     {
+      id: "chat-history",
+      label: "对话记录",
+      onPick: () => toggleChatHistory(),
+    },
+    {
       id: "feedback",
       label: "反馈",
       onPick: () => openFeedbackInput(),
@@ -1723,6 +1879,87 @@ function toggleBoundsPanel() {
 // 导入 BoundsPadding 类型
 import type { BoundsPadding } from "./utils/settings";
 
+// ---------- 对话记录面板 ----------
+function toggleChatHistory() {
+  const existing = document.getElementById("chat-history-panel");
+  if (existing) { existing.remove(); return; }
+
+  const panel = document.createElement("div");
+  panel.id = "chat-history-panel";
+  panel.className = "model-panel";
+  panel.style.zIndex = "170";
+  panel.style.cssText = "display:flex;flex-direction:column;overflow:hidden;width:auto;max-width:360px;";
+
+  const title = document.createElement("div");
+  title.className = "mp-title";
+  title.textContent = "对话记录";
+  panel.appendChild(title);
+
+  // 从 localStorage 读取历史，过滤主动问候和工具消息
+  let msgs: {role: string; content: string}[] = [];
+  try {
+    const raw = JSON.parse(localStorage.getItem("live2d-pet-assistant-history") || "[]");
+    msgs = raw
+      .filter((m: any) => {
+        if (m.role !== "user" && m.role !== "assistant") return false;
+        if (!m.content) return false;
+        const c = String(m.content);
+        if (c.startsWith("[主动问候]")) return false;
+        if (c.startsWith("[主动学习]")) return false;
+        return true;
+      })
+      .map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) }));
+  } catch {}
+
+  if (msgs.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "mp-hint";
+    empty.textContent = "暂无对话记录";
+    panel.appendChild(empty);
+  } else {
+    const list = document.createElement("div");
+    list.style.cssText = "flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 0;scrollbar-width:thin;";
+    for (const m of msgs) {
+      const row = document.createElement("div");
+      row.style.cssText = "font-size:12px;line-height:1.5;padding:6px 10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;";
+      if (m.role === "user") {
+        row.style.background = "rgba(100,140,255,0.12)";
+        row.textContent = "👤 " + m.content;
+      } else {
+        row.style.background = "rgba(255,255,255,0.6)";
+        row.textContent = "🐾 " + m.content;
+      }
+      list.appendChild(row);
+    }
+    panel.appendChild(list);
+  }
+
+  // 关闭按钮
+  const btns = document.createElement("div");
+  btns.className = "as-set-btns";
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "as-btn";
+  closeBtn.textContent = "关闭";
+  closeBtn.addEventListener("click", () => panel.remove());
+  btns.appendChild(closeBtn);
+  panel.appendChild(btns);
+
+  document.body.appendChild(panel);
+  positionPanelNearModel(panel);
+
+  // 点击外部关闭（延迟注册避免当前点击触发）
+  setTimeout(() => {
+    const close = (e: MouseEvent) => {
+      if (!panel.contains(e.target as Node)) {
+        panel.remove();
+        document.removeEventListener("pointerdown", close);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+  }, 50);
+}
+
+
 // ---------- 小助手设置面板 ----------
 async function toggleAssistantSettings() {
   const panel = document.getElementById("assistant-settings") as HTMLElement | null;
@@ -1989,7 +2226,6 @@ async function doSendFeedback(message: string) {
 }
 
 // ---------- 检查更新 ----------
-const UPDATE_REPO = "Wumiu/Petra";
 const UPDATE_KEY = "live2d-pet-last-update-notify"; // 已提示过的版本（启动自动检查时不重复弹）
 
 function parseVersion(v: string): number[] {
@@ -2009,56 +2245,80 @@ function cmpVersion(a: number[], b: number[]): number {
   return 0;
 }
 
-function showUpdateBubble(tag: string, url: string) {
-  let el = document.getElementById("update-bubble") as HTMLElement | null;
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "update-bubble";
-    el.className = "update-bubble";
-    el.addEventListener("pointerdown", (e) => e.stopPropagation());
-    document.body.appendChild(el);
-  }
-  // 使用 textContent 防止 XSS（tag 来自 GitHub API，不可信）
-  el.innerHTML = ""; // 清空旧内容
-  const bold = document.createElement("b");
-  bold.textContent = `✨ 新版本 ${tag} 可用！`;
-  const span = document.createElement("span");
-  span.textContent = "点这里前往下载";
-  el.appendChild(bold);
-  el.appendChild(span);
-  el.classList.remove("hidden");
-  el.onclick = () => {
-    void invoke("open_url", { url }).catch(() => {});
-    el!.remove();
+function showUpdateBubble(tag: string, downloadUrls: string[]) {
+  // 用模型头顶大气泡样式
+  const existing = document.getElementById("update-bubble");
+  if (existing) existing.remove();
+
+  const el = document.createElement("div");
+  el.id = "update-bubble";
+  el.className = "big-toast";
+  el.style.whiteSpace = "normal";
+  el.style.maxWidth = "280px";
+  el.style.cursor = "pointer";
+  el.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  const mr = getModelRect();
+  el.style.left = `${Math.round(mr.left + mr.width / 2)}px`;
+  el.style.bottom = `${Math.round(window.innerHeight - mr.top + 14)}px`;
+  el.style.transform = "translateX(-50%)";
+
+  const title = document.createElement("div");
+  title.style.fontSize = "15px";
+  title.textContent = `✨ 新版本 ${tag} 可用！`;
+  const hint = document.createElement("div");
+  hint.style.cssText = "font-size:12px;font-weight:400;margin-top:4px;opacity:0.8;";
+  hint.textContent = "点这里自动更新";
+  const bar = document.createElement("div");
+  bar.style.cssText = "height:4px;background:rgba(176,74,126,0.2);border-radius:4px;margin-top:8px;display:none;";
+  const fill = document.createElement("div");
+  fill.style.cssText = "height:100%;background:#d06a9a;border-radius:4px;width:0%;transition:width 0.3s;";
+  bar.appendChild(fill);
+  el.append(title, hint, bar);
+  document.body.appendChild(el);
+
+  el.onclick = async () => {
+    hint.textContent = "正在下载…";
+    bar.style.display = "block";
+    el.style.cursor = "default";
+    el.onclick = null;
+    const ok = await performUpdate(downloadUrls, (pct) => {
+      fill.style.width = `${pct}%`;
+      hint.textContent = `正在下载… ${pct}%`;
+    });
+    if (ok) {
+      hint.textContent = "下载完成，即将安装…";
+    } else {
+      hint.textContent = "下载失败，点这里手动下载";
+      bar.style.display = "none";
+      el.style.cursor = "pointer";
+      el.onclick = () => {
+        void invoke("open_url", { url: `https://github.com/Wumiu/Petra/releases/tag/${tag}` });
+        el.remove();
+      };
+    }
   };
-  // 8 秒未点击自动消失
-  clearTimeout((el as unknown as { _t?: number })._t);
-  (el as unknown as { _t?: number })._t = window.setTimeout(() => {
-    if (el?.isConnected) el.remove();
-  }, BUBBLE_FADE_MS);
+
+  setTimeout(() => {
+    if (el.isConnected) {
+      el.classList.add("bye");
+      setTimeout(() => el.remove(), 300);
+    }
+  }, 15000);
 }
+
+// TODO: 测试用，发布前删除
 
 async function checkUpdate(manual = false) {
   try {
-    const res = await fetch(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`, {
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      if (manual) toast("检查更新失败（网络或仓库不可用）", "warn");
-      return;
-    }
-    const rel = await res.json();
-    const tag = String(rel.tag_name ?? "");
-    const url = String(rel.html_url ?? "");
-    const local = parseVersion(await getVersion().catch(() => "0"));
-    const remote = parseVersion(tag);
-    if (remote.length && cmpVersion(remote, local) > 0) {
-      // 自动检查：同一版本只提示一次；手动检查总是提示
-      if (!manual && localStorage.getItem(UPDATE_KEY) === tag) return;
-      localStorage.setItem(UPDATE_KEY, tag);
-      showUpdateBubble(tag, url);
+    const info = await checkForUpdate();
+    if (info) {
+      if (!manual && localStorage.getItem(UPDATE_KEY) === info.version) return;
+      localStorage.setItem(UPDATE_KEY, info.version);
+      showUpdateBubble(info.version, info.downloadUrls);
     } else if (manual) {
-      toast(`已是最新版本（v${local.join(".")}）`);
+      const v = await getVersion().catch(() => "?");
+      toast(`已是最新版本（v${v}）`);
     }
   } catch {
     if (manual) toast("检查更新失败（网络不可用）", "warn");
@@ -2074,3 +2334,35 @@ function toggleAudio(on: boolean) {
 }
 
 void boot();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
