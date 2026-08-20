@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State};
+use std::os::windows::process::CommandExt;
 
 pub struct AudioState {
     pub enabled: Arc<AtomicBool>,
@@ -657,6 +658,7 @@ fn get_idle_seconds() -> u64 {
 #[tauri::command]
 fn http_get(url: String) -> Result<String, String> {
     let output = std::process::Command::new("powershell")
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .args(["-NoProfile", "-Command", &format!(
             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (Invoke-WebRequest -Uri '{}' -UseBasicParsing -TimeoutSec 15).Content",
             url.replace("'", "''")
@@ -678,6 +680,7 @@ fn http_download(url: String) -> Result<Vec<u8>, String> {
         Invoke-WebRequest -Uri '{url}' -UseBasicParsing -TimeoutSec 120 -OutFile '{path}';
     ", url = url.replace("'", "''"), path = tmp.display());
     let output = std::process::Command::new("powershell")
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .args(["-NoProfile", "-Command", &ps_cmd])
         .output().map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -1660,6 +1663,7 @@ mod tests {
         std::fs::remove_file(&outside).ok();
     }
 }
+
 
 
 

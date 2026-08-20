@@ -2310,6 +2310,18 @@ function showUpdateBubble(tag: string, downloadUrls: string[]) {
 // TODO: 测试用，发布前删除
 
 async function checkUpdate(manual = false) {
+  // 手动检查时显示头顶大气泡
+  let checkingEl: HTMLElement | null = null;
+  if (manual) {
+    checkingEl = document.createElement("div");
+    checkingEl.className = "big-toast";
+    checkingEl.textContent = "🔍 检查更新中…";
+    document.body.appendChild(checkingEl);
+    const mr = getModelRect();
+    checkingEl.style.left = `${Math.round(mr.left + mr.width / 2)}px`;
+    checkingEl.style.bottom = `${Math.round(window.innerHeight - mr.top + 14)}px`;
+    checkingEl.style.transform = "translateX(-50%)";
+  }
   try {
     const info = await checkForUpdate();
     if (info) {
@@ -2322,6 +2334,8 @@ async function checkUpdate(manual = false) {
     }
   } catch {
     if (manual) toast("检查更新失败（网络不可用）", "warn");
+  } finally {
+    if (checkingEl) checkingEl.remove();
   }
 }
 
