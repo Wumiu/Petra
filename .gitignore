@@ -48,3 +48,4 @@ src-tauri/resources/
 
 # Tauri updater signing key (NEVER commit)
 .tauri/
+*.key

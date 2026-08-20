@@ -1,11 +1,11 @@
 {
-  "version": "0.1.4",
-  "notes": "Petra v0.1.4",
-  "pub_date": "2026-08-20T17:09:22Z",
+  "version": "0.1.6",
+  "notes": "Petra v0.1.6",
+  "pub_date": "2026-08-20T14:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSZng4YkVtbkl4V1dWTVArbmxrZmRYbnNQdHJBU21rRlF6VTgxelZBV2dMSE9qS3JtZ00rcit4c29xaVZJUjFXZmFWTng1TnVNOGYwbzNnYTVrVWlkRnVpSGhqaXJLNmc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MjE3MjgxCWZpbGU6UGV0cmFfMC4xLjRfeDY0LXNldHVwLmV4ZQpSVVdjMW5oY1RvdHhhZDJVR09JK2gveTJ0SFZ6dzVTWW5Vdy9RaVBsTXZnOTRqOHEwQldSMnFqcjVIYWUrdjA0djNNYTkwU2RZd0NPblRMRk1qb0RCZz09Cg==",
-      "url": "https://github.com/Wumiu/Petra/releases/latest/download/Petra_0.1.4_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRWmJFK3RhVnpQaGhuQ29zckQ2ZGM4Uzl1aGZJMkV2OEJQUTJUTWVKOVR6akpBQ0NDUE5QM3BXdko5SFl4M2xienpnektaWGt4eW0rRmUzU0VWa3F3eDZKS2NYalNqMkEwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MjM0MzU0CWZpbGU6UGV0cmFfMC4xLjZfeDY0LXNldHVwLmV4ZQpxMjRsMlpyc1Z6RXcvenFtSjRRa3o3cXZkeWV2RzVJamh2c3ptYVFzVVhnc3E4WWlJcTE2dHdXUHp3SzJQaE5naWdQK0tWY0ZjOFR1YTZsMVFKWExEUT09Cg==",
+      "url": "https://github.com/Wumiu/Petra/releases/latest/download/Petra_0.1.6_x64-setup.exe"
     }
   }
 }
