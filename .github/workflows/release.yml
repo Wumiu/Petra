@@ -44,7 +44,7 @@ jobs:
 
             下载 `Petra_*_x64-setup.exe`，解压后运行其中的 setup.exe 安装。
           releaseDraft: false
-          prerelease: false
+          prerelease: true
           # tauri-action 自动:构建 + 用 TAURI_SIGNING_PRIVATE_KEY 签名 updater artifacts
           # + 生成 latest.json(含 signature/url)作为 Release 附件
           includeUpdaterJson: true
