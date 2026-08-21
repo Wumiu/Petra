@@ -392,7 +392,7 @@ export class BehaviorEngine {
           this.clearTarget();
         } else {
           // 逗猫棒：追鼠标速度；非追踪按档位闲逛速度（本地积分与 mover 同一速度）
-          const speed = this.tracking ? CHASE_SPEED : this.actParams.speed;
+          const speed = this.actParams.speed;
           this.lastPushSpeed = speed;
           velX = (tx / td) * speed;
           velY = (ty / td) * speed;

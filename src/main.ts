@@ -771,11 +771,11 @@ async function boot() {
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
       view.playClick();
-      showInfoPanel(); // 展示信息板（5秒后自动消失）
+      showInfoPanel();
       if (settings.assistant.enabled) {
         openAssistant(getModelRect());
       }
-    }
+      }
     setInteractingDebounced(false);
     requestInteractionRegionSync(true);
     engine.suspend(1500); // 拖完原地歇一会再乱逛
@@ -1576,23 +1576,23 @@ async function showInfoPanel() {
   const screenCy = a ? a.top + a.height / 2 : window.innerHeight / 2;
   const modelScreenCenterY = engine.windowScreenPos.y + mr.top + mr.height / 2;
   let top: number;
+  // 小助手开启时，信息板避开助手位置（助手在模型下方）
+  const assistantOpen = settings.assistant.enabled;
   if (modelScreenCenterY <= screenCy) {
-    // 模型在上半屏 → 信息版在下方
-    top = mr.bottom + 6;
-    // 下方放不下 → 翻转到上方紧贴
-    if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
+    // 模型在上半屏 → 信息版默认在下方
+    if (assistantOpen) {
+      // 助手在下方，信息板移到上方
+      top = mr.top - panelH - 6;
+      if (top < vr.top) top = mr.bottom + 6; // 上方放不下就还是下方
+    } else {
+      top = mr.bottom + 6;
+      if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
+    }
   } else {
-    // 模型在下半屏 → 信息版在上方
+    // 模型在下半屏 → 信息版在上方（助手也在下方，不冲突）
     top = mr.top - panelH - 6;
-    // 上方放不下（被 clamp 会贴窗口顶产生大空隙）→ 翻转到下方紧贴
     if (top < vr.top) top = mr.bottom + 6;
   }
-
-  // 最终兜底（极窄场景）：clamp 到可见区域
-  if (left + panelW > vr.right) left = vr.right - panelW - 8;
-  if (left < vr.left) left = vr.left + 8;
-  if (top < vr.top) top = vr.top + 8;
-  if (top + panelH > vr.bottom) top = vr.bottom - panelH - 8;
 
   el.style.left = `${Math.round(left)}px`;
   el.style.top = `${Math.round(top)}px`;
