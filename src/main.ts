@@ -148,6 +148,8 @@ const IDLE_AFTER_DRAG_MS = 1500; // 拖拽后恢复漫游的休息时长
 const FIRST_ROAM_DELAY = 5000; // 首次漫游延迟
 const UPDATE_CHECK_DELAY = 5000; // 启动后检查更新延迟
 const BUBBLE_FADE_MS = 8000; // 更新气泡自动消失时间
+// 启动自动检查的 timer 句柄：用户手动检查时清除它，避免 5 秒后重复自动检查
+let startupUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 const PSD_KEY = "live2d-pet-psd";
 const BUILTIN_KEY = "live2d-pet-builtin-model"; // 当前选中的内置模型（manifest files 内）
 const POS_KEY = "live2d-pet-position"; // 桌宠位置持久化
@@ -651,8 +653,11 @@ async function boot() {
     }
     await analyzer.ctx.resume().catch(() => {});
   };
-  // 启动后自动检查一次更新（静默）
-  setTimeout(() => void checkUpdate(false), UPDATE_CHECK_DELAY);
+  // 启动后自动检查一次更新（静默，非阻塞——fire-and-forget，不等待）
+  startupUpdateTimer = setTimeout(() => {
+    startupUpdateTimer = null;
+    void checkUpdate(false);
+  }, UPDATE_CHECK_DELAY);
 
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
@@ -2353,6 +2358,11 @@ function showUpdateBubble(tag: string, downloadUrls: string[]) {
 // TODO: 测试用，发布前删除
 
 async function checkUpdate(manual = false) {
+  // 手动检查：取消尚未触发的启动自动检查，避免 5 秒后重复检查一次
+  if (manual && startupUpdateTimer !== null) {
+    clearTimeout(startupUpdateTimer);
+    startupUpdateTimer = null;
+  }
   // 手动检查时显示头顶大气泡
   let checkingEl: HTMLElement | null = null;
   if (manual) {

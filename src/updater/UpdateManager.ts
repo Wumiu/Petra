@@ -18,16 +18,28 @@ export interface UpdateInfo {
 
 /** 检查是否有更新（静默）。通过 tauri-plugin-updater 检查，签名验证内置。 */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const update = await check();
-  if (!update) return null;
-  // 缓存 Update 实例供后续下载使用
-  _cachedUpdate = update;
-  return {
-    version: update.version,
-    notes: update.body ?? undefined,
-    currentVersion: update.currentVersion,
-    downloadUrls: [], // 不再由前端管理下载 URL
-  };
+  // single-flight：同一时刻只允许一个 check() 运行。
+  // 启动自动检查与用户手动检查可能同时触发，防止并发请求导致重复弹窗/竞态。
+  if (_checking) {
+    return _checking;
+  }
+  _checking = (async () => {
+    try {
+      const update = await check();
+      if (!update) return null;
+      // 缓存 Update 实例供后续下载使用
+      _cachedUpdate = update;
+      return {
+        version: update.version,
+        notes: update.body ?? undefined,
+        currentVersion: update.currentVersion,
+        downloadUrls: [], // 不再由前端管理下载 URL
+      };
+    } finally {
+      _checking = null; // 无论成功失败都复位，手动检查不会被永久锁死
+    }
+  })();
+  return _checking;
 }
 
 /** 执行更新：Tauri 官方签名验证 → 下载 → 签名验证 → 安装 */
@@ -69,3 +81,5 @@ export async function performUpdate(
 // ---------- 内部状态 ----------
 
 let _cachedUpdate: Update | null = null;
+// single-flight：同一时刻最多一个真实 check() 请求（自动/手动检查共享）
+let _checking: Promise<UpdateInfo | null> | null = null;
