@@ -121,6 +121,26 @@ platforms["windows-x86_64-msi"]  指向 MSI（供支持 MSI 的客户端 / 人�
 
 更新后提交 `release/latest.json` 并 push（这是唯一需要入库的更新相关文件）。
 
+### 4.2 Stable channel 约束（重要）
+
+> **Petra updater endpoint 依赖 `releases/latest/download/latest.json`**，
+> 即 GitHub 的 **Latest** release 语义。
+
+因此正式可自动更新的版本**必须**：
+
+```text
+prerelease = false
+```
+
+否则：
+- GitHub `releases/latest` 不会指向该版本（Latest 只选"最新的非 prerelease / 非 draft"）
+- `releases/latest/download/latest.json` 会 404
+- 客户端（v0.1.5 legacy 与 v0.1.6+）都无法发现更新
+
+如果将来需要发布 Beta / RC：
+- 应使用**另外的 prerelease channel / 独立 endpoint**
+- **不能**复用 stable updater endpoint（会切断 stable 更新链）
+
 ---
 
 ## 五、上传 GitHub Release

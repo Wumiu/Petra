@@ -44,7 +44,9 @@ jobs:
 
             下载 `Petra_*_x64-setup.exe`，解压后运行其中的 setup.exe 安装。
           releaseDraft: false
-          prerelease: true
+          prerelease: false
+          # 注意：必须保持 prerelease=false，否则 GitHub releases/latest 不会指向本版本，
+          # updater endpoint (releases/latest/download/latest.json) 将 404，客户端无法发现更新。
           # tauri-action 自动:构建 + 用 TAURI_SIGNING_PRIVATE_KEY 签名 updater artifacts
           # + 生成 latest.json(含 signature/url)作为 Release 附件
           includeUpdaterJson: true
