@@ -7,6 +7,20 @@
 - 重写 README，完善使用说明
 - 新增开源许可与致谢、商标与图片版权免责声明
 
+## [v0.1.7] - 2026-08-21
+
+### Fixed
+
+- 修复 Windows 系统代理 / Clash 环境下 updater 无法联网的问题（自动使用系统代理）
+- 为 updater 检查增加合理超时（12s），避免网络不可达时长时间等待
+- 移除已失效的 mirror.ghproxy.com fallback
+- 保留并增强 updater 并发检查与错误处理（single-flight、手动取消自动）
+
+### Security
+
+- 继续使用 Tauri 官方 updater 与正式数字签名验证
+- 不提供未验证安装包 fallback
+
 ## [v0.1.6] - 2026-08-20
 
 - 自动更新安全迁移：接入 Tauri 官方 updater 插件（内置 minisign 签名验证）

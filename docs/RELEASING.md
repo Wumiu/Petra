@@ -141,6 +141,22 @@ prerelease = false
 - 应使用**另外的 prerelease channel / 独立 endpoint**
 - **不能**复用 stable updater endpoint（会切断 stable 更新链）
 
+### 4.3 Updater 网络约束（v0.1.7 baseline）
+
+> **Petra 从 v0.1.7 起是 updater 网络稳定基线版。**
+
+- **不要**在 updater endpoints 中依赖不可控的免费 GitHub 代理（如已失效的 mirror.ghproxy.com）
+  —— 它们 DNS / 可用性不稳定，且会被客户端编译进 endpoint 列表
+- Windows updater 应**正确处理系统代理**：客户端通过 `get_system_proxy` 自动发现
+  环境变量（HTTPS_PROXY/HTTP_PROXY/ALL_PROXY）与 WinINET 系统代理，覆盖检查和下载
+- 客户端 updater 检查设置**有限超时**（约 12s），网络不可达时快速失败而非无限等待
+- **发布前必须验证**：
+  1. metadata 网络测试（`releases/latest/download/latest.json` 可达）
+  2. installer 下载测试
+  3. signature 验证测试
+- 已装 v0.1.6 且网络受限（无代理、无法访问 GitHub）的用户，需**手动安装 v0.1.7 一次**，
+  之后自动更新恢复；不要声称"所有中国大陆网络均可无代理更新"（事实并非如此）
+
 ---
 
 ## 五、上传 GitHub Release

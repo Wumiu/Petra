@@ -18,7 +18,7 @@ import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
 import { listModels } from "./assistant/AssistantClient";
-import { checkForUpdate, performUpdate } from "./updater/UpdateManager";
+import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
 import {
   logicalRectToPhysicalRegion,
@@ -2385,8 +2385,17 @@ async function checkUpdate(manual = false) {
       const v = await getVersion().catch(() => "?");
       toast(`已是最新版本（v${v}）`);
     }
-  } catch {
-    if (manual) toast("检查更新失败（网络不可用）", "warn");
+  } catch (e) {
+    // 按错误类型给用户可理解提示（自动检查静默，仅记录日志）
+    if (manual) {
+      const kind = e instanceof UpdateCheckErrorExt ? e.kind : "unknown";
+      const msg =
+        kind === "plugin-unavailable" ? "更新组件不可用"
+        : kind === "metadata" ? "更新信息获取失败"
+        : kind === "signature" ? "更新包安全验证失败"
+        : "检查更新失败，请检查网络或代理设置";
+      toast(msg, "warn");
+    }
   } finally {
     if (checkingEl) checkingEl.remove();
   }

@@ -1,5 +1,6 @@
 mod audio;
 mod launch;
+mod proxy;
 mod screen;
 mod trash;
 
@@ -647,6 +648,14 @@ fn active_window_title() -> String {
             title
         }
     }
+}
+
+/// 读取 updater 可用的系统代理 URL（只读，不修改系统代理，不记录凭据）。
+/// 优先环境变量 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY，其次 WinINET 系统代理。
+/// 无代理或失败返回 None，绝不导致启动失败。
+#[tauri::command]
+fn get_system_proxy() -> Option<String> {
+    proxy::get_system_proxy()
 }
 
 /// 返回用户空闲秒数（鼠标键盘无输入的时间）。
@@ -1471,9 +1480,10 @@ mod interaction_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
-    #[cfg(not(debug_assertions))]
-    { builder = builder.plugin(tauri_plugin_updater::Builder::new().build()); }
+    let builder = tauri::Builder::default();
+    // updater 插件在 dev / release 都注册，使 tauri dev 下也能真实测试 check() 网络链路。
+    // 开发版禁止实际安装由前端 import.meta.env.DEV 保护（见 UpdateManager.performUpdate）。
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1511,7 +1521,7 @@ pub fn run() {
             set_pet_target, set_pet_target_speed, set_pet_tracking, clear_pet_target,
             drag_start, set_model_bounds, drag_end, set_window_size,
             run_shell, launch_application, open_url, active_window_title,
-            get_idle_seconds,
+            get_idle_seconds, get_system_proxy,
             set_api_key, get_api_key, send_feedback, export_feedback,
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,

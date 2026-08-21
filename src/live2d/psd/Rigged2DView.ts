@@ -47,6 +47,9 @@ export class Rigged2DView implements PetView {
   private scalePulse = 0;
   private swayEnabled = true;
   private displayW = 300; // 当前显示边长（窗口跟随缩放，setScale 更新）
+  // 音乐驱动相位：让 treble/bass 的单向能量乘以 sin 载波变成围绕 0 的双向摆动，
+  // 避免"普通待机时角色整体固定倾斜"（treble/bass 是 ≥0 的 DC 偏置）。
+  private musicPhase = 0;
 
   // 随机表情状态机
   private exprT = 0;
@@ -113,6 +116,7 @@ export class Rigged2DView implements PetView {
   }
 
   update(d: PetDriver, dt: number) {
+    this.musicPhase += dt;
     const sway = this.swayEnabled && !this.action ? 1 : 0;
     this.gobblePulse = Math.max(0, this.gobblePulse - dt * 2.2);
     this.clickPulse = Math.max(0, this.clickPulse - dt * 6);
@@ -196,9 +200,11 @@ export class Rigged2DView implements PetView {
       angleY: clamp(-cdy * 0.15 + exc * 0.06, -1, 1),
       eyeX: clamp(cdx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
       eyeY: clamp(cdy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
-      // 音乐 → 身体律动（+ BPM 节奏摇摆）
-      body: clamp(d.bass * 0.55 * sway + d.vx * 0.3 + d.beat * 0.2 * sway + bpmSway, -1, 1),
-      angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway + e.tilt * ew, -0.5, 0.5),
+      // 音乐 → 身体律动（+ BPM 节奏摇摆）。
+      // 注意：treble/bass 是单向能量(≥0)，直接乘 sway 会形成 DC 偏置导致角色固定倾斜；
+      // 乘 sin 载波使其围绕 0 双向摆动（与 Live2DController 一致）。
+      body: clamp(d.bass * 0.55 * sway * Math.sin(this.musicPhase * 2.1) + d.vx * 0.3 + d.beat * 0.2 * sway + bpmSway, -1, 1),
+      angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway * Math.sin(this.musicPhase * 3.3) + e.tilt * ew, -0.5, 0.5),
       // 音乐 → 嘴型（中频 + 节拍 + 吞咽/点击脉冲），表情叠加，兴奋时微张嘴
       mouthOpen: clamp(d.mid * 0.9 * sway + d.beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew + exc * 0.12, 0, 1.3),
       mouthForm: clamp(d.mid * 0.4 * sway + e.mouthForm * ew, -1, 1),
