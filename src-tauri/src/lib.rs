@@ -347,6 +347,15 @@ fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     if !path.to_lowercase().ends_with(".psd") {
         return Err("只接受 .psd 文件".into());
     }
+    // 大小上限：避免超大 PSD 全量读入内存导致进程 OOM/卡死（正常 PSD 约 3~16MB）
+    const MAX_BYTES: u64 = 200 * 1024 * 1024;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!(
+            "文件过大（{} MB），请使用 200MB 以内的 PSD",
+            meta.len() / 1024 / 1024
+        ));
+    }
     std::fs::read(&path).map_err(|e| e.to_string())
 }
 
@@ -524,9 +533,8 @@ fn set_pet_target(state: State<'_, PetMotion>, x: f64, y: f64) {
 
 /// 拖动专用：高速移动（跟手），避免 IPC 跳变残影。
 #[tauri::command]
-fn set_pet_target_speed(state: State<PetMotion>, x: f64, y: f64, speed: f64, tracking: Option<bool>) {
+fn set_pet_target_speed(state: State<PetMotion>, x: f64, y: f64, speed: f64) {
     *state.target.lock().unwrap() = Some((x, y, speed.max(100.0)));
-    if let Some(t) = tracking { state.tracking.store(t, std::sync::atomic::Ordering::Relaxed); }
 }
 
 #[tauri::command]
@@ -537,6 +545,17 @@ fn set_pet_tracking(state: State<PetMotion>, on: bool) {
 /// 更新拖拽时的模型边界（前端每帧调用，用于拖拽时夹紧窗口不让模型出屏）
 #[tauri::command]
 fn set_model_bounds(state: State<'_, DragState>, left: i32, top: i32, right: i32, bottom: i32) {
+    // 范围校验（对齐 sync_interaction_regions）：防止极端值让 8ms 拖动线程
+    // 的 i32 运算溢出（debug 直接 panic 杀掉线程，release 回绕导致窗口乱跳）
+    const LIMIT: i32 = 100_000;
+    let sane = [left, top, right, bottom]
+        .iter()
+        .all(|v| v.unsigned_abs() <= LIMIT as u32)
+        && right > left
+        && bottom > top;
+    if !sane {
+        return;
+    }
     *state.model_bounds.lock().unwrap() = (left, top, right, bottom);
 }
 
@@ -896,12 +915,12 @@ fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
 }
 
 fn chrono_now() -> String {
-    // 简单时间戳，避免额外依赖
-    let secs = std::time::SystemTime::now()
+    // 毫秒级时间戳，避免同秒多次导出互相覆盖
+    let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis())
         .unwrap_or(0);
-    format!("ts{secs}")
+    format!("ts{ms}")
 }
 
 /// 导出反馈文本到桌面文件（含用户描述 + 环境信息 + 本次启动日志），返回文件路径。
@@ -995,14 +1014,16 @@ fn send_notification(title: String, body: String) {
 }
 
 #[tauri::command]
-fn get_weather() -> Result<String, String> {
-    use std::io::Read;
-    // 用 wttr.in JSON API 获取详细天气数据
-    let mut child = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile", "-Command",
-            r#"try {
-                $r = Invoke-WebRequest -Uri 'https://wttr.in/?format=j1&lang=zh' -TimeoutSec 10 -UseBasicParsing;
+async fn get_weather() -> Result<String, String> {
+    // PowerShell 与网络 I/O 都可能在代理不可达时阻塞数秒。Tauri command 若在
+    // 运行时工作线程上直接等待，会让首次点击（信息面板请求天气）明显卡顿。
+    // 将整个阻塞操作放到专用线程，WebView/事件循环始终保持可响应。
+    tauri::async_runtime::spawn_blocking(|| {
+        let output = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile", "-Command",
+                r#"try {
+                $r = Invoke-WebRequest -Uri 'https://wttr.in/?format=j1&lang=zh' -TimeoutSec 6 -UseBasicParsing;
                 $j = $r.Content | ConvertFrom-Json;
                 $c = $j.current_condition[0];
                 $w = $j.weather[0];
@@ -1013,18 +1034,17 @@ fn get_weather() -> Result<String, String> {
                 $min = $w.mintempC;
                 $rain = $w.hourly[4].chanceofrain; # 中午时段降雨概率
                 "$loc|$desc|$temp|$max|$min|$rain"
-            } catch { "获取失败|天气获取失败|—|—|—|—" }"#,
-        ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动失败: {e}"))?;
-    let mut out = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_string(&mut out);
-    }
-    let _ = child.wait();
-    Ok(out.trim().to_string())
+                } catch { "获取失败|天气获取失败|—|—|—|—" }"#,
+            ])
+            .output()
+            .map_err(|e| format!("启动失败: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("天气命令执行失败: {}", output.status));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    })
+    .await
+    .map_err(|e| format!("天气任务异常: {e}"))?
 }
 
 /// 定时关机（分钟后）。
@@ -1067,6 +1087,12 @@ fn validate_shell_command(command: &str) -> Result<(), String> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return Err("命令为空".into());
+    }
+    // 控制字符（含换行/回车）一律拒绝：cmd 会把内嵌换行当作语句分隔符执行，
+    // 只拦 &|><` 会被 `ipconfig\n恶意命令` 这类 payload 绕过（白名单只看首 token）。
+    // 同时拒绝 %（环境变量展开）、^（cmd 转义符）、;（for 等块语句分隔符）。
+    if trimmed.chars().any(|c| c.is_control() || c == '%' || c == '^' || c == ';') {
+        return Err("命令被拦截（不允许控制字符 / % / ^ / ;）".into());
     }
     // 链式/重定向一律拦截
     if trimmed.contains('&') || trimmed.contains('|') || trimmed.contains('>')
@@ -1633,6 +1659,24 @@ mod tests {
         assert!(outside.exists(), "外部文件不应被删除");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&outside).ok();
+    }
+
+    /// run_shell 白名单校验：换行/控制字符/% /^/; 及链式重定向必须拦截；
+    /// 正常查询命令放行（防止 cmd /C 把内嵌换行当语句分隔符执行）。
+    #[test]
+    fn shell_validation_blocks_newline_and_metachars() {
+        assert!(validate_shell_command("ipconfig").is_ok());
+        assert!(validate_shell_command("dir C:\\Users\\me").is_ok());
+        assert!(validate_shell_command("ping 8.8.8.8 -n 4").is_ok());
+        assert!(validate_shell_command("type C:\\secret.txt").is_ok());
+        assert!(validate_shell_command("ipconfig\ncalc").is_err(), "换行注入必须拦截");
+        assert!(validate_shell_command("echo a\r\nb").is_err(), "CRLF 注入必须拦截");
+        assert!(validate_shell_command("echo %PATH%").is_err(), "环境变量展开必须拦截");
+        assert!(validate_shell_command("dir ^| type C:\\x").is_err(), "cmd 转义符必须拦截");
+        assert!(validate_shell_command("echo a;b").is_err(), "分号必须拦截");
+        assert!(validate_shell_command("echo a & calc").is_err(), "链式必须拦截");
+        assert!(validate_shell_command("dir | type C:\\x").is_err(), "管道必须拦截");
+        assert!(validate_shell_command("shutdown /s").is_err(), "非白名单命令必须拦截");
     }
 }
 

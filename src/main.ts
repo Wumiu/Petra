@@ -581,7 +581,7 @@ async function boot() {
     try { idleSec = await invoke<number>("get_idle_seconds"); } catch {}
 
     const now = Date.now();
-    const isIdle = idleSec > 3600; // 空闲超过 5 分钟才算"离开"
+    const isIdle = idleSec > 300; // 空闲超过 5 分钟才算"离开"
 
     if (isIdle) {
       // 用户离开了
@@ -757,17 +757,15 @@ async function boot() {
   const endDrag = (cancelled = false) => {
     if (!drag) return;
     const clicked = !cancelled && !drag.moved;
-    const dragMode = drag?.mode;
     if (drag.moved) {
       const start = nativeDragStart ?? Promise.resolve();
       void start.finally(() => {
         invoke("drag_end").catch(() => {});
-        // 待机拖拽结束：同步引擎位置到实际窗口位置
-        if (dragMode === "idleSlide") {
-          void getCurrentWindow().outerPosition().then(p => {
-            engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
-          });
-        }
+        // 拖拽结束：把引擎位置同步到实际窗口位置（原生 8ms 跟随可能在屏边夹紧，
+        // 自由拖拽与待机滑动同样适用，避免恢复漫游时从失真的 pos 起跳）
+        void getCurrentWindow().outerPosition().then(p => {
+          engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
+        });
       });
     }
     nativeDragStart = null;
@@ -1052,7 +1050,10 @@ function startInteractionRegionSync() {
     attributes: true,
     attributeFilter: ["class", "style", "hidden", "data-petra-interactive"],
   });
-  window.setInterval(() => requestInteractionRegionSync(), 33);
+  // 模型边界需要周期同步，但 30Hz 的完整 DOM 扫描 + IPC 会在首次点击创建
+  // 信息面板时放大卡顿。10Hz 对穿透区域已足够及时，状态变化仍由 observer
+  // 立即触发同步。
+  window.setInterval(() => requestInteractionRegionSync(), 100);
   requestInteractionRegionSync(true);
 }
 
@@ -1456,8 +1457,8 @@ function buildMenu(engine: BehaviorEngine) {
           topmostCache = next;
           toast(next ? "已置顶" : "已取消置顶");
         });
-    },
       },
+    },
     {
       id: "autostart",
       label: "开机自启",
@@ -2293,8 +2294,8 @@ function cmpVersion(a: number[], b: number[]): number {
   return 0;
 }
 
-function showUpdateBubble(tag: string, downloadUrls: string[]) {
-  // 用模型头顶大气泡样式
+function showUpdateBubble(tag: string) {
+  // 检测到更新后明确询问，用户确认才开始下载。
   const existing = document.getElementById("update-bubble");
   if (existing) existing.remove();
 
@@ -2303,7 +2304,6 @@ function showUpdateBubble(tag: string, downloadUrls: string[]) {
   el.className = "big-toast";
   el.style.whiteSpace = "normal";
   el.style.maxWidth = "280px";
-  el.style.cursor = "pointer";
   el.addEventListener("pointerdown", (e) => e.stopPropagation());
 
   const mr = getModelRect();
@@ -2316,43 +2316,51 @@ function showUpdateBubble(tag: string, downloadUrls: string[]) {
   title.textContent = `✨ 新版本 ${tag} 可用！`;
   const hint = document.createElement("div");
   hint.style.cssText = "font-size:12px;font-weight:400;margin-top:4px;opacity:0.8;";
-  hint.textContent = "点这里自动更新";
+  hint.textContent = "现在下载并安装吗？";
   const bar = document.createElement("div");
   bar.style.cssText = "height:4px;background:rgba(176,74,126,0.2);border-radius:4px;margin-top:8px;display:none;";
   const fill = document.createElement("div");
   fill.style.cssText = "height:100%;background:#d06a9a;border-radius:4px;width:0%;transition:width 0.3s;";
   bar.appendChild(fill);
-  el.append(title, hint, bar);
+  const actions = document.createElement("div");
+  actions.style.cssText = "display:flex;gap:8px;margin-top:9px;justify-content:center;";
+  const updateBtn = document.createElement("button");
+  updateBtn.className = "as-btn as-btn-primary";
+  updateBtn.textContent = "立即更新";
+  const laterBtn = document.createElement("button");
+  laterBtn.className = "as-btn";
+  laterBtn.textContent = "稍后";
+  actions.append(updateBtn, laterBtn);
+  el.append(title, hint, bar, actions);
   document.body.appendChild(el);
 
-  el.onclick = async () => {
+  const openDownloadPage = () => {
+    void invoke("open_url", { url: `https://github.com/Wumiu/Petra/releases/tag/${tag}` });
+    el.remove();
+  };
+  laterBtn.addEventListener("click", () => el.remove());
+  updateBtn.addEventListener("click", async () => {
     hint.textContent = "正在下载…";
     bar.style.display = "block";
-    el.style.cursor = "default";
-    el.onclick = null;
-    const ok = await performUpdate(downloadUrls, (pct) => {
+    updateBtn.disabled = true;
+    laterBtn.disabled = true;
+    const ok = await performUpdate([], (pct) => {
       fill.style.width = `${pct}%`;
       hint.textContent = `正在下载… ${pct}%`;
     });
     if (ok) {
       hint.textContent = "下载完成，即将安装…";
     } else {
-      hint.textContent = "下载失败，点这里手动下载";
+      hint.textContent = "下载失败，请前往下载页手动更新。";
       bar.style.display = "none";
-      el.style.cursor = "pointer";
-      el.onclick = () => {
-        void invoke("open_url", { url: `https://github.com/Wumiu/Petra/releases/tag/${tag}` });
-        el.remove();
-      };
+      updateBtn.disabled = false;
+      updateBtn.textContent = "重试";
+      laterBtn.disabled = false;
+      laterBtn.textContent = "前往下载";
+      laterBtn.onclick = openDownloadPage;
     }
-  };
+  });
 
-  setTimeout(() => {
-    if (el.isConnected) {
-      el.classList.add("bye");
-      setTimeout(() => el.remove(), 300);
-    }
-  }, 15000);
 }
 
 // TODO: 测试用，发布前删除
@@ -2380,7 +2388,7 @@ async function checkUpdate(manual = false) {
     if (info) {
       if (!manual && localStorage.getItem(UPDATE_KEY) === info.version) return;
       localStorage.setItem(UPDATE_KEY, info.version);
-      showUpdateBubble(info.version, info.downloadUrls);
+      showUpdateBubble(info.version);
     } else if (manual) {
       const v = await getVersion().catch(() => "?");
       toast(`已是最新版本（v${v}）`);
@@ -2394,7 +2402,10 @@ async function checkUpdate(manual = false) {
         : kind === "metadata" ? "更新信息获取失败"
         : kind === "signature" ? "更新包安全验证失败"
         : "检查更新失败，请检查网络或代理设置";
-      toast(msg, "warn");
+      // 附加底层原因，便于定位（如：release 未发布 / 未传 latest.json / 网络不通）
+      const detail = e instanceof Error ? e.message : String(e);
+      const hint = detail && detail.length > 90 ? `${detail.slice(0, 90)}…` : detail;
+      toast(hint ? `${msg}（${hint}）` : msg, "warn");
     }
   } finally {
     if (checkingEl) checkingEl.remove();

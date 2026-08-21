@@ -54,7 +54,6 @@ export class BehaviorEngine {
   private activityLevel: "low" | "mid" | "high" = "mid";
   private tracking = false;
   private cursorSpeed = 0; // 鼠标移动速度 px/s（按 120ms 轮询间隔真实计算）
-  private trackingStopped = false;
   private vel: XY = { x: 0, y: 0 }; // 上一帧速度（供碰撞反弹用）
   // 逗猫棒（追鼠标）
   private excitement = 0; // 0~1 兴奋度（鼠标越快越兴奋，渲染表现用）
@@ -184,7 +183,6 @@ export class BehaviorEngine {
     this.tracking = on;
     void invoke("set_pet_tracking", { on }).catch(() => {});
     this.target = null;
-    this.trackingStopped = false;
     this.fleeUntil = 0;
     if (on) {
       this.dwellUntil = 0;

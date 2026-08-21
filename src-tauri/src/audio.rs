@@ -33,14 +33,26 @@ macro_rules! adbg {
 
 /// 后台线程：以回环模式捕获系统默认输出设备，切块后通过
 /// `audio:pcm` 事件推给前端（Vec<f32> 单声道波形）。
+/// 设备拔插/驱动重置等瞬时错误不应让功能永久失效：
+/// 出错后退避重试（仅首次上报一次错误事件，避免风暴），设备恢复后自动续传。
 pub fn start_loopback_capture(app: AppHandle, enabled: Arc<AtomicBool>) {
     adbg!("[audio] WASAPI 回环捕获线程启动");
-    let result = run_capture(app.clone(), enabled);
-    if let Err(e) = result {
-        adbg!("[audio] 捕获失败: {e}");
-        let _ = app.emit("audio:error", format!("音频捕获不可用：{e}"));
-    } else {
-        adbg!("[audio] 捕获线程正常退出");
+    let mut error_reported = false;
+    loop {
+        match run_capture(app.clone(), enabled.clone()) {
+            Ok(()) => {
+                adbg!("[audio] 捕获线程正常退出");
+                return;
+            }
+            Err(e) => {
+                adbg!("[audio] 捕获失败: {e}");
+                if !error_reported {
+                    error_reported = true;
+                    let _ = app.emit("audio:error", format!("音频捕获不可用：{e}"));
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+        }
     }
 }
 
@@ -127,26 +139,34 @@ unsafe fn capture_loop(app: &AppHandle, enabled: &AtomicBool) -> Result<(), Stri
             capture
                 .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
                 .map_err(|e| e.to_string())?;
-            if frames > 0 && !data.is_null() {
-                if is_float && bits == 32 {
-                    let vals =
-                        std::slice::from_raw_parts(data as *const f32, frames as usize * channels);
-                    for f in vals.chunks_exact(channels) {
-                        // 多声道取平均（保留正负波形），不用 RMS（RMS 丢失正负信息导致 FFT 失效）
-                        mono.push(f.iter().sum::<f32>() / channels as f32);
-                    }
-                } else {
-                    let bps = bits / 8;
-                    let bytes =
-                        std::slice::from_raw_parts(data, frames as usize * channels * bps);
-                    for frm in bytes.chunks_exact(channels * bps) {
-                        // 多声道取平均（保留正负波形）
-                        let avg: f64 = frm
-                            .chunks_exact(bps)
-                            .map(|ch| decode_int_sample(ch, bps))
-                            .sum::<f64>()
-                            / channels as f64;
-                        mono.push(avg as f32);
+            if frames > 0 {
+                // 无论数据是否可读都必须 ReleaseBuffer，否则泄漏 WASAPI 包
+                if !data.is_null() {
+                    if is_float && bits == 32 {
+                        let vals =
+                            std::slice::from_raw_parts(data as *const f32, frames as usize * channels);
+                        for f in vals.chunks_exact(channels) {
+                            // 多声道取平均（保留正负波形），不用 RMS（RMS 丢失正负信息导致 FFT 失效）
+                            mono.push(f.iter().sum::<f32>() / channels as f32);
+                        }
+                    } else {
+                        let bps = bits / 8;
+                        // bps==0（异常位深）跳过处理，避免 chunks_exact(0) panic
+                        if bps > 0 {
+                            let bytes = std::slice::from_raw_parts(
+                                data,
+                                frames as usize * channels * bps,
+                            );
+                            for frm in bytes.chunks_exact(channels * bps) {
+                                // 多声道取平均（保留正负波形）
+                                let avg: f64 = frm
+                                    .chunks_exact(bps)
+                                    .map(|ch| decode_int_sample(ch, bps))
+                                    .sum::<f64>()
+                                    / channels as f64;
+                                mono.push(avg as f32);
+                            }
+                        }
                     }
                 }
                 capture.ReleaseBuffer(frames).map_err(|e| e.to_string())?;

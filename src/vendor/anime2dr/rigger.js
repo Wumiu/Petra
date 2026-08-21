@@ -393,7 +393,12 @@
     var FACE;
     if (faceE) {
       var fb = bboxOf(faceE.alpha, W, H, 8), fc = centroidOf(faceE.alpha, W, H);
-      FACE = { cx: fc.cx, cy: fc.cy, x0: fb.x0, x1: fb.x1, y0: fb.y0, y1: fb.y1 };
+      if (fb && fc) {
+        FACE = { cx: fc.cx, cy: fc.cy, x0: fb.x0, x1: fb.x1, y0: fb.y0, y1: fb.y1 };
+      } else {
+        warnings.push('face レイヤーが空です — キャンバス中央を顔とみなします');
+        FACE = { cx: W / 2, cy: H * 0.3, x0: W * 0.35, x1: W * 0.65, y0: H * 0.1, y1: H * 0.5 };
+      }
     } else {
       warnings.push('face レイヤーがありません — キャンバス中央を顔とみなします');
       FACE = { cx: W / 2, cy: H * 0.3, x0: W * 0.35, x1: W * 0.65, y0: H * 0.1, y1: H * 0.5 };
@@ -447,12 +452,15 @@
       var K = 'eye' + s.toUpperCase();
       if (ew) {
         var b = bboxOf(ew, W, H, 8);
-        var a = { x0: b.x0, x1: b.x1, y0: b.y0, y1: b.y1 };
-        var ic = ir ? centroidOf(ir, W, H) : centroidOf(ew, W, H);
-        a.icx = ic.cx; a.icy = ic.cy;
-        var cc = ec ? centroidOf(ec, W, H) : null;
-        a.closeY = cc ? cc.cy : (b.y0 + (b.y1 - b.y0) * 0.62);
-        anchors[K] = a;
+        if (b) {
+          var a = { x0: b.x0, x1: b.x1, y0: b.y0, y1: b.y1 };
+          var ic = ir ? centroidOf(ir, W, H) : centroidOf(ew, W, H);
+          if (ic) { a.icx = ic.cx; a.icy = ic.cy; }
+          else { a.icx = (b.x0 + b.x1) / 2; a.icy = (b.y0 + b.y1) / 2; }
+          var cc = ec ? centroidOf(ec, W, H) : null;
+          a.closeY = cc ? cc.cy : (b.y0 + (b.y1 - b.y0) * 0.62);
+          anchors[K] = a;
+        }
       }
     });
     if (!anchors.eyeL || !anchors.eyeR) warnings.push('目のアンカーが不完全です（eyewhite/irides を確認）');
@@ -460,7 +468,12 @@
     var mSrc = byName['mouth_open'] || byName['mouth_close'];
     if (mSrc) {
       var mb = bboxOf(mSrc.alpha, W, H, 8), mc = centroidOf(mSrc.alpha, W, H);
-      anchors.mouth = { x0: mb.x0, x1: mb.x1, y0: mb.y0, y1: mb.y1, cx: mc.cx, cy: mc.cy };
+      if (mb && mc) {
+        anchors.mouth = { x0: mb.x0, x1: mb.x1, y0: mb.y0, y1: mb.y1, cx: mc.cx, cy: mc.cy };
+      } else {
+        warnings.push('mouth_open / mouth_close が空です');
+        anchors.mouth = { x0: FACE.cx - 20, x1: FACE.cx + 20, y0: FACE.cy + 40, y1: FACE.cy + 60, cx: FACE.cx, cy: FACE.cy + 50 };
+      }
     } else {
       warnings.push('mouth_open / mouth_close がありません');
       anchors.mouth = { x0: FACE.cx - 20, x1: FACE.cx + 20, y0: FACE.cy + 40, y1: FACE.cy + 60, cx: FACE.cx, cy: FACE.cy + 50 };
@@ -469,9 +482,16 @@
     var nE = byName['neck'];
     if (nE) {
       var nb = bboxOf(nE.alpha, W, H, 8), nc = centroidOf(nE.alpha, W, H);
-      anchors.neckPivot = { cx: nc.cx, cy: nb.y0 + (nb.y1 - nb.y0) * 0.85 };
-      anchors.neckTop = nb.y0; anchors.neckBottom = nb.y1;
+      if (nb && nc) {
+        anchors.neckPivot = { cx: nc.cx, cy: nb.y0 + (nb.y1 - nb.y0) * 0.85 };
+        anchors.neckTop = nb.y0; anchors.neckBottom = nb.y1;
+      } else {
+        warnings.push('neck レイヤーが空です');
+        anchors.neckPivot = { cx: FACE.cx, cy: FACE.y1 + 20 };
+        anchors.neckTop = FACE.y1; anchors.neckBottom = FACE.y1 + 60;
+      }
     } else {
+      warnings.push('neck レイヤーがありません');
       anchors.neckPivot = { cx: FACE.cx, cy: FACE.y1 + 20 };
       anchors.neckTop = FACE.y1; anchors.neckBottom = FACE.y1 + 60;
     }

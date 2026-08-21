@@ -98,10 +98,11 @@ export class Live2DController implements PetView {
     this.gobble = Math.max(0, this.gobble - dt * 3.2);
     this.click = Math.max(0, this.click - dt * 6);
 
-    // 模型边缘露出偏移
+    // 模型边缘露出偏移（中心随显示尺寸变化，与 fit() 的 (w/2, h/2) 居中保持一致；
+    // 原来硬编码 150,150 会在 setScale>300 时把模型拉回左上角，与 PSD 后端（居中）不一致）
     this.modelOffsetX = d.modelOffsetX || 0;
     this.modelOffsetY = d.modelOffsetY || 0;
-    m.position.set(150 + this.modelOffsetX, 150 + this.modelOffsetY);
+    m.position.set(this.displayW / 2 + this.modelOffsetX, this.displayW / 2 + this.modelOffsetY);
 
     // 移动时镜像翻转
     if (Math.abs(d.vx) > 0.02) this.lastVx = d.vx;

@@ -84,7 +84,16 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       // 代理同时覆盖 metadata 检查与 installer 下载（tauri-plugin-updater 复用同一 client）。
       const proxy = await resolveProxy();
       console.log("[updater] check started (timeout", CHECK_TIMEOUT, "ms)");
-      const update = await check({ timeout: CHECK_TIMEOUT, proxy });
+      let update: Update | null;
+      try {
+        update = await check({ timeout: CHECK_TIMEOUT, proxy });
+      } catch (e) {
+        if (!proxy) throw e;
+        // 代理失效（梯子已关但环境变量残留 / 代理端口未启动 / PAC 解析异常）时
+        // 退回直连重试一次，保证"有代理配置但代理不可用"时只要直连可达就能检测到更新。
+        console.warn("[updater] check via proxy failed, retrying direct:", e);
+        update = await check({ timeout: CHECK_TIMEOUT, proxy: undefined });
+      }
       console.log("[updater] check done, update:", update ? `version=${update.version}` : "none");
       if (!update) return null;
       // 缓存 Update 实例供后续下载使用

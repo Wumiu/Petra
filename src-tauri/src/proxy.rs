@@ -117,23 +117,17 @@ fn wininet_proxy() -> Option<String> {
         return None;
     }
 
-    // AutoConfigURL（PAC）：存在即放弃，不实现 PAC 解释器（安全 fallback）
-    if let Some(pac) = query_value(hkey, "AutoConfigURL") {
-        let s = String::from_utf8_lossy(&pac);
-        let s = s.trim_end_matches('\0').trim();
-        if !s.is_empty() {
-            return None;
-        }
+    // PAC 不能直接交给 reqwest 解析，但不少客户端会同时写入 PAC 和
+    // ProxyServer。此前只要检测到 PAC 就直接走直连，导致 GitHub 更新在
+    // Clash/V2RayN 等 PAC 模式下必然失败。优先使用可用的静态代理；仅 PAC
+    // 且没有 ProxyServer 时才退回系统直连。
+    let server = query_value(hkey, "ProxyServer")
+        .map(|raw| String::from_utf8_lossy(&raw).trim_end_matches('\0').trim().to_string())
+        .unwrap_or_default();
+    if !server.is_empty() {
+        return parse_proxy_server(&server);
     }
-
-    // ProxyServer
-    let server_raw = query_value(hkey, "ProxyServer")?;
-    let server = String::from_utf8_lossy(&server_raw);
-    let server = server.trim_end_matches('\0').trim();
-    if server.is_empty() {
-        return None;
-    }
-    parse_proxy_server(server)
+    None
 }
 
 /// 解析 ProxyServer：`host:port` 或 `http=host:port;https=host:port`。

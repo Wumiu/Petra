@@ -213,7 +213,16 @@ export class PsdRuntime {
       eyeR: GenericParts.get("eyeR"),
       mouth: GenericParts.get("mouth"),
     };
-    const rig = Rigger.buildRig(psd, { generic: g });
+    // rigger 对"图层存在但全透明"等异常结构可能抛 TypeError（见 vendor rigger.js），
+    // 这里转成带上下文的明确错误，由上层 toast 展示并回退内置模型，而不是整链崩溃
+    let rig: any;
+    try {
+      rig = Rigger.buildRig(psd, { generic: g });
+    } catch (e) {
+      throw new Error(
+        `PSD 装配失败（图层结构可能异常）：${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     this._warnings = rig.warnings ?? [];
 
     this.CW = rig.canvas.w;

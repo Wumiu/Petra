@@ -43,8 +43,15 @@ Live2D-Pet_*.zip
 build.log
 Petra_*.zip
 
+# 本地发布暂存目录（release-package/ 仅供上传，不入库）
+release-package/
+
 # Tauri 打包资源（构建产物）
 src-tauri/resources/
+
+# release/ 目录只入库 latest.json（更新元数据），其余为构建产物
+release/*
+!release/latest.json
 
 # Tauri updater signing key (NEVER commit)
 .tauri/
