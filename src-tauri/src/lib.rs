@@ -19,6 +19,7 @@ pub struct AudioState {
 /// (x, y, speed)：speed 为移动速度 px/s（漫游 340，拖动 3000）。
 pub struct PetMotion {
     pub target: std::sync::Mutex<Option<(f64, f64, f64)>>,
+    pub tracking: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -274,6 +275,20 @@ fn hide_pet(app: AppHandle) {
 }
 
 #[tauri::command]
+fn set_topmost(app: AppHandle, on: bool) -> bool {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.set_always_on_top(on);
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+fn is_topmost(app: AppHandle) -> bool {
+    app.get_webview_window("main").map(|w| w.is_always_on_top().unwrap_or(false)).unwrap_or(false)
+}
+
+#[tauri::command]
 fn show_pet(app: AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
@@ -508,8 +523,14 @@ fn set_pet_target(state: State<'_, PetMotion>, x: f64, y: f64) {
 
 /// 拖动专用：高速移动（跟手），避免 IPC 跳变残影。
 #[tauri::command]
-fn set_pet_target_speed(state: State<'_, PetMotion>, x: f64, y: f64, speed: f64) {
+fn set_pet_target_speed(state: State<PetMotion>, x: f64, y: f64, speed: f64, tracking: Option<bool>) {
     *state.target.lock().unwrap() = Some((x, y, speed.max(100.0)));
+    if let Some(t) = tracking { state.tracking.store(t, std::sync::atomic::Ordering::Relaxed); }
+}
+
+#[tauri::command]
+fn set_pet_tracking(state: State<PetMotion>, on: bool) {
+    state.tracking.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 更新拖拽时的模型边界（前端每帧调用，用于拖拽时夹紧窗口不让模型出屏）
@@ -1169,7 +1190,8 @@ fn spawn_pet_mover(app: AppHandle) {
         let Some(win) = app.get_webview_window("main") else {
             continue;
         };
-        if screen::move_window_toward(&win, tx, ty, speed, 0.016) {
+        let clamp = !motion.tracking.load(std::sync::atomic::Ordering::Relaxed);
+        if screen::move_window_toward(&win, tx, ty, speed, 0.016, clamp) {
             // 到位（或窗口不可见）→ 清除目标，避免空转
             *motion.target.lock().unwrap() = None;
         }
@@ -1462,6 +1484,7 @@ pub fn run() {
         })
         .manage(PetMotion {
             target: std::sync::Mutex::new(None),
+            tracking: std::sync::atomic::AtomicBool::new(false),
         })
         .manage(MenuOpen {
             active: std::sync::atomic::AtomicBool::new(false),
@@ -1481,11 +1504,11 @@ pub fn run() {
             model_bounds: std::sync::Mutex::new((0, 0, 700, 700)),
         })
         .invoke_handler(tauri::generate_handler![
-            trash_files, work_area_at, cursor_pos, hide_pet, show_pet,
+            trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
             quit_app, restart_app, debug_mark, read_file_bytes, save_psd,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
-            set_pet_target, set_pet_target_speed, clear_pet_target,
+            set_pet_target, set_pet_target_speed, set_pet_tracking, clear_pet_target,
             drag_start, set_model_bounds, drag_end, set_window_size,
             run_shell, launch_application, open_url, active_window_title,
             get_idle_seconds,

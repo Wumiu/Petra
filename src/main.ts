@@ -150,6 +150,23 @@ const UPDATE_CHECK_DELAY = 5000; // 启动后检查更新延迟
 const BUBBLE_FADE_MS = 8000; // 更新气泡自动消失时间
 const PSD_KEY = "live2d-pet-psd";
 const BUILTIN_KEY = "live2d-pet-builtin-model"; // 当前选中的内置模型（manifest files 内）
+const POS_KEY = "live2d-pet-position"; // 桌宠位置持久化
+
+/** 保存桌宠位置到 localStorage（逻辑坐标） */
+function savePetPosition(x: number, y: number) {
+  try { localStorage.setItem(POS_KEY, JSON.stringify({ x: Math.round(x), y: Math.round(y), t: Date.now() })); } catch {}
+}
+
+/** 读取上次保存的位置（逻辑坐标），无记录返回 null */
+function loadPetPosition(): { x: number; y: number } | null {
+  try {
+    const raw = localStorage.getItem(POS_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (typeof p.x === "number" && typeof p.y === "number") return { x: p.x, y: p.y };
+  } catch {}
+  return null;
+}
 
 // 启动标记：模块求值成功即置位（诊断/探测器判据）
 declare global {
@@ -508,7 +525,13 @@ async function boot() {
     requestInteractionRegionSync(true);
   });
   window.addEventListener("resize", () => requestInteractionRegionSync(true));
-  const pos = await currentLogicalPos(win);
+  // 恢复上次保存的位置（优先），否则用系统报告的当前位置
+  const savedPos = loadPetPosition();
+  let pos = await currentLogicalPos(win);
+  if (savedPos) {
+    pos = savedPos;
+    void win.setPosition(new LogicalPosition(pos.x, pos.y));
+  }
 
   engine = new BehaviorEngine(pos);
   engine.setScale(scaleFactor);
@@ -688,8 +711,9 @@ async function boot() {
     if (!drag.moved) {
       drag.moved = true;
       if (settings.idleMode) {
-        // 待机中：直接定位窗口（不用 Rust drag follower，避免边界夹紧干扰待机位置）
+        // 待机中：用原生拖动 + locked_y，8ms 跟随无抖动
         drag.mode = "idleSlide";
+        nativeDragStart = invoke("drag_start", { lockedY: Math.round(engine.idleTarget.y * scaleFactor) }).catch(() => {});
       } else {
         drag.mode = "free";
         // 一次性启动 Rust 原生拖动（此后窗口由 8ms 线程直接跟随鼠标）
@@ -700,11 +724,7 @@ async function boot() {
     if (now - dragLastMove < 16) return;
     dragLastMove = now;
     if (drag.mode === "idleSlide") {
-      // 待机滑动：只允许水平移动，Y 锁死在待机边缘，直接设置窗口位置
-      const edgePhys = Math.round(engine.idleTarget.y * scaleFactor);
-      const nx = Math.max(4, Math.min(screen.availWidth - winSize - 4, Math.round(drag.wx + dx)));
-      void invoke("set_window_pos_size", { label: "main", x: Math.round(nx * scaleFactor), y: edgePhys, width: winSize * scaleFactor, height: winSize * scaleFactor });
-      engine.setPos(nx, engine.idleTarget.y);
+      // 待机滑动：原生拖动 8ms 线程直接跟随（locked_y 锁定边缘），无需前端设位置
     } else {
       let nx = Math.round(drag.wx + dx);
       let ny = Math.round(drag.wy + dy);
@@ -732,18 +752,28 @@ async function boot() {
   const endDrag = (cancelled = false) => {
     if (!drag) return;
     const clicked = !cancelled && !drag.moved;
-    if (drag.moved && drag.mode !== "idleSlide") {
+    const dragMode = drag?.mode;
+    if (drag.moved) {
       const start = nativeDragStart ?? Promise.resolve();
-      void start.finally(() => invoke("drag_end").catch(() => {}));
+      void start.finally(() => {
+        invoke("drag_end").catch(() => {});
+        // 待机拖拽结束：同步引擎位置到实际窗口位置
+        if (dragMode === "idleSlide") {
+          void getCurrentWindow().outerPosition().then(p => {
+            engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
+          });
+        }
+      });
     }
     nativeDragStart = null;
     drag = null;
+    // 保存桌宠位置（供重启恢复）
+    void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
+      view.playClick();
+      showInfoPanel(); // 展示信息板（5秒后自动消失）
       if (settings.assistant.enabled) {
         openAssistant(getModelRect());
-        showInfoPanel();
-        view.playClick();
-        showInfoPanel(); // 展示信息板（5秒后自动消失）
       }
     }
     setInteractingDebounced(false);
@@ -894,11 +924,16 @@ function clearElement(el: HTMLElement) {
 
 // ---------- 右键菜单 ----------
 let autostartCache = false;
+let topmostCache = false;
 
 function onMenuOpen() {
+  // 右键打开菜单时暂停移动
+  engine.suspend(60000);
+  void invoke("clear_pet_target").catch(() => {});
   void invoke<boolean>("get_autostart").then((v) => {
     autostartCache = v;
   });
+  void invoke<boolean>("is_topmost").then(v => { topmostCache = v; }).catch(() => {});
   requestInteractionRegionSync(true);
 }
 
@@ -1016,8 +1051,7 @@ function startInteractionRegionSync() {
   requestInteractionRegionSync(true);
 }
 
-document.addEventListener("menu-closed", () => requestInteractionRegionSync(true));
-
+document.addEventListener("menu-closed", () => { engine.suspend(0); requestInteractionRegionSync(true); });
 function hiddenPsdInput(): HTMLInputElement {
   let input = document.getElementById("psd-input") as HTMLInputElement | null;
   if (!input) {
@@ -1406,11 +1440,19 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "hide",
       label: "隐藏",
+      state: topmostCache ? "取消置顶" : "置顶",
       onPick: () => {
         void invoke("hide_pet");
         toast("已隐藏（托盘/Alt+P唤出）");
       },
+      onStatePick: () => {
+        const next = !topmostCache;
+        void invoke("set_topmost", { on: next }).then(() => {
+          topmostCache = next;
+          toast(next ? "已置顶" : "已取消置顶");
+        });
     },
+      },
     {
       id: "autostart",
       label: "开机自启",
@@ -1446,6 +1488,7 @@ async function toggleIdle() {
     // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
+    savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
   }
   await engine.setIdle(settings.idleMode);
   // 仅进入待机时定位到边缘；退出时保持当前位置

@@ -54,6 +54,7 @@ export class BehaviorEngine {
   private activityLevel: "low" | "mid" | "high" = "mid";
   private tracking = false;
   private cursorSpeed = 0; // 鼠标移动速度 px/s（按 120ms 轮询间隔真实计算）
+  private trackingStopped = false;
   private vel: XY = { x: 0, y: 0 }; // 上一帧速度（供碰撞反弹用）
   // 逗猫棒（追鼠标）
   private excitement = 0; // 0~1 兴奋度（鼠标越快越兴奋，渲染表现用）
@@ -181,7 +182,9 @@ export class BehaviorEngine {
   /** 逗猫棒开关（开启后追着鼠标跑） */
   setTracking(on: boolean) {
     this.tracking = on;
+    void invoke("set_pet_tracking", { on }).catch(() => {});
     this.target = null;
+    this.trackingStopped = false;
     this.fleeUntil = 0;
     if (on) {
       this.dwellUntil = 0;
@@ -324,33 +327,23 @@ export class BehaviorEngine {
     let velX = 0;
     let velY = 0;
 
-    // 逗猫棒模式：追着鼠标跑（简化为直接跟随，去掉复杂状态机）
+    // 逗猫棒：每帧追赶鼠标，模型头顶跟随鼠标
     if (this.tracking) {
-      if (now > this.trackAt) {
-        this.trackAt = now + 250;
-        const dist = Math.hypot(this.pos.x - this.cursor.x, this.pos.y - this.cursor.y);
-        if (dist > 60) {
-          // 离得远 → 朝鼠标当前位置追
-          this.target = { x: this.cursor.x, y: this.cursor.y };
-          this.dwellUntil = now + 400;
-        } else {
-          // 够近 → 停住看
-          this.target = null;
-          this.dwellUntil = now + 300;
-          this.clearTarget();
-        }
-        // 兴奋度简化为鼠标速度轻量映射（渲染表现用）
-        this.excitement = clamp(this.excitement + Math.min(1, this.cursorSpeed / 400) * 0.1 - 0.015, 0, 1);
-      }
-      this.lastCursor = { ...this.cursor };
-    } else {
-      // 鼠标靠太近 → 逃跑（用相对窗口中心的偏移判定，免疫 pos 漂移）
-      const dist = relDist;
-      if (dist < 165 && dist > 1) {
-        this.fleeUntil = now + 900 + this.rng() * 600;
-        this.target = null;
-        this.dwellUntil = now + 400;
-      }
+      const b = this.charBoundsCache;
+      // 模型头顶中心相对窗口中心的偏移
+      const headX = this.rawOffset.x + (b ? (b.left + b.right) / 2 - this.win / 2 : 0);
+      const headY = this.rawOffset.y + (b ? b.top - this.win / 2 : -this.win / 2);
+      this.target = { x: this.cursor.x - this.win / 2 - headX, y: this.cursor.y - this.win / 2 - headY };
+      const speed = this.activityLevel === "high" ? CHASE_SPEED * 4 : CHASE_SPEED * 2;
+      void this.pushTarget(speed);
+      return;
+    }
+
+    // 非逗猫棒：鼠标靠太近时逃跑
+    if (relDist < 165 && relDist > 1) {
+      this.fleeUntil = now + 900 + this.rng() * 600;
+      this.target = null;
+      this.dwellUntil = now + 400;
     }
 
     // 鼠标与窗口距离（供逃跑/追踪共用）：直接用相对窗口中心偏移
@@ -375,6 +368,7 @@ export class BehaviorEngine {
         // 工作区尚未就绪：用默认（pollArea 定时器很快会更新）
         this.area = { left: 0, top: 0, width: 1920, height: 1080 };
       }
+      if (!this.tracking) {
       if (!this.target || now >= this.dwellUntil) {
         // 休息结束后按档位概率继续歇（低档爱歇，高档几乎不歇）
         if (this.rng() < this.actParams.restChance) {
@@ -383,6 +377,7 @@ export class BehaviorEngine {
         } else {
           this.pickTarget(true);
         }
+      }
       }
       if (this.target) {
         const tx = this.target.x - this.pos.x;
@@ -413,7 +408,7 @@ export class BehaviorEngine {
 
     // 边界约束：窗口可探出屏幕，模型偏移保持可见
 
-    this.constrainPosition();
+    if (!this.tracking) this.constrainPosition();
     this.vx = Math.max(-1, Math.min(1, velX / 160));
     this.bob =
       Math.abs(this.vx) > 0.02 && now >= this.dwellUntil
@@ -421,7 +416,7 @@ export class BehaviorEngine {
         : 0;
 
     // 上报目标点（10Hz，Rust mover 线程按同一速度原生移动）
-    if (now - this.lastTarget >= TARGET_INTERVAL && this.target) {
+    if (!this.tracking && now - this.lastTarget >= TARGET_INTERVAL && this.target) {
       this.lastTarget = now;
       const pushSpeed = now < this.fleeUntil ? this.fleeSpeed : this.lastPushSpeed;
       void this.pushTarget(pushSpeed);

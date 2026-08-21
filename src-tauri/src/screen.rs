@@ -119,6 +119,7 @@ pub fn move_window_toward(
     ty: f64,
     max_speed: f64,
     dt: f64,
+    clamp: bool,
 ) -> bool {
     let Some(hwnd) = hwnd_of(win) else {
         return false;
@@ -142,23 +143,20 @@ pub fn move_window_toward(
         let nx = (rect.left as f64 + dx / dist * step).round() as i32;
         let ny = (rect.top as f64 + dy / dist * step).round() as i32;
 
-        // 安全夹紧：按窗口实际尺寸确保窗口都在显示器工作区内
-        let w = rect.right - rect.left;
-        let h = rect.bottom - rect.top;
-        const EDGE_PAD: i32 = 4;
-        let area = crate::screen::work_area_at(nx, ny);
-        let clamped_x = nx.max(area.left + EDGE_PAD).min(area.left + area.width - w - EDGE_PAD);
-        let clamped_y = ny.max(area.top + EDGE_PAD).min(area.top + area.height - h - EDGE_PAD);
+        // 安全夹紧（clamp=true 时限制在工作区内；clamp=false 允许探出屏幕）
+        let (fx, fy) = if clamp {
+            let w = rect.right - rect.left;
+            let h = rect.bottom - rect.top;
+            const EDGE_PAD: i32 = 4;
+            let area = crate::screen::work_area_at(nx, ny);
+            (nx.max(area.left + EDGE_PAD).min(area.left + area.width - w - EDGE_PAD),
+             ny.max(area.top + EDGE_PAD).min(area.top + area.height - h - EDGE_PAD))
+        } else {
+            (nx, ny)
+        };
 
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            clamped_x,
-            clamped_y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
-        );
+        let _ = SetWindowPos(hwnd, None, fx, fy, 0, 0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
         false
     }
 }

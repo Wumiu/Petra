@@ -7,6 +7,7 @@ export interface MenuItemSpec {
   separator?: boolean;
   submenu?: MenuItemSpec[];  // 子菜单
   onPick?: () => void;
+  onStatePick?: () => void;
 }
 
 /**
@@ -43,6 +44,10 @@ export function setupContextMenu(
         const stateSpan = document.createElement("span");
         stateSpan.className = "state";
         stateSpan.textContent = item.state;
+        if (item.onStatePick) {
+          stateSpan.style.cursor = "pointer";
+          stateSpan.addEventListener("click", (ev) => { ev.stopPropagation(); hide("state-pick"); item.onStatePick?.(); });
+        }
         row.appendChild(stateSpan);
       }
       if (item.submenu && item.submenu.length) {
