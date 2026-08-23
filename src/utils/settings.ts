@@ -30,6 +30,8 @@ export interface Settings {
   weatherCity: string;
   boundsPadding: BoundsPadding;
   passthrough: boolean;
+  /** 免确认 shell（持久化，重启后保持） */
+  allowAllShell: boolean;
   assistant: AssistantSettings;
 }
 
@@ -43,6 +45,7 @@ const DEFAULTS: Settings = {
   weatherCity: "",
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
+  allowAllShell: false,
   assistant: {
     enabled: false,
     provider: "deepseek",

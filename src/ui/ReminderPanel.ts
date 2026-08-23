@@ -1,4 +1,5 @@
 import { toast } from "./Toast";
+import { getVisibleRect } from "./visible";
 
 /** 待办项 */
 export interface Reminder {
@@ -148,6 +149,13 @@ export function openReminderModal() {
   });
 
   document.body.appendChild(modalEl);
+  // 贴边自适应：模态框在窗口可见区内居中，避免窗口部分出屏时被裁
+  const vr = getVisibleRect();
+  const bw = box.offsetWidth || 280;
+  const bh = box.offsetHeight || 200;
+  box.style.position = "fixed";
+  box.style.left = `${Math.round(vr.left + Math.max(0, (vr.right - vr.left - bw) / 2))}px`;
+  box.style.top = `${Math.round(vr.top + Math.max(0, (vr.bottom - vr.top - bh) / 2))}px`;
   // 焦点到文本输入
   setTimeout(() => textInput.focus(), 50);
 }

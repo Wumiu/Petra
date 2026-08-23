@@ -207,8 +207,12 @@ pub fn drag_follow(
             let area = work_area_at(nx + cw / 2, ny + ch / 2);
             if nx + bl < area.left { nx = area.left - bl; }
             if nx + br > area.left + area.width { nx = area.left + area.width - br; }
-            if ny + bt < area.top - 60 { ny = area.top - 60 - bt; }
-            if ny + bb > area.top + area.height { ny = area.top + area.height - bb; }
+            // y 仅在自由拖拽（locked_y=None）时夹紧；待机滑动 y 由 locked_y 固定，
+            // 否则夹紧会把窗口从贴边待机位置拽出来（"一拽就出来了一点"）
+            if locked_y.is_none() {
+                if ny + bt < area.top - 60 { ny = area.top - 60 - bt; }
+                if ny + bb > area.top + area.height { ny = area.top + area.height - bb; }
+            }
         }
         let _ = SetWindowPos(
             hwnd,

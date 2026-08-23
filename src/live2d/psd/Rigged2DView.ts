@@ -332,21 +332,30 @@ export class Rigged2DView implements PetView {
     this.swayEnabled = on;
   }
 
-  /** 模型显示尺寸：窗口跟随缩放时，canvas 显示尺寸同步为窗口边长 */
+  /** 模型显示尺寸：窗口跟随缩放时，画布按主轴（较长边）缩放并保持宽高比（非 Q 版比例不失真） */
   setScale(displayW: number) {
     this.displayW = displayW;
-    const px = `${Math.round(displayW)}px`;
-    this.canvas.style.maxWidth = px;
-    this.canvas.style.maxHeight = px;
+    const cw = this.runtime.canvasWidth;
+    const ch = this.runtime.canvasHeight;
+    const s = displayW / Math.max(cw, ch); // 主轴 = 用户设定尺寸（正方形画布时与旧行为一致）
+    this.canvas.style.width = `${Math.round(cw * s)}px`;
+    this.canvas.style.height = `${Math.round(ch * s)}px`;
+    this.canvas.style.maxWidth = "none";
+    this.canvas.style.maxHeight = "none";
   }
 
   /** 角色在窗口内的边界（相对窗口左上，逻辑 px，含缩放），供模型边缘补偿 */
   getCharacterBounds(): { left: number; top: number; right: number; bottom: number } | null {
     const cb = this.runtime.characterBounds;
     if (!cb) return null;
-    const s = this.displayW / this.runtime.canvasWidth;
-    const offsetX = (700 - this.displayW) / 2;
-    const offsetY = (700 - this.displayW) / 2;
+    // 与 setScale 同一主轴比例，逐轴居中（非正方形画布两轴偏移不同）
+    const cw = this.runtime.canvasWidth;
+    const ch = this.runtime.canvasHeight;
+    const s = this.displayW / Math.max(cw, ch);
+    const dw = cw * s;
+    const dh = ch * s;
+    const offsetX = (700 - dw) / 2;
+    const offsetY = (700 - dh) / 2;
     // 用户自定义边界微调（正 = 放大框，负 = 收紧框）
     const pad = this.boundsPad;
     return {

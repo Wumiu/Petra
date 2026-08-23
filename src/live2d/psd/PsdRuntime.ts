@@ -189,6 +189,10 @@ export class PsdRuntime {
   get canvasWidth(): number {
     return this.CW;
   }
+  /** 画布高（PSD 尺寸，非正方形画布时与宽不同） */
+  get canvasHeight(): number {
+    return this.CH;
+  }
   private _warnings: string[] = [];
   partsCount = 0;
   strandCount = 0;

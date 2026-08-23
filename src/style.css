@@ -346,14 +346,13 @@ body {
   height: 12px;
 }
 
-/* 左上角气泡区 */
+/* 左上角气泡区（回复气泡盖过信息板 180，低于右键菜单 200） */
 .as-bubbles {
   position: fixed;
   left: 50%;
   bottom: 80px;
   transform: translateX(-50%);
-  z-index: 160;
-  z-index: 130;
+  z-index: 190;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -560,6 +559,9 @@ body {
   transition: opacity 0.3s ease, transform 0.3s ease;
   pointer-events: none;
   user-select: none;
+  /* 贴边自适应：可见区高度不足时收缩并滚动，不截断内容 */
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 .info-panel.hidden { display: none; }
 .info-panel-header {

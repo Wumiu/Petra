@@ -87,6 +87,10 @@ export class BehaviorEngine {
   get windowScreenPos(): XY {
     return { ...this.windowPos };
   }
+  /** 光标相对窗口中心的偏移（逻辑坐标，Rust cursor_pos 权威上报；拖拽看门狗判断光标是否出窗） */
+  get cursorRelative(): XY {
+    return { ...this.cursorRel };
+  }
   /** 屏幕工作区（逻辑坐标，pollArea 更新） */
   get workArea(): { left: number; top: number; width: number; height: number } | null {
     return this.area ? { ...this.area } : null;

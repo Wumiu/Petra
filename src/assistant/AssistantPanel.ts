@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, extractCommand, stripCommand, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
-import { loadSettings } from "../utils/settings";
+import { loadSettings, saveSettings } from "../utils/settings";
+import { getVisibleRect } from "../ui/visible";
 import { toast } from "../ui/Toast";
 
 const MAX_BUBBLES = 2;
@@ -188,12 +189,18 @@ function ensureInput() {
   });
   row.append(input, btn);
 
-  // 发送下面：允许所有 shell 复选框（会话临时，不持久化）
+  // 发送下面：允许所有 shell 复选框（持久化到设置，重启后保持）
   const allowRow = document.createElement("label");
   allowRow.className = "as-allow";
   allowAllShell = document.createElement("input");
   allowAllShell.type = "checkbox";
-  allowAllShell.addEventListener("change", resetTimer);
+  allowAllShell.checked = loadSettings().allowAllShell;
+  allowAllShell.addEventListener("change", () => {
+    const s = loadSettings();
+    s.allowAllShell = allowAllShell.checked;
+    saveSettings(s);
+    resetTimer();
+  });
   const lbl = document.createElement("span");
   lbl.textContent = "免确认 shell";
   allowRow.append(allowAllShell, lbl);
@@ -256,15 +263,58 @@ export function openAssistant(modelRect?: { left: number; top: number; right: nu
   loadMemory();
   loadHistory();
   inputBar!.classList.remove("hidden");
-  // 定位到模型（绿框）底部，不依赖 DOM 元素
+  // 定位到模型（绿框）附近：默认放底部，放不下翻到上方；始终钳制在窗口可见区内（贴边自适应）
   if (modelRect) {
-    inputBar!.style.left = `${Math.round(modelRect.left)}px`;
+    const vr = getVisibleRect();
+    const barW = inputBar!.offsetWidth || 185;
+    const barH = inputBar!.offsetHeight || 60;
+    // 避开已显示的信息板（避免叠放遮挡：信息板先于输入框定位）
+    const infoEl = document.getElementById("info-panel");
+    const infoRect =
+      infoEl && !infoEl.classList.contains("hidden") ? infoEl.getBoundingClientRect() : null;
+    const collides = (l: number, t: number) =>
+      infoRect !== null &&
+      l < infoRect.right && l + barW > infoRect.left &&
+      t < infoRect.bottom && t + barH > infoRect.top;
+    const cands = [
+      { left: modelRect.left, top: modelRect.bottom + 10 }, // 模型下方（默认）
+      { left: modelRect.left, top: vr.bottom - barH }, // 可见区底部（贴底时允许盖住模型下半部分）
+      { left: modelRect.left, top: modelRect.top - barH - 10 }, // 模型上方（最后尝试）
+    ];
+    let pick: { left: number; top: number } | null = null;
+    for (const c of cands) {
+      if (
+        !collides(c.left, c.top) &&
+        c.top >= vr.top && c.top + barH <= vr.bottom &&
+        c.left >= vr.left && c.left + barW <= vr.right
+      ) {
+        pick = c;
+        break;
+      }
+    }
+    if (!pick) {
+      for (const c of cands) {
+        if (
+          c.top >= vr.top && c.top + barH <= vr.bottom &&
+          c.left >= vr.left && c.left + barW <= vr.right
+        ) {
+          pick = c;
+          break;
+        }
+      }
+    }
+    if (!pick) pick = cands[0];
+    const left = Math.max(vr.left, Math.min(pick.left, vr.right - barW));
+    const top = Math.max(vr.top, Math.min(pick.top, vr.bottom - barH));
+    inputBar!.style.left = `${Math.round(left)}px`;
+    inputBar!.style.top = `${Math.round(top)}px`;
     inputBar!.style.bottom = "auto";
-    inputBar!.style.top = `${Math.min(modelRect.bottom + 10, window.innerHeight - 60)}px`;
+    inputBar!.style.maxWidth = `${Math.max(60, vr.right - vr.left - 8)}px`;
   } else {
     inputBar!.style.left = "";
     inputBar!.style.bottom = "";
     inputBar!.style.top = "";
+    inputBar!.style.maxWidth = "";
   }
   input.focus();
   resetTimer();

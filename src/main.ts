@@ -11,6 +11,7 @@ import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
 import { toast } from "./ui/Toast";
+import { setVisibleRect } from "./ui/visible";
 import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
@@ -312,19 +313,51 @@ function getWindowVisibleRect(): { left: number; top: number; right: number; bot
   };
 }
 
+/** 气泡/toasts 贴边自适应：钳制到窗口可见区；上方放不下翻到模型下方 */
+function positionFloatingUi(
+  toasts: HTMLElement | null,
+  bubbles: HTMLElement | null,
+  mr: { left: number; top: number; right: number; bottom: number; width: number; height: number },
+  vr: { left: number; top: number; right: number; bottom: number },
+) {
+  if (toasts && toasts.children.length > 0) {
+    // bottom 是相对窗口底部的距离：可见范围 [innerHeight - vr.bottom, innerHeight - vr.top]
+    const minBottom = window.innerHeight - vr.bottom + 8;
+    const maxBottom = window.innerHeight - vr.top - 8;
+    const bottom = Math.max(minBottom, Math.min(window.innerHeight - mr.bottom - 10, maxBottom));
+    const cx = Math.max(vr.left + 4, Math.min(mr.left + mr.width / 2, vr.right - 4));
+    toasts.style.left = `${Math.round(cx)}px`;
+    toasts.style.bottom = `${Math.round(bottom)}px`;
+    toasts.style.transform = "translateX(-50%)";
+  }
+  if (bubbles && bubbles.children.length > 0) {
+    const bw = bubbles.offsetWidth || 214;
+    const bh = bubbles.offsetHeight || 60;
+    const cx = Math.max(vr.left + 4, Math.min(mr.left + mr.width / 2, vr.right - bw / 2 - 4));
+    let top = mr.top - bh - 12; // 模型上方
+    if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
+    if (top + bh > vr.bottom) top = Math.max(vr.top, vr.bottom - bh - 4); // 仍放不下 → 钳制
+    bubbles.style.left = `${Math.round(cx)}px`;
+    bubbles.style.top = `${Math.round(top)}px`;
+    bubbles.style.bottom = "auto";
+    bubbles.style.transform = "translateX(-50%)";
+  }
+}
+
 /** 将面板定位到模型旁边：往屏幕内侧（空间大的方向），不挡住模型、不出屏 */
 function positionPanelNearModel(panel: HTMLElement) {
   panel.style.position = "fixed"; // 确保 fixed 定位
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
+  // 可见区尺寸下限保护（贴边/几乎出屏时不出现负值或 0）
+  const maxW = Math.max(60, vr.right - vr.left - 40);
+  const maxH = Math.max(60, vr.bottom - vr.top - 40);
   // 先让面板按自身内容撑开
-  panel.style.maxWidth = `${vr.right - vr.left - 40}px`;
-  panel.style.maxHeight = `${vr.bottom - vr.top - 40}px`;
+  panel.style.maxWidth = `${maxW}px`;
+  panel.style.maxHeight = `${maxH}px`;
   let pw = panel.offsetWidth || 230;
   let ph = panel.offsetHeight || 200;
   // 面板比可见区大则缩小
-  const maxW = vr.right - vr.left - 40;
-  const maxH = vr.bottom - vr.top - 40;
   if (pw > maxW || ph > maxH) {
     panel.style.maxWidth = `${maxW}px`;
     panel.style.maxHeight = `${maxH}px`;
@@ -685,6 +718,7 @@ async function boot() {
   let nativeDragStart: Promise<unknown> | null = null;
   let uiPointerLocked = false;
   let dragLastMove = 0;
+  let dragOutsideFrames = 0; // 拖拽看门狗：光标连续出窗帧数
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
     if (e.button !== 0) return;
@@ -794,6 +828,10 @@ async function boot() {
   document.addEventListener("pointerup", () => releasePointerInteraction(false));
   document.addEventListener("pointercancel", () => releasePointerInteraction(true));
   window.addEventListener("blur", () => releasePointerInteraction(true));
+  // 光标移出窗口时立即结束拖拽（WebView 收不到窗口外的 pointerup，会导致拖拽永久卡死）
+  document.addEventListener("mouseleave", () => {
+    if (drag) releasePointerInteraction(true);
+  });
 
   // ---------- Astrobot 预留钩子 ----------
   astrobotOn((msg) => {
@@ -833,6 +871,24 @@ async function boot() {
         bottom: Math.round((oy + b.bottom) * s),
       });
     }
+    // 拖拽看门狗：原生跟随期间光标离开窗口（屏边夹紧 / 待机锁 y 拖出）后 WebView
+    // 收不到 pointerup，拖拽状态会永久卡死。连续检测到光标出窗约 100ms 即强制结束。
+    if (drag && drag.moved) {
+      const half = winSize / 2 + 12;
+      const cursorOutside =
+        Math.abs(engine.cursorRelative.x) > half || Math.abs(engine.cursorRelative.y) > half;
+      if (cursorOutside) {
+        dragOutsideFrames++;
+        if (dragOutsideFrames > 6) {
+          dragOutsideFrames = 0;
+          releasePointerInteraction(true);
+        }
+      } else {
+        dragOutsideFrames = 0;
+      }
+    } else {
+      dragOutsideFrames = 0;
+    }
     updateModelBounds(cb);
     driver.bass = analyzer.bass;
     driver.mid = analyzer.mid;
@@ -853,45 +909,44 @@ async function boot() {
     driver.pressed = !!drag;
     driver.modelOffsetX = engine.modelOffset.x;
     driver.modelOffsetY = engine.modelOffset.y;
-    // 通知区域跟随模型位置（绿框下方）
+    // 通知区域跟随模型位置（绿框下方）；气泡/通知贴边自适应钳制到可见区
     const mr = getModelRect();
+    const vr = getWindowVisibleRect();
+    setVisibleRect(vr);
     const toasts = document.getElementById("toasts");
-    if (toasts && toasts.children.length > 0) {
-      if (!drag || !drag.moved) {
-        toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
-        toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
-        toasts.style.transform = "translateX(-50%)";
-      }
-    }
     const bubbles = document.getElementById("as-bubbles");
-    if (bubbles && bubbles.children.length > 0 && (!drag || !drag.moved)) {
-      bubbles.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
-      bubbles.style.top = `${Math.round(mr.top - bubbles.offsetHeight - 12)}px`;
-      bubbles.style.bottom = "auto";
-      bubbles.style.transform = "translateX(-50%)";
+    if (!drag || !drag.moved) {
+      positionFloatingUi(toasts, bubbles, mr, vr);
     }
     // 拖拽中所有打开的面板跟随模型位置
     if (drag && drag.moved) {
-      // 输入框
+      // 输入框：默认在模型下方，放不下翻到上方，避开信息板，钳制可见区
       const ib = document.getElementById("as-inputbar");
       if (ib && !ib.classList.contains("hidden")) {
-        ib.style.left = `${Math.round(mr.left)}px`;
-        ib.style.top = `${Math.min(mr.bottom + 10, window.innerHeight - 60)}px`;
+        const ih = ib.offsetHeight || 60;
+        const iw = ib.offsetWidth || 185;
+        const infoEl = document.getElementById("info-panel");
+        const ir = infoEl && !infoEl.classList.contains("hidden")
+          ? infoEl.getBoundingClientRect()
+          : null;
+        const collides = (l: number, t: number) =>
+          ir !== null &&
+          l < ir.right && l + iw > ir.left &&
+          t < ir.bottom && t + ih > ir.top;
+        const tops = [mr.bottom + 10, vr.bottom - ih, mr.top - ih - 10]; // 贴底时钳到可见区底部（允许盖住模型下半部分）
+        let top = tops[0];
+        for (const t of tops) {
+          if (!collides(mr.left, t) && t >= vr.top && t + ih <= vr.bottom) {
+            top = t;
+            break;
+          }
+        }
+        top = Math.max(vr.top, Math.min(top, vr.bottom - ih));
+        ib.style.left = `${Math.round(Math.max(vr.left, Math.min(mr.left, vr.right - iw)))}px`;
+        ib.style.top = `${Math.round(top)}px`;
         ib.style.bottom = "auto";
       }
-      // 气泡
-      if (bubbles && bubbles.children.length > 0) {
-        bubbles.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
-        bubbles.style.top = `${Math.round(mr.top - bubbles.offsetHeight - 12)}px`;
-        bubbles.style.bottom = "auto";
-        bubbles.style.transform = "translateX(-50%)";
-      }
-      // 通知
-      if (toasts && toasts.children.length > 0) {
-        toasts.style.left = `${Math.round(mr.left + (mr.right - mr.left) / 2)}px`;
-        toasts.style.bottom = `${Math.max(8, window.innerHeight - mr.bottom - 10)}px`;
-        toasts.style.transform = "translateX(-50%)";
-      }
+      positionFloatingUi(toasts, bubbles, mr, vr);
       // 其他面板（model-panel、chat-history 等）
       document.querySelectorAll(".model-panel:not(.hidden), #chat-history-panel").forEach(el => {
         positionPanelNearModel(el as HTMLElement);
@@ -1568,37 +1623,100 @@ async function showInfoPanel() {
 
   // 先显示再测量实际高度（高度由内容决定，不能假设 200）
   el.classList.remove("hidden");
-  const panelW = 270;
-  const panelH = el.offsetHeight || 200;
-
-  // 定位：模型在屏幕上半 → 信息版在下方（屏幕内侧），下半 → 上方
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
+  // 贴边自适应：宽度随可见区收缩
+  let panelW = Math.min(270, Math.max(160, vr.right - vr.left - 20));
+  let panelH = el.offsetHeight || 200;
+  el.style.maxHeight = "";
 
-  // 水平居中对齐模型
-  let left = Math.round(mr.left + (mr.width - panelW) / 2);
-  // 模型中心（屏幕坐标）相对屏幕中心判断上下
+  // 定位：助手开启时避开输入框（输入框默认在模型下方，其次可见区底部、模型上方），
+  // 候选依次 上方 → 左右外侧 → 输入框下方；旁边空间略小时收缩面板宽度贴合侧面（不压模型），
+  // 全部放不下时收缩高度（滚动）兜底，保证信息板始终出现且不遮输入框、不压模型
   const a = engine.workArea;
   const screenCy = a ? a.top + a.height / 2 : window.innerHeight / 2;
   const modelScreenCenterY = engine.windowScreenPos.y + mr.top + mr.height / 2;
-  let top: number;
-  // 小助手开启时，信息板避开助手位置（助手在模型下方）
   const assistantOpen = settings.assistant.enabled;
-  if (modelScreenCenterY <= screenCy) {
-    // 模型在上半屏 → 信息版默认在下方
-    if (assistantOpen) {
-      // 助手在下方，信息板移到上方
-      top = mr.top - panelH - 6;
-      if (top < vr.top) top = mr.bottom + 6; // 上方放不下就还是下方
-    } else {
-      top = mr.bottom + 6;
-      if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
+  // 贴顶（模型顶边贴近工作区顶部）+ 助手开启：不显示信息板（贴顶布局局促，避免与输入框冲突）
+  const atTop = a ? engine.windowScreenPos.y + mr.top <= a.top + 40 : false;
+  if (assistantOpen && atTop) {
+    el.classList.add("hidden");
+    return;
+  }
+  let cx = mr.left + (mr.width - panelW) / 2;
+  const BAR_H = 80; // 输入框高度估计
+  const BAR_W = 185;
+  let left = cx;
+  let top = mr.bottom + 6;
+  if (assistantOpen) {
+    // 输入框预期位置（与 openAssistant 一致：模型下方 → 可见区底部 → 模型上方）
+    let barTop = mr.bottom + 10;
+    if (barTop + BAR_H > vr.bottom) barTop = vr.bottom - BAR_H;
+    if (barTop < vr.top) barTop = vr.top;
+    const barRect = { left: mr.left, right: mr.left + BAR_W, top: barTop, bottom: barTop + BAR_H };
+    const hitsBar = (l: number, t: number) =>
+      l < barRect.right && l + panelW > barRect.left && t < barRect.bottom && t + panelH > barRect.top;
+    const fits = (l: number, t: number) =>
+      !hitsBar(l, t) &&
+      l >= vr.left && l + panelW <= vr.right &&
+      t >= vr.top && t + panelH <= vr.bottom;
+    let placed: { left: number; top: number } | null = null;
+    // 上方
+    if (fits(cx, mr.top - panelH - 6)) placed = { left: cx, top: mr.top - panelH - 6 };
+    // 左右外侧（严格不压模型；空间略小时收缩宽度贴合侧面）
+    if (!placed) {
+      const rightAvail = vr.right - (mr.right + 10);
+      const leftAvail = mr.left - 10 - vr.left;
+      const trySide = (avail: number, l: number): boolean => {
+        if (avail < 140) return false;
+        if (avail < panelW) {
+          panelW = Math.max(140, avail);
+          cx = mr.left + (mr.width - panelW) / 2;
+        }
+        if (fits(l, mr.top)) {
+          placed = { left: l, top: mr.top };
+          return true;
+        }
+        return false;
+      };
+      if (!trySide(rightAvail, mr.right + 10)) trySide(leftAvail, mr.left - panelW - 10);
     }
+    // 输入框下方（叠放，不遮输入框）
+    if (!placed && fits(cx, barRect.bottom + 6)) placed = { left: cx, top: barRect.bottom + 6 };
+    // 空间不足：收缩高度（滚动）优先放输入框下方，其次模型上方，最后钳制到输入框下方
+    if (!placed) {
+      const belowH = vr.bottom - (barRect.bottom + 6);
+      const aboveH = mr.top - 6 - vr.top;
+      if (belowH >= 80) {
+        panelH = belowH;
+        el.style.maxHeight = `${panelH}px`;
+        placed = { left: cx, top: barRect.bottom + 6 };
+      } else if (aboveH >= 80) {
+        panelH = aboveH;
+        el.style.maxHeight = `${panelH}px`;
+        placed = { left: cx, top: vr.top };
+      } else {
+        panelH = Math.max(60, vr.bottom - vr.top - 10);
+        el.style.maxHeight = `${panelH}px`;
+        placed = { left: cx, top: Math.max(vr.top, Math.min(barRect.bottom + 6, vr.bottom - panelH)) };
+      }
+    }
+    if (placed) {
+      left = placed.left;
+      top = placed.top;
+    }
+  } else if (modelScreenCenterY <= screenCy) {
+    // 模型在上半屏 → 信息版默认在下方
+    top = mr.bottom + 6;
+    if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
   } else {
-    // 模型在下半屏 → 信息版在上方（助手也在下方，不冲突）
+    // 模型在下半屏 → 信息版在上方
     top = mr.top - panelH - 6;
     if (top < vr.top) top = mr.bottom + 6;
   }
+  // 兜底钳制到可见区
+  left = Math.max(vr.left, Math.min(left, Math.max(vr.left, vr.right - panelW)));
+  top = Math.max(vr.top, Math.min(top, Math.max(vr.top, vr.bottom - panelH)));
 
   el.style.left = `${Math.round(left)}px`;
   el.style.top = `${Math.round(top)}px`;
