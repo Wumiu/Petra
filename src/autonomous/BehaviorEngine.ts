@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import { clamp } from "../utils/math";
 
 interface XY {
@@ -103,7 +103,7 @@ export class BehaviorEngine {
   /**
    * 待机模式开关：沉到就近屏幕边缘（窗口在上半→顶部倒挂，下半→底部），露出 200px。
    */
-  async setIdle(on: boolean) {
+  async setIdle(on: boolean, charBounds?: { top: number; bottom: number }) {
     this.idle = on;
     if (on) {
       await this.pollArea();
@@ -114,9 +114,29 @@ export class BehaviorEngine {
       void invoke("debug_mark", {
         msg: `idle:posY=${Math.round(this.pos.y)} mid=${Math.round(midY)} top=${this.idleTop}`,
       }).catch(() => {});
-      const y = this.idleTop
-        ? a.top - this.win + (EXPOSE_TOP * this.win) / DEFAULT_WIN // 顶部：窗口顶出屏，露窗口底部（旋转后=头部），多露到眼睛
-        : a.top + a.height - (EXPOSE_BOTTOM * this.win) / DEFAULT_WIN; // 底部：露窗口顶部一小截（到眼睛，不露肩头）
+      // 使用角色实际边界计算待机位置，确保头部始终可见
+      let y: number;
+      if (charBounds) {
+        const margin = 30; // 安全边距
+        // 默认暴露量（基于窗口比例）
+        const defaultExpose = this.idleTop
+          ? (EXPOSE_TOP * this.win) / DEFAULT_WIN
+          : (EXPOSE_BOTTOM * this.win) / DEFAULT_WIN;
+        // 基于角色边界的暴露量（确保头部露出）
+        const charExpose = this.idleTop
+          ? this.win - charBounds.bottom + margin
+          : charBounds.top + margin;
+        // 取两者最大值，确保既保留原始设计又能适应不同模型
+        const expose = Math.max(defaultExpose, charExpose);
+        y = this.idleTop
+          ? a.top - this.win + expose
+          : a.top + a.height - expose;
+      } else {
+        // 回退到原始行为（角色边界不可用时）
+        y = this.idleTop
+          ? a.top - this.win + (EXPOSE_TOP * this.win) / DEFAULT_WIN
+          : a.top + a.height - (EXPOSE_BOTTOM * this.win) / DEFAULT_WIN;
+      }
       // 防御 clamp：确保窗口有部分留在屏内
       const yClamped = Math.max(a.top - this.win, Math.min(a.top + a.height, y));
       this.idlePos = { x: this.pos.x, y: yClamped };

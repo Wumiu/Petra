@@ -331,9 +331,23 @@ function positionFloatingUi(
     toasts.style.transform = "translateX(-50%)";
   }
   if (bubbles && bubbles.children.length > 0) {
+    // 限制气泡宽度不超过可见区域，防止贴边时被截断
+    const visibleW = vr.right - vr.left - 8;
+    bubbles.style.maxWidth = `${Math.max(80, visibleW)}px`;
     const bw = bubbles.offsetWidth || 214;
     const bh = bubbles.offsetHeight || 60;
-    const cx = Math.max(vr.left + 4, Math.min(mr.left + mr.width / 2, vr.right - bw / 2 - 4));
+    // 计算气泡中心位置（transform: translateX(-50%) 使气泡居中于 cx）
+    const idealCx = mr.left + mr.width / 2;
+    const minCx = vr.left + bw / 2 + 4; // 左边界：气泡左边缘不超出可见区
+    const maxCx = vr.right - bw / 2 - 4; // 右边界：气泡右边缘不超出可见区
+    let cx: number;
+    if (minCx <= maxCx) {
+      // 正常情况：可见区足够宽，钳制到范围内
+      cx = Math.max(minCx, Math.min(idealCx, maxCx));
+    } else {
+      // 可见区太窄：居中显示（允许少量溢出）
+      cx = (vr.left + vr.right) / 2;
+    }
     let top = mr.top - bh - 12; // 模型上方
     if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
     if (top + bh > vr.bottom) top = Math.max(vr.top, vr.bottom - bh - 4); // 仍放不下 → 钳制
@@ -644,7 +658,10 @@ async function boot() {
     const hour = new Date().getHours();
 
     // 久坐提醒：连续活跃超过 90 分钟且没离开过
-    if (activeMs > 90 * 60 * 1000 && sinceGreet > 60 * 60 * 1000 && !wasIdle) {
+    // 获取用户设置的问候间隔（分钟转毫秒）
+    const greetIntervalMs = (settings.assistant.greetInterval ?? 20) * 60 * 1000;
+
+    if (activeMs > 90 * 60 * 1000 && sinceGreet > greetIntervalMs * 3 && !wasIdle) {
       lastGreetAt = now;
       void triggerProactive();
       return;
@@ -1551,7 +1568,9 @@ async function toggleIdle() {
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
     savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
   }
-  await engine.setIdle(settings.idleMode);
+  // 获取角色边界用于精确待机定位
+  const charBounds = view.getCharacterBounds?.();
+  await engine.setIdle(settings.idleMode, charBounds ? { top: charBounds.top, bottom: charBounds.bottom } : undefined);
   // 仅进入待机时定位到边缘；退出时保持当前位置
   if (settings.idleMode) {
     const t = engine.idleTarget;
@@ -1952,11 +1971,24 @@ window.__pet = {
 };
 
 // ---------- 调整模型边界面板 ----------
+let boundsPanelOpen = false;
+let boundsPanelWasShowing = false;
 function toggleBoundsPanel() {
   const panel = document.getElementById("bounds-panel") as HTMLElement | null;
   if (panel && !panel.classList.contains("hidden")) {
+    // 关闭面板时恢复绿框状态
+    boundsPanelOpen = false;
+    if (!boundsPanelWasShowing && debugModelBoundsVisible) {
+      toggleModelBounds();
+    }
     panel.classList.add("hidden");
     return;
+  }
+  // 打开面板时自动显示绿框
+  boundsPanelOpen = true;
+  boundsPanelWasShowing = debugModelBoundsVisible;
+  if (!debugModelBoundsVisible) {
+    toggleModelBounds();
   }
   const render = (host: HTMLElement) => {
     host.innerHTML = "";
@@ -2208,6 +2240,28 @@ async function toggleAssistantSettings() {
     persona.value = settings.assistant.persona;
     mkRow("人格设定", persona);
 
+    // 主动问候间隔时间设置
+    const greetRow = document.createElement("div");
+    greetRow.className = "as-set-row";
+    const greetLabel = document.createElement("span");
+    greetLabel.className = "as-set-label";
+    greetLabel.textContent = "主动问候间隔";
+    const greetInput = document.createElement("input");
+    greetInput.className = "as-input";
+    greetInput.type = "number";
+    greetInput.min = "5";
+    greetInput.max = "120";
+    greetInput.step = "5";
+    greetInput.value = String(settings.assistant.greetInterval ?? 20);
+    greetInput.style.width = "120px";
+    greetInput.style.textAlign = "center";
+    const greetUnit = document.createElement("span");
+    greetUnit.textContent = "分钟";
+    greetUnit.style.fontSize = "12px";
+    greetUnit.style.color = "#8a7a95";
+    greetRow.append(greetLabel, greetInput, greetUnit);
+    host.appendChild(greetRow);
+
     const fetchBtn = document.createElement("button");
     fetchBtn.className = "as-btn";
     fetchBtn.textContent = "自动获取模型";
@@ -2283,6 +2337,9 @@ async function toggleAssistantSettings() {
       settings.assistant.customBaseUrl = baseUrl.value.trim();
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
+      // 保存主动问候间隔（钳制到 5-120 分钟）
+      const greetVal = parseInt(greetInput.value, 10);
+      settings.assistant.greetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
       saveSettings(settings);
       // API Key 存 Rust 侧（DPAPI 加密）
       try {

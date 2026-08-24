@@ -1,4 +1,4 @@
-const KEY = "live2d-pet-settings";
+﻿const KEY = "live2d-pet-settings";
 
 export type ActivityLevel = "low" | "mid" | "high";
 export type AssistantProvider = "deepseek" | "custom";
@@ -16,6 +16,8 @@ export interface AssistantSettings {
   model: string;
   persona: string;
   customBaseUrl: string;
+  /** 主动问候间隔时间（分钟） */
+  greetInterval: number;
 }
 
 export interface Settings {
@@ -52,6 +54,7 @@ const DEFAULTS: Settings = {
     model: "",
     persona: "",
     customBaseUrl: "",
+    greetInterval: 20,
   },
 };
 
