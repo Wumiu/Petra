@@ -1,5 +1,6 @@
 import { toast } from "./Toast";
 import { getVisibleRect } from "./visible";
+import { trackEvent } from "../features/diary/DiaryEventTracker";
 
 /** 待办项 */
 export interface Reminder {
@@ -72,6 +73,8 @@ export function checkDue() {
       r.done = true;
       // 模型头顶大气泡 + 提示音（main.ts 监听渲染）
       document.dispatchEvent(new CustomEvent("reminder-due", { detail: { text: r.text } }));
+      // 记录提醒完成事件（日记系统）
+      trackEvent({ type: "reminder_done", summary: r.text });
       changed = true;
     }
   }

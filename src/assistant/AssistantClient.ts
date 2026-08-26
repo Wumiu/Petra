@@ -33,9 +33,24 @@ export interface ToolCall {
   args: Record<string, unknown>;
 }
 
-const PROVIDERS: Record<AssistantProvider, { base: string; defaultModel: string }> = {
-  deepseek: { base: "https://api.deepseek.com", defaultModel: "deepseek-chat" },
-  custom: { base: "", defaultModel: "" },
+export interface ProviderInfo {
+  label: string;
+  base: string;
+  defaultModel: string;
+  placeholder: string;
+}
+
+export const PROVIDERS: Record<AssistantProvider, ProviderInfo> = {
+  deepseek:     { label: "DeepSeek",         base: "https://api.deepseek.com",              defaultModel: "deepseek-chat",           placeholder: "sk-..." },
+  openai:       { label: "OpenAI",           base: "https://api.openai.com/v1",             defaultModel: "gpt-4o-mini",             placeholder: "sk-..." },
+  moonshot:     { label: "Moonshot (Kimi)",   base: "https://api.moonshot.cn/v1",            defaultModel: "moonshot-v1-8k",          placeholder: "sk-..." },
+  zhipu:        { label: "智谱 (GLM)",        base: "https://open.bigmodel.cn/api/paas/v4", defaultModel: "glm-4-flash",             placeholder: "..." },
+  qwen:         { label: "通义千问",          base: "https://dashscope.aliyuncs.com/compatible-mode/v1", defaultModel: "qwen-turbo", placeholder: "sk-..." },
+  siliconflow:  { label: "SiliconFlow",      base: "https://api.siliconflow.cn/v1",         defaultModel: "Qwen/Qwen2.5-7B-Instruct", placeholder: "sk-..." },
+  openrouter:   { label: "OpenRouter",       base: "https://openrouter.ai/api/v1",         defaultModel: "openai/gpt-4o-mini",     placeholder: "sk-or-..." },
+  groq:         { label: "Groq",             base: "https://api.groq.com/openai/v1",       defaultModel: "llama-3.1-8b-instant",    placeholder: "gsk_..." },
+  ollama:       { label: "Ollama (本地)",     base: "http://localhost:11434/v1",             defaultModel: "qwen2.5:7b",              placeholder: "通常无需填写" },
+  custom:       { label: "自定义",            base: "",                                      defaultModel: "",                        placeholder: "API Key" },
 };
 
 function resolveBase(provider: AssistantProvider, customBaseUrl: string): string {
@@ -63,7 +78,9 @@ const BASE_PROMPT =
   "6. 用户问天气时调用 get_weather 获取实时天气。\n" +
   "7. 用户说\"关机/定时关机/xx分钟后关机\"时调用 schedule_shutdown。\n" +
   "8. 用户说\"取消关机\"时调用 cancel_shutdown。\n" +
-  "对话历史较长时只需记住最新上下文。";
+  "对话历史较长时只需记住最新上下文。\n" +
+    "9. 用户说\"抽卡/今日运势/来一发\"时调用 daily_card。拿到结果后用你的人设风格重新演绎祝福语，加入自己的点评，不要原样复述。\n" +
+    "10. 用户问\"日记/今天写了什么/看看日记\"时调用 view_diary 查看日记。";
 
 const TOOLS = [
   {
@@ -177,8 +194,28 @@ const TOOLS = [
         type: "object",
         properties: {
           query: { type: "string", description: "搜索关键词" },
+        },    required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "daily_card",
+      description: "帮用户抽取今日运势卡牌。无需参数。返回卡牌主题、稀有度和祝福语。每天只能抽一次，已抽过则返回今天的结果。拿到结果后，用你的人设风格重新包装祝福语，加入你自己的点评或吐槽，不要原样复述。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "view_diary",
+      description: "查看日记本内容。不传日期则返回最近 3 条日记摘要，传日期（YYYY-MM-DD）则返回那天的完整日记。",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "日期，格式 YYYY-MM-DD。留空则返回最近几条摘要。" },
         },
-        required: ["query"],
       },
     },
   },
@@ -305,7 +342,7 @@ function parseArgs(args: string): Record<string, unknown> {
   }
 }
 
-/** 拉取模型列表（OpenAI 兼容 /models）；5s 超时，失败返回空数组（手填） */
+/** 拉取模型列表（OpenAI 兼容 /models）；8s 超时，失败抛出带原因的错误 */
 export async function listModels(
   provider: AssistantProvider,
   apiKey: string,
@@ -313,18 +350,33 @@ export async function listModels(
 ): Promise<string[]> {
   const base = resolveBase(provider, customBaseUrl);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 5000);
+  const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
-    const res = await fetch(`${base}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return [];
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${body.slice(0, 100)}`);
+    }
     const json = await res.json();
-    const arr = Array.isArray(json?.data) ? json.data : [];
-    return arr.map((x: { id?: string }) => x.id).filter(Boolean);
-  } catch {
-    return [];
+    // OpenAI 格式: { data: [{ id: "model-name" }] }
+    // Ollama 格式: { models: [{ name: "model-name" }] }
+    let arr: string[] = [];
+    if (Array.isArray(json?.data)) {
+      arr = json.data.map((x: { id?: string }) => x.id).filter(Boolean);
+    } else if (Array.isArray(json?.models)) {
+      arr = json.models.map((x: { name?: string; id?: string }) => x.name || x.id).filter(Boolean);
+    }
+    if (arr.length === 0) {
+      throw new Error("接口返回了空的模型列表，请检查端点是否正确");
+    }
+    return arr;
+  } catch (e: unknown) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("请求超时（8秒），请检查网络或端点地址");
+    }
+    throw e;
   } finally {
     clearTimeout(timer);
   }

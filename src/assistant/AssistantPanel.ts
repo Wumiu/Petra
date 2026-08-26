@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, extractCommand, stripCommand, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { trackEvent } from "../features/diary/DiaryEventTracker";
+import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
+import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
 import { getVisibleRect } from "../ui/visible";
 import { toast } from "../ui/Toast";
@@ -402,6 +405,8 @@ async function send(text: string) {
       // 无工具调用：文字入历史
       const finalText = loading.textContent || res.text;
       history.push({ role: "assistant", content: finalText });
+      // 记录对话事件（日记系统）
+      trackEvent({ type: "chat", summary: (finalText || "").slice(0, 50) });
       // CMD 兜底（非 function calling provider）
       const cmd = extractCommand(finalText);
       if (cmd) {
@@ -582,8 +587,44 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
         history.push({ role: "tool", tool_call_id: tc.id, content: `打开失败：${e}` });
       }
     }
+    if (tc.name === "daily_card") {
+      try {
+        const result = await dailyDraw();
+        const { collected, total } = getCollectionProgress();
+        const lines = [
+          "【抽卡结果】",
+          `稀有度：${result.rarity}`,
+          `主题：${result.card.theme}`,
+          `原文案：${result.card.baseText}`,
+        ];
+        if (result.aiText !== result.card.baseText) lines.push(`AI文案：${result.aiText}`);
+        lines.push(`图鉴：${collected}/${total}`, "", "请用你的人设风格重新演绎上面的文案，加入自己的点评或吐槽，不要原样复述。直接对用户说话。");
+        history.push({ role: "tool", tool_call_id: tc.id, content: lines.join("\n") });
+      } catch (e) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: `抽卡失败：${e}` });
+      }
+    }
+    if (tc.name === "view_diary") {
+      const date = String(tc.args.date || "").trim();
+      if (date) {
+        const entry = getDiary(date);
+        if (entry) {
+          history.push({ role: "tool", tool_call_id: tc.id, content: `📖 ${date} 的日记：\n${entry.content}` });
+        } else {
+          history.push({ role: "tool", tool_call_id: tc.id, content: `${date} 没有日记哦~` });
+        }
+      }
+      } else {
+        const diaries = loadDiaries().slice(0, 3);
+        if (diaries.length === 0) {
+          history.push({ role: "tool", tool_call_id: tc.id, content: "还没有日记呢~跟我互动就会自动生成啦！" });
+        } else {
+          const summary = diaries.map(d => `📖 ${d.date}: ${d.content.slice(0, 30)}...`).join("\n");
+          history.push({ role: "tool", tool_call_id: tc.id, content: `最近的日记：\n${summary}` });
+        }
+      }
+    }
   }
-}
 
 
 /** 从中文文本中提取关键词（简单规则，不依赖分词库） */
@@ -760,6 +801,38 @@ export async function triggerProactive() {
     }
     saveMemory();
     scheduleFade(bubble, 10000);
+  } catch {
+    bubble.remove();
+  } finally {
+    busy = false;
+    lifecycleOnClose?.();
+  }
+}
+
+/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论 */
+/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论 */
+/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论（不污染聊天历史） */
+export async function triggerCardCommentary(card: { rarity: string; theme: string; baseText: string; aiText: string }) {
+  if (busy) return;
+  const s = loadSettings();
+  const apiKey = await ensureApiKey();
+  if (!s.assistant.enabled || !apiKey) return;
+
+  let cardInfo = `主题「${card.theme}」，祝福语：${card.baseText}`;
+  if (card.aiText !== card.baseText) cardInfo += `，AI文案：${card.aiText}`;
+  const prompt = `[抽卡点评] 刚才用户抽到了一张 ${card.rarity} 卡，${cardInfo}。用你的人设风格对这张卡发表一句简短的点评或吐槽（1-2句），保持口语化，不要复述祝福语。直接对用户说话。`;
+
+  // 用临时 history，不污染主聊天历史
+  const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
+  busy = true;
+  lifecycleOnOpen?.();
+  const bubble = addBubble("ai", "");
+  try {
+    await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
+      bubble.textContent += d;
+    });
+    // 不保存到主 history，避免影响主动问候
+    scheduleFade(bubble, 8000);
   } catch {
     bubble.remove();
   } finally {

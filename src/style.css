@@ -422,7 +422,9 @@ body {
   background: rgba(150, 60, 60, 0.85);
 }
 .as-btn-primary {
-  background: #a01030;
+  background: linear-gradient(135deg, #b08ac5, #9b6db5);
+  color: white;
+  font-weight: 600;
 }
 /* 小助手设置面板 */
 .as-set-row {
@@ -736,3 +738,626 @@ body {
 }
 
 
+
+/* ========== 日记本面板 ========== */
+.diary-panel {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.dp-title {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 4px 4px 10px;
+  border-bottom: 1px solid rgba(90, 60, 110, 0.14);
+  margin-bottom: 8px;
+}
+
+.dp-empty {
+  color: #8a7a95;
+  font-size: 12px;
+  text-align: center;
+  padding: 20px 10px;
+  line-height: 1.6;
+}
+
+.dp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dp-item {
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dp-item:hover {
+  background: rgba(255, 185, 210, 0.25);
+}
+
+.dp-item.expanded {
+  background: rgba(255, 185, 210, 0.15);
+}
+
+.dp-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dp-date {
+  font-weight: 600;
+  font-size: 13px;
+  color: #3a2a45;
+}
+
+.dp-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.dp-tag.ai {
+  background: rgba(208, 106, 154, 0.2);
+  color: #d06a9a;
+}
+
+.dp-tag.tpl {
+  background: rgba(138, 122, 149, 0.2);
+  color: #8a7a95;
+}
+
+.dp-content {
+  margin-top: 8px;
+  padding: 8px 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #4a3a55;
+  white-space: pre-wrap;
+  border-top: 1px dashed rgba(90, 60, 110, 0.1);
+}
+
+.dp-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+
+.dp-btn {
+  border: none;
+  background: rgba(208, 106, 154, 0.15);
+  color: #d06a9a;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dp-btn:hover {
+  background: rgba(208, 106, 154, 0.3);
+}
+
+.dp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ========== 每日抽卡面板 ========== */
+.daily-card-panel {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.cp-title {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 4px 4px 10px;
+  border-bottom: 1px solid rgba(90, 60, 110, 0.14);
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.cp-rarity-R { color: #a8b8c8; }
+.cp-rarity-SR { color: #f0c040; }
+.cp-rarity-SSR { color: #ff6b6b; }
+
+.cp-card-container {
+  display: flex;
+  justify-content: center;
+  perspective: 800px;
+  margin: 12px 0;
+}
+
+.cp-card {
+  width: 160px;
+  height: 220px;
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.6s;
+  transform-style: preserve-3d;
+}
+
+.cp-card-back {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+}
+
+.cp-card-back:hover {
+  transform: scale(1.02);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+}
+
+.cp-back {
+  text-align: center;
+  color: white;
+}
+
+.cp-back-q {
+  font-size: 40px;
+  margin-bottom: 8px;
+}
+
+.cp-back-text {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.cp-card-front {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+}
+
+.cp-rarity-bg-R { border: 2px solid #a8b8c8; }
+.cp-rarity-bg-SR { border: 2px solid #f0c040; box-shadow: 0 0 15px rgba(240, 192, 64, 0.4); }
+.cp-rarity-bg-SSR { border: 2px solid transparent; background-clip: padding-box; }
+
+.cp-flip-anim {
+  animation: cardFlip 0.8s ease-out;
+}
+
+@keyframes cardFlip {
+  0% { transform: rotateY(180deg) scale(0.8); opacity: 0; }
+  50% { transform: rotateY(90deg) scale(0.9); opacity: 0.5; }
+  100% { transform: rotateY(0deg) scale(1); opacity: 1; }
+}
+
+.cp-glow {
+  position: absolute;
+  inset: -2px;
+  border-radius: 14px;
+  z-index: -1;
+  opacity: 0.6;
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+.cp-glow-R { background: linear-gradient(135deg, #a8b8c8, #c0d0e0); }
+.cp-glow-SR { background: linear-gradient(135deg, #f0c040, #f8e080); }
+.cp-glow-SSR {
+  background: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3);
+  background-size: 300% 300%;
+  animation: glowPulse 2s ease-in-out infinite, rainbowShift 3s linear infinite;
+}
+
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.02); }
+}
+
+@keyframes rainbowShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.cp-face {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+}
+
+.cp-art {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: pre;
+  text-align: center;
+  color: #3a2a45;
+  margin-bottom: 8px;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.cp-card-image {
+  max-width: 100%;
+  max-height: 140px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.cp-theme {
+  font-size: 14px;
+  font-weight: 700;
+  color: #3a2a45;
+  text-align: center;
+}
+
+.cp-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #4a3a55;
+  text-align: center;
+  padding: 8px 12px;
+  min-height: 40px;
+  white-space: pre-wrap;
+}
+
+.cp-text-ai {
+  font-style: italic;
+  color: #6a5a75;
+}
+
+.cp-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+}
+
+.cp-btn {
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cp-btn-draw {
+  background: linear-gradient(135deg, #d06a9a, #e8a0bf);
+  color: white;
+  box-shadow: 0 2px 8px rgba(208, 106, 154, 0.3);
+}
+
+.cp-btn-draw:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(208, 106, 154, 0.5);
+}
+
+.cp-btn-draw:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.cp-btn-collection {
+  background: rgba(138, 122, 149, 0.15);
+  color: #6a5a75;
+  font-weight: 500;
+}
+
+.cp-btn-collection:hover {
+  background: rgba(138, 122, 149, 0.25);
+}
+
+/* 图鉴 */
+.cp-collection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.cp-coll-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.cp-rarity-border-R { border-left: 3px solid #a8b8c8; }
+.cp-rarity-border-SR { border-left: 3px solid #f0c040; }
+.cp-rarity-border-SSR { border-left: 3px solid #ff6b6b; }
+
+.cp-coll-art {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 8px;
+  line-height: 1.1;
+  white-space: pre;
+  color: #3a2a45;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.cp-coll-img {
+  max-width: 50px;
+  max-height: 50px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.cp-coll-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.cp-coll-theme {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3a2a45;
+}
+
+.cp-coll-date {
+  font-size: 11px;
+  color: #8a7a95;
+}
+
+/* ========== 信息板功能按钮 ========== */
+.info-panel-features {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 6px 0;
+  border-top: 1px solid rgba(90, 60, 110, 0.1);
+  border-bottom: 1px solid rgba(90, 60, 110, 0.1);
+}
+
+.info-feat-btn {
+  flex: 1;
+  border: none;
+  background: rgba(208, 106, 154, 0.12);
+  color: #6a5a75;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.info-feat-btn:hover {
+  background: rgba(208, 106, 154, 0.25);
+  color: #d06a9a;
+}
+
+/* ========== 面板关闭按钮 + 标题栏 ========== */
+.dp-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid rgba(90, 60, 110, 0.14);
+  margin-bottom: 8px;
+}
+
+.dp-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.dp-close-btn,
+.cp-close-btn {
+  border: none;
+  background: rgba(138, 122, 149, 0.12);
+  color: #8a7a95;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.dp-close-btn:hover,
+.cp-close-btn:hover {
+  background: rgba(200, 80, 80, 0.2);
+  color: #c94a4a;
+}
+
+/* 卡牌面板的关闭按钮定位在标题栏内 */
+.daily-card-panel {
+  position: relative;
+}
+
+.daily-card-panel .cp-close-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+}
+
+/* 日记面板标题栏覆盖旧的 dp-title */
+.diary-panel .dp-title {
+  padding: 0;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+.cp-rarity-border-SSR { border-left: 3px solid; border-image: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb, #ff9ff3) 1; }
+
+/* 锁定状态的卡牌 */
+.cp-coll-locked {
+  opacity: 0.5;
+  background: rgba(200, 200, 200, 0.3);
+}
+
+.cp-coll-unknown {
+  color: #aaa;
+  font-style: italic;
+}
+
+.cp-coll-rarity {
+  font-size: 10px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* 筛选栏 */
+.cp-filter-bar {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.cp-filter-btn {
+  padding: 3px 10px;
+  border: 1px solid rgba(138, 122, 149, 0.3);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+  color: #5a4a65;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cp-filter-btn:hover {
+  background: rgba(138, 122, 149, 0.15);
+}
+
+.cp-filter-btn.active {
+  background: rgba(138, 122, 149, 0.25);
+  border-color: rgba(138, 122, 149, 0.5);
+  font-weight: 600;
+}
+
+/* 卡牌详情弹窗 */
+.cp-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
+}
+
+.cp-detail {
+  position: relative;
+  width: 240px;
+  padding: 20px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  text-align: center;
+  animation: slideUp 0.25s ease;
+}
+
+.cp-detail-art {
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: pre;
+  color: #3a2a45;
+  margin: 12px 0;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cp-detail-theme {
+  font-size: 18px;
+  font-weight: 700;
+  color: #3a2a45;
+  margin: 8px 0 4px;
+}
+
+.cp-detail-rarity {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.cp-detail-text {
+  font-size: 13px;
+  color: #5a4a65;
+  line-height: 1.6;
+  margin: 10px 0;
+  padding: 10px;
+  background: rgba(138, 122, 149, 0.08);
+  border-radius: 8px;
+}
+
+.cp-detail-meta {
+  font-size: 11px;
+  color: #8a7a95;
+  margin-top: 8px;
+}
+
+/* 日记删除按钮 */
+.dp-btn-danger {
+  color: #e74c3c;
+  border-color: rgba(231, 76, 60, 0.2);
+}
+
+.dp-btn-danger:hover {
+  background: rgba(231, 76, 60, 0.1);
+  border-color: rgba(231, 76, 60, 0.4);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ========== 模型调节滑块 ========== */
+.as-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(138, 122, 149, 0.2);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.as-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #b08ac5;
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+
+.as-slider::-webkit-slider-thumb:hover {
+  background: #9b6db5;
+  transform: scale(1.1);
+}

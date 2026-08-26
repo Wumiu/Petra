@@ -5,6 +5,9 @@ import { findAction, sampleAction, pickPoolAction, type ActionDef } from "../act
 import { clamp } from "../../utils/math";
 import { getActivityFactor, getActivityLevel } from "../../utils/settings";
 
+// ---- 音乐情绪类型 ----
+type MusicMood = "calm" | "normal" | "energetic";
+
 /** 表情目标参数（在音乐驱动基础上叠加偏移） */
 interface Expression {
   brow: number; // -1..1 眉毛
@@ -16,23 +19,28 @@ interface Expression {
   closeR: number; // 0..1 右眼闭合
   irisScale: number; // 瞳缩放偏移
   tilt: number; // 歪头
+  mood: "happy" | "neutral" | "sad"; // 情绪标签（音乐模式下过滤用）
 }
 
 const EXPRESSIONS: Expression[] = [
-  { brow: 0.35, mouthOpen: 0.18, mouthForm: 0.9, eyeX: 0, eyeY: 0, closeL: 0.05, closeR: 0.05, irisScale: 0, tilt: 0 }, // 微笑
-  { brow: 1, mouthOpen: 0.65, mouthForm: -0.1, eyeX: 0, eyeY: 0.1, closeL: 0, closeR: 0, irisScale: -0.2, tilt: 0 }, // 惊讶
-  { brow: 0.3, mouthOpen: 0, mouthForm: 0.45, eyeX: 0, eyeY: 0, closeL: 0.62, closeR: 0.62, irisScale: 0, tilt: 0 }, // 眯眯眼
-  { brow: -0.45, mouthOpen: 0.15, mouthForm: -0.3, eyeX: 0, eyeY: -0.25, closeL: 0.15, closeR: 0.15, irisScale: 0, tilt: 0.06 }, // 委屈
-  { brow: -0.8, mouthOpen: 0.05, mouthForm: -0.55, eyeX: 0, eyeY: 0, closeL: 0.08, closeR: 0.08, irisScale: 0, tilt: -0.05 }, // 生气
-  { brow: 0.55, mouthOpen: 0.12, mouthForm: 0.6, eyeX: 0.35, eyeY: -0.15, closeL: 0.45, closeR: 0.45, irisScale: 0, tilt: 0.1 }, // 害羞
-  { brow: 0.25, mouthOpen: 0.35, mouthForm: 0.7, eyeX: 0, eyeY: 0, closeL: 1, closeR: 0, irisScale: 0, tilt: 0.04 }, // 左眨眼
-  { brow: 0.25, mouthOpen: 0.35, mouthForm: 0.7, eyeX: 0, eyeY: 0, closeL: 0, closeR: 1, irisScale: 0, tilt: -0.04 }, // 右眨眼
-  { brow: 0.2, mouthOpen: 0.85, mouthForm: -0.35, eyeX: 0, eyeY: 0.15, closeL: 0.12, closeR: 0.12, irisScale: 0.05, tilt: 0.03 }, // 吐舌/哈欠
-  { brow: 0.6, mouthOpen: 0.5, mouthForm: -0.15, eyeX: -0.3, eyeY: 0, closeL: 0, closeR: 0, irisScale: 0, tilt: 0.08 }, // 好奇
+  { brow: 0.35, mouthOpen: 0.18, mouthForm: 0.9, eyeX: 0, eyeY: 0, closeL: 0.05, closeR: 0.05, irisScale: 0, tilt: 0, mood: "happy" }, // 微笑
+  { brow: 1, mouthOpen: 0.65, mouthForm: -0.1, eyeX: 0, eyeY: 0.1, closeL: 0, closeR: 0, irisScale: -0.2, tilt: 0, mood: "happy" }, // 惊讶
+  { brow: 0.3, mouthOpen: 0, mouthForm: 0.45, eyeX: 0, eyeY: 0, closeL: 0.62, closeR: 0.62, irisScale: 0, tilt: 0, mood: "happy" }, // 眯眯眼
+  { brow: -0.45, mouthOpen: 0.15, mouthForm: -0.3, eyeX: 0, eyeY: -0.25, closeL: 0.15, closeR: 0.15, irisScale: 0, tilt: 0.06, mood: "sad" }, // 委屈
+  { brow: -0.8, mouthOpen: 0.05, mouthForm: -0.55, eyeX: 0, eyeY: 0, closeL: 0.08, closeR: 0.08, irisScale: 0, tilt: -0.05, mood: "sad" }, // 生气
+  { brow: 0.55, mouthOpen: 0.12, mouthForm: 0.6, eyeX: 0.35, eyeY: -0.15, closeL: 0.45, closeR: 0.45, irisScale: 0, tilt: 0.1, mood: "happy" }, // 害羞
+  { brow: 0.25, mouthOpen: 0.35, mouthForm: 0.7, eyeX: 0, eyeY: 0, closeL: 1, closeR: 0, irisScale: 0, tilt: 0.04, mood: "neutral" }, // 左眨眼
+  { brow: 0.25, mouthOpen: 0.35, mouthForm: 0.7, eyeX: 0, eyeY: 0, closeL: 0, closeR: 1, irisScale: 0, tilt: -0.04, mood: "neutral" }, // 右眨眼
+  { brow: 0.2, mouthOpen: 0.85, mouthForm: -0.35, eyeX: 0, eyeY: 0.15, closeL: 0.12, closeR: 0.12, irisScale: 0.05, tilt: 0.03, mood: "neutral" }, // 吐舌/哈欠
+  { brow: 0.6, mouthOpen: 0.5, mouthForm: -0.15, eyeX: -0.3, eyeY: 0, closeL: 0, closeR: 0, irisScale: 0, tilt: 0.08, mood: "happy" }, // 好奇
 ];
 
-function pickExpression(rng: () => number): Expression {
-  return EXPRESSIONS[Math.floor(rng() * EXPRESSIONS.length)];
+/** 音乐播放时只抽 happy/neutral 表情 */
+const MUSIC_EXPRESSIONS = EXPRESSIONS.filter(e => e.mood !== "sad");
+
+function pickExpression(rng: () => number, pool?: Expression[]): Expression {
+  const list = pool ?? EXPRESSIONS;
+  return list[Math.floor(rng() * list.length)];
 }
 
 /**
@@ -46,9 +54,8 @@ export class Rigged2DView implements PetView {
   private clickPulse = 0;
   private scalePulse = 0;
   private swayEnabled = true;
-  private displayW = 300; // 当前显示边长（窗口跟随缩放，setScale 更新）
-  // 音乐驱动相位：让 treble/bass 的单向能量乘以 sin 载波变成围绕 0 的双向摆动，
-  // 避免"普通待机时角色整体固定倾斜"（treble/bass 是 ≥0 的 DC 偏置）。
+  private displayW = 300;
+  // 音乐驱动相位：让 treble/bass 的单向能量乘以 sin 载波变成围绕 0 的双向摆动
   private musicPhase = 0;
 
   // 随机表情状态机
@@ -61,9 +68,9 @@ export class Rigged2DView implements PetView {
   private action: ActionDef | null = null;
   private actionT = 0;
   private actionLoop = false;
-  private winkRight = false; // wink 动作随机闭右眼
+  private winkRight = false;
 
-  // 动作池：空闲随机抽取播放（启动 8s 后才开始）
+  // 动作池
   private actionPoolNext = performance.now() + 8000;
 
   // 跟随音乐：BPM 节奏摇摆 + 节拍随机 wink
@@ -72,10 +79,21 @@ export class Rigged2DView implements PetView {
   private musicWinkNext = 2 + Math.random() * 4;
   private musicWinkSide: "L" | "R" = "L";
 
-  // 拖拽下半身摆动（弹性惯性，松手自然衰减）
+  // 拖拽下半身摆动
   private swing = 0;
   private swingV = 0;
-  private dragSquint = 0; // 拖拽眯眼（0=睁眼，1=眯眼）
+  private dragSquint = 0;
+
+  // ---- 相位随机化 ----
+  private phaseOffsets = {
+    body: 0, angleZ: 0, bust: 0, bangL: 0, bangC: 0, bangR: 0,
+    armPos: 0, mouthCY: 0, mouthCAng: 0,
+  };
+  private phaseRefreshTimer = 0; // 下次刷新相位的时间戳(ms)
+  private lastBpm = 0; // 上一帧的 bpm，用于检测音乐开始
+
+  // ---- 用户调节参数（覆盖计算值） ----
+  private userParams: Partial<Record<string, number>> = {};
 
   private static rand() {
     return Math.random();
@@ -106,13 +124,28 @@ export class Rigged2DView implements PetView {
     this.runtime.destroy();
   }
 
-  /** rigger warnings（缺 face / 闭眼自动合成等） */
   get warnings(): string[] {
     return this.runtime.warnings;
   }
 
   get stats(): string {
     return `已自动装配 ${this.runtime.partsCount} 部件 / 发丝 ${this.runtime.strandCount} 束`;
+  }
+
+  // ---- 音乐情绪检测 ----
+  private detectMood(bass: number, mid: number, treble: number): MusicMood {
+    const energy = bass + mid + treble;
+    const bassRatio = bass / (energy || 1);
+    if (energy < 0.05) return "calm";
+    if (bassRatio > 0.55 && energy > 0.3) return "energetic";
+    return "normal";
+  }
+
+  // ---- 相位随机化：刷新所有 per-parameter 相位偏移 ----
+  private refreshPhases() {
+    for (const k in this.phaseOffsets) {
+      (this.phaseOffsets as Record<string, number>)[k] = Math.random() * Math.PI * 2;
+    }
   }
 
   update(d: PetDriver, dt: number) {
@@ -122,9 +155,24 @@ export class Rigged2DView implements PetView {
     this.clickPulse = Math.max(0, this.clickPulse - dt * 6);
     this.scalePulse = Math.max(0, this.scalePulse - dt * 5);
 
-    // ---- 表情节奏：间隔随活动因子拉长，播放 1.6~2.4 秒（正弦包络淡入淡出）。
-    //      待机时安静：不触发新表情，回到中性。
+    // ---- 相位随机化触发：bpm 从 0→有音乐 时立即刷新，之后每 30 秒刷新 ----
     const nowMs = performance.now();
+    if (d.bpm > 40 && this.lastBpm <= 40) {
+      // 音乐刚开始，立即刷新相位
+      this.refreshPhases();
+      this.phaseRefreshTimer = nowMs + 30000;
+    } else if (d.bpm > 40 && nowMs > this.phaseRefreshTimer) {
+      this.refreshPhases();
+      this.phaseRefreshTimer = nowMs + 30000;
+    }
+    this.lastBpm = d.bpm;
+
+    // ---- 音乐情绪检测 ----
+    const mood = this.detectMood(d.bass, d.mid, d.treble);
+    // 情绪幅度乘数
+    const moodMul = mood === "calm" ? 0.3 : mood === "energetic" ? 1.4 : 1.0;
+
+    // ---- 表情节奏：音乐播放时缩短间隔 + 节拍触发 + mood 过滤 ----
     this.exprT += dt;
     if (d.idle) {
       if (this.exprT > this.exprDur || this.exprT === 0) {
@@ -132,25 +180,36 @@ export class Rigged2DView implements PetView {
         this.exprT = 0;
       }
       this.exprNext = nowMs + 60000;
-    } else if (!this.action && nowMs > this.exprNext) {
-      this.expr = pickExpression(Rigged2DView.rand);
-      this.exprT = 0;
-      this.exprDur = 1.6 + Rigged2DView.rand() * 0.8;
-      this.exprNext = nowMs + (6000 + Rigged2DView.rand() * 8000) * getActivityFactor();
+    } else if (!this.action) {
+      // 音乐播放时缩短表情间隔
+      const isMusic = d.bpm > 40;
+      const exprInterval = isMusic
+        ? (3000 + Rigged2DView.rand() * 3000) * getActivityFactor()
+        : (6000 + Rigged2DView.rand() * 8000) * getActivityFactor();
+
+      // 节拍到来时 20% 概率立即触发新表情
+      const beatTrigger = isMusic && d.beat > 0.5 && Rigged2DView.rand() < 0.2 && nowMs > this.exprNext - exprInterval * 0.5;
+
+      if (nowMs > this.exprNext || beatTrigger) {
+        // 音乐模式下只抽 happy/neutral 表情
+        this.expr = pickExpression(Rigged2DView.rand, isMusic ? MUSIC_EXPRESSIONS : undefined);
+        this.exprT = 0;
+        this.exprDur = isMusic ? 1.2 + Rigged2DView.rand() * 0.6 : 1.6 + Rigged2DView.rand() * 0.8;
+        this.exprNext = nowMs + exprInterval;
+      }
     }
     const eProg = Math.min(1, this.exprT / this.exprDur);
-    const ew = Math.sin(Math.PI * eProg); // 0→1→0
+    const ew = Math.sin(Math.PI * eProg);
     const e = this.expr;
 
-    // ---- 动作池：空闲随机抽取播放（频率随活动因子拉长，low 最稀疏） ----
+    // ---- 动作池 ----
     if (!this.action && !d.idle && !d.dragging && nowMs > this.actionPoolNext) {
       const def = pickPoolAction(getActivityLevel());
       if (def) this.playAction(def.id, false);
       this.actionPoolNext = nowMs + (15 + Math.random() * 15) * 1000 * getActivityFactor();
     }
 
-    const exc = d.excited ?? 0; // 逗猫棒兴奋度：眼神更跟手、微前倾、瞳孔聚焦
-    // 顶部待机倒挂（旋转 180°）→ 视线横纵都镜像
+    const exc = d.excited ?? 0;
     const flip = d.idleTop ? -1 : 1;
     const cdx = d.cursorDx * flip;
     const cdy = d.cursorDy * flip;
@@ -178,80 +237,123 @@ export class Rigged2DView implements PetView {
       winkClose = this.musicWinkT > 0 ? 1 : 0;
     }
 
-    // ---- 下半身摆动：按住期间软乎乎晃动（拖动叠加速度摆动）/ 松开立即归正 ----
+    // ---- 下半身摆动 ----
     if (d.pressed) {
       const hold = Math.sin((nowMs / 1000) * 0.6) * 0.4 + Math.sin((nowMs / 1000) * 0.25 + 1.0) * 0.18;
       const speedSwing = d.dragging ? clamp(d.dragVelX * 2.0, -1.5, 1.5) : 0;
       const target = hold + speedSwing;
       this.swingV += (target - this.swing) * 45 * dt;
-      this.swingV *= Math.exp(-dt * 6.3); // 帧率无关阻尼（等效 60fps 下每帧 *0.9）
+      this.swingV *= Math.exp(-dt * 6.3);
       this.swing += this.swingV * dt;
     } else {
-      // 松开：立即归正
       this.swingV = 0;
       this.swing += (0 - this.swing) * Math.min(1, dt * 12);
     }
-    // 按住眯眼平滑（全闭）
     this.dragSquint += ((d.pressed ? 1 : 0) - this.dragSquint) * Math.min(1, dt * 6);
 
+    // ---- beat 分层：kick vs snare ----
+    const beat = d.beat * sway * moodMul;
+    const isKick = d.bass > d.mid * 1.5;
+
+    // ---- 构造驱动参数（含相位随机化 + 情绪幅度乘数 + 扩展通道） ----
+    const po = this.phaseOffsets;
     const o: Partial<RigParams> = {
-      // 头部轻微跟随（眼神为主）：头微动、眼明显；兴奋时微前倾
+      // 头部轻微跟随
       angleX: clamp(cdx * 0.25 + d.vx * 0.25 + exc * 0.12, -1, 1),
       angleY: clamp(-cdy * 0.15 + exc * 0.06, -1, 1),
       eyeX: clamp(cdx * (1.8 + exc * 0.6) + e.eyeX * ew, -1, 1),
       eyeY: clamp(cdy * (1.2 + exc * 0.5) + e.eyeY * ew, -1, 1),
-      // 音乐 → 身体律动（+ BPM 节奏摇摆）。
-      // 注意：treble/bass 是单向能量(≥0)，直接乘 sway 会形成 DC 偏置导致角色固定倾斜；
-      // 乘 sin 载波使其围绕 0 双向摆动（与 Live2DController 一致）。
-      body: clamp(d.bass * 0.55 * sway * Math.sin(this.musicPhase * 2.1) + d.vx * 0.3 + d.beat * 0.2 * sway + bpmSway, -1, 1),
-      angleZ: clamp(Math.sin(d.breathing) * 0.02 + d.treble * 0.25 * sway * Math.sin(this.musicPhase * 3.3) + e.tilt * ew, -0.5, 0.5),
-      // 音乐 → 嘴型（中频 + 节拍 + 吞咽/点击脉冲），表情叠加，兴奋时微张嘴
-      mouthOpen: clamp(d.mid * 0.9 * sway + d.beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew + exc * 0.12, 0, 1.3),
-      mouthForm: clamp(d.mid * 0.4 * sway + e.mouthForm * ew, -1, 1),
-      // 眉毛：音乐驱动 + 表情偏移
-      brow: clamp(d.treble * 0.5 * sway - d.bass * 0.3 + e.brow * ew, -1, 1),
-      // 眼睛开合：音乐微动 + 表情（wink/眯眼用乘法收敛），兴奋时睁大
+
+      // 音乐 → 身体律动（+ BPM 节奏摇摆）+ 相位随机化 + 情绪乘数
+      body: clamp(
+        d.bass * 0.55 * sway * moodMul * Math.sin(this.musicPhase * 2.1 + po.body)
+        + d.vx * 0.3
+        + (isKick ? -beat * 0.15 : beat * 0.2) * sway
+        + bpmSway,
+        -1, 1
+      ),
+      angleZ: clamp(
+        Math.sin(d.breathing) * 0.02
+        + d.treble * 0.25 * sway * moodMul * Math.sin(this.musicPhase * 3.3 + po.angleZ)
+        + e.tilt * ew,
+        -0.5, 0.5
+      ),
+
+      // 音乐 → 嘴型
+      mouthOpen: clamp(d.mid * 0.9 * sway * moodMul + beat * 0.5 * sway + this.gobblePulse + this.clickPulse * 0.5 + e.mouthOpen * ew + exc * 0.12, 0, 1.3),
+      mouthForm: clamp(d.mid * 0.4 * sway * moodMul + e.mouthForm * ew, -1, 1),
+
+      // 嘴角（新增）：mid → 上扬，treble → 角度
+      mouthCY: clamp(d.mid * 0.2 * sway * moodMul * Math.sin(this.musicPhase * 1.9 + po.mouthCY), -0.5, 0.5),
+      mouthCAng: clamp(d.treble * 0.15 * sway * moodMul * Math.sin(this.musicPhase * 2.7 + po.mouthCAng), -0.3, 0.3),
+
+      // 眉毛
+      brow: clamp(d.treble * 0.5 * sway * moodMul - d.bass * 0.3 * moodMul + e.brow * ew, -1, 1),
+
+      // 眼睛开合
       eyeOpenL: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeL * ew) + exc * 0.05, 0, 1.08),
       eyeOpenR: clamp((1 - d.mid * 0.06 * sway) * (1 - e.closeR * ew) + exc * 0.05, 0, 1.08),
-      // 瞳孔聚焦微缩
-      irisScale: clamp(1 + e.irisScale * ew - exc * 0.06, 0.5, 1.3),
-      // 发丝物理加成
-      fhAmp: 2 + d.mid * 2.5 * sway,
-      physAmp: 2 + d.bass * 2 * sway,
-      // 走动摇晃 → 手臂摆动
+
+      // 瞳孔缩放（新增）：节拍时微缩 + 表情
+      irisScale: clamp(1 + e.irisScale * ew - exc * 0.06 - beat * 0.08, 0.5, 1.3),
+
+      // 胸腔起伏（新增）：bass 错开半拍
+      bust: clamp(d.bass * 0.3 * sway * moodMul * Math.sin(this.musicPhase * 2.1 + Math.PI / 3 + po.bust), -0.5, 0.5),
+      bustY: clamp(beat * 0.15 * sway, -0.3, 0.3),
+
+      // 刘海三束独立飘动（新增）：treble 乘以不同相位
+      bangL: clamp(d.treble * 0.4 * sway * moodMul * Math.sin(this.musicPhase * 3.1 + po.bangL), -0.5, 0.5),
+      bangC: clamp(d.treble * 0.35 * sway * moodMul * Math.sin(this.musicPhase * 2.8 + po.bangC), -0.5, 0.5),
+      bangR: clamp(d.treble * 0.4 * sway * moodMul * Math.sin(this.musicPhase * 3.5 + po.bangR), -0.5, 0.5),
+
+      // 发丝物理加成（增强）：kick 时额外弹跳
+      fhAmp: 2 + d.mid * 2.5 * sway * moodMul,
+      physAmp: 2 + d.bass * 2 * sway * moodMul + (isKick ? beat * 1.5 : 0),
+      fhSoft: 0.4 + d.treble * 0.3 * sway * moodMul,
+      soft: 2 + d.mid * 1.5 * sway * moodMul,
+
+      // 手臂
       armY: clamp(d.vx * 0.6, -1, 1),
+      armPos: clamp(d.bass * 0.2 * sway * moodMul * Math.sin(this.musicPhase * 1.7 + po.armPos), -0.5, 0.5),
+
       // 拖拽 → 下半身摆动
       bodySwing: clamp(this.swing, -1.5, 1.5),
     };
 
-    // 音乐节拍 wink：闭对应单眼
+    // snare/hihat：眨眼 + 嘴角上扬 + 眉毛微挑
+    if (!isKick && beat > 0.05) {
+      o.eyeOpenL = Math.min(o.eyeOpenL ?? 1, 1 - beat * 0.15);
+      o.eyeOpenR = Math.min(o.eyeOpenR ?? 1, 1 - beat * 0.15);
+      o.mouthCY = (o.mouthCY ?? 0) + beat * 0.1;
+      o.brow = clamp((o.brow ?? 0) + beat * 0.15, -1, 1);
+    }
+
+    // 音乐节拍 wink
     if (winkClose) {
       if (this.musicWinkSide === "L") o.eyeOpenL = Math.min(o.eyeOpenL ?? 1, 0.12);
       else o.eyeOpenR = Math.min(o.eyeOpenR ?? 1, 0.12);
     }
 
-    // 按住眯眼：全闭
+    // 按住眯眼
     if (this.dragSquint > 0.01) {
       const sq = 1 - 0.95 * this.dragSquint;
       o.eyeOpenL = Math.min(o.eyeOpenL ?? 1, sq);
       o.eyeOpenR = Math.min(o.eyeOpenR ?? 1, sq);
     }
 
-    // ---- 动作层：覆盖对应通道（播放完自动回落待机 / 循环） ----
+    // ---- 动作层 ----
     if (this.action) {
       const speed = this.action.bpmSync && d.bpm > 40 ? d.bpm / 60 : 1;
       this.actionT += dt * speed;
       const progress = Math.min(1, this.actionT / this.action.duration);
       const ap = sampleAction(this.action, progress);
       if (this.action.randomEye && this.winkRight) {
-        // 显式交换声明过的眼睛通道（缺失通道不写入 undefined）
         const l = ap.eyeOpenL;
         const r = ap.eyeOpenR;
         if (r !== undefined) ap.eyeOpenL = r;
         if (l !== undefined) ap.eyeOpenR = l;
       }
-      // 平滑混合：动作参数与基线 lerp，渐入渐出消除硬覆盖跳变
-      const FADE = 0.2; // 秒
+      const FADE = 0.2;
       let w = 1;
       if (!this.actionLoop) {
         w = Math.min(1, this.actionT / FADE, Math.max(0, (this.action.duration - this.actionT) / FADE));
@@ -274,16 +376,21 @@ export class Rigged2DView implements PetView {
       }
     }
 
+
+    // ---- 应用用户调节参数 ----
+    for (const k in this.userParams) {
+      const v = this.userParams[k];
+      if (v !== undefined) (o as any)[k] = v;
+    }
+
     this.runtime.update(dt, o);
 
-    // 待机顶部 → 整体旋转 180°（露出头顶+眼睛）
+    // 待机顶部 → 整体旋转 180°
     const rot = d.idleTop ? " rotate(180deg)" : "";
-    // 模型边缘露出偏移（窗口探出屏幕时模型自动跟随）
     const ox = Math.round(d.modelOffsetX || 0);
     const oy = Math.round(d.modelOffsetY || 0);
     const shift = ox !== 0 || oy !== 0 ? ` translate(${ox}px, ${oy}px)` : "";
 
-    // 吞咽/点击时 canvas 缩放脉冲
     if (this.scalePulse > 0) {
       const s = 1 + this.scalePulse * 0.15 * (this.gobblePulse > 0 ? 1.2 : 0.6);
       this.canvas.style.transform = `translate(-50%, -50%)${shift}${rot} scale(${s})`;
@@ -309,7 +416,6 @@ export class Rigged2DView implements PetView {
       this.actionT = 0;
       this.actionLoop = loop;
       if (def.randomEye) this.winkRight = Math.random() < 0.5;
-      // 动作独占：关闭自动眨眼/随机晃头/待机微动，避免干扰动作
       this.setAuto(false);
     }
   }
@@ -321,7 +427,6 @@ export class Rigged2DView implements PetView {
     this.setAuto(true);
   }
 
-  /** 动作独占开关：统一管理自动眨眼/随机微动/待机晃动 */
   private setAuto(on: boolean) {
     this.runtime.autoBlinkOn = on;
     this.runtime.autoRandOn = on;
@@ -332,23 +437,20 @@ export class Rigged2DView implements PetView {
     this.swayEnabled = on;
   }
 
-  /** 模型显示尺寸：窗口跟随缩放时，画布按主轴（较长边）缩放并保持宽高比（非 Q 版比例不失真） */
   setScale(displayW: number) {
     this.displayW = displayW;
     const cw = this.runtime.canvasWidth;
     const ch = this.runtime.canvasHeight;
-    const s = displayW / Math.max(cw, ch); // 主轴 = 用户设定尺寸（正方形画布时与旧行为一致）
+    const s = displayW / Math.max(cw, ch);
     this.canvas.style.width = `${Math.round(cw * s)}px`;
     this.canvas.style.height = `${Math.round(ch * s)}px`;
     this.canvas.style.maxWidth = "none";
     this.canvas.style.maxHeight = "none";
   }
 
-  /** 角色在窗口内的边界（相对窗口左上，逻辑 px，含缩放），供模型边缘补偿 */
   getCharacterBounds(): { left: number; top: number; right: number; bottom: number } | null {
     const cb = this.runtime.characterBounds;
     if (!cb) return null;
-    // 与 setScale 同一主轴比例，逐轴居中（非正方形画布两轴偏移不同）
     const cw = this.runtime.canvasWidth;
     const ch = this.runtime.canvasHeight;
     const s = this.displayW / Math.max(cw, ch);
@@ -356,7 +458,6 @@ export class Rigged2DView implements PetView {
     const dh = ch * s;
     const offsetX = (700 - dw) / 2;
     const offsetY = (700 - dh) / 2;
-    // 用户自定义边界微调（正 = 放大框，负 = 收紧框）
     const pad = this.boundsPad;
     return {
       left: offsetX + cb.left * s - pad.left,
@@ -370,4 +471,45 @@ export class Rigged2DView implements PetView {
   setBoundsPadding(p: { left: number; right: number; top: number; bottom: number }) {
     this.boundsPad = p;
   }
+
+  /** 设置用户调节参数（覆盖计算值） */
+  setParam(key: string, value: number) {
+    this.userParams[key] = value;
+  }
+
+  /** 获取参数默认值 */
+  getDefault(key: string): number {
+    const defaults: Record<string, number> = {
+      physAmp: 2, soft: 2, fhAmp: 2, fhSoft: 0.4,
+      bust: 2.5, bustY: 1, eyeEase: 0.3, mouthEase: 0.45,
+      mouthScale: 1, irisScale: 1,
+    };
+    return defaults[key] ?? 0;
+  }
+
+  /** 设置自动行为开关 */
+  setAutoOption(key: "autoBlink" | "autoRand" | "autoIdle", on: boolean) {
+    if (key === "autoBlink") this.runtime.autoBlinkOn = on;
+    else if (key === "autoRand") this.runtime.autoRandOn = on;
+    else if (key === "autoIdle") this.runtime.autoIdleOn = on;
+  }
+
+  /** 获取自动行为开关状态 */
+  getAutoOption(key: "autoBlink" | "autoRand" | "autoIdle"): boolean {
+    if (key === "autoBlink") return (this.runtime as any).autoBlink;
+    if (key === "autoRand") return (this.runtime as any).autoRand;
+    if (key === "autoIdle") return (this.runtime as any).autoIdle;
+    return true;
+  }
+
+  /** 获取所有可调参数的当前值 */
+  getAdjustableParams(): Record<string, number> {
+    const keys = ["physAmp", "soft", "fhAmp", "fhSoft", "bust", "bustY", "eyeEase", "mouthEase", "mouthScale", "eyeScaleL", "eyeScaleR", "irisScale"];
+    const result: Record<string, number> = {};
+    for (const k of keys) {
+      result[k] = this.userParams[k] ?? this.getDefault(k);
+    }
+    return result;
+  }
+
 }

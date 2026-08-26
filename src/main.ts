@@ -10,6 +10,12 @@ import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
+import { trackEvent, incrementInteractionCount } from "./features/diary/DiaryEventTracker";
+import { checkAndGenerateDiary } from "./features/diary/DiaryManager";
+import { toggleDiaryPanel } from "./features/diary/DiaryPanel";
+import { hasDrawnToday } from "./features/card/DailyCardManager";
+import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
+
 import { toast } from "./ui/Toast";
 import { setVisibleRect } from "./ui/visible";
 import { clamp } from "./utils/math";
@@ -18,7 +24,8 @@ import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settin
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
-import { listModels } from "./assistant/AssistantClient";
+import { listModels, PROVIDERS } from "./assistant/AssistantClient";
+import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
 import {
@@ -543,6 +550,18 @@ async function mountView() {
   view.setSwayEnabled(settings.audioEnabled);
   (view as any).setBoundsPadding?.(settings.boundsPadding);
   attachView(view);
+  // 恢复模型调节参数
+  if (view instanceof Rigged2DView) {
+    const modelName = currentModel.name ?? "default";
+    const params = settings.modelParams[modelName] ?? {};
+    for (const [k, v] of Object.entries(params)) {
+      (view as Rigged2DView).setParam(k, v);
+    }
+    const auto = settings.modelAuto[modelName] ?? {};
+    for (const [k, v] of Object.entries(auto)) {
+      (view as Rigged2DView).setAutoOption(k as any, v);
+    }
+  }
 }
 
 async function reloadView() {
@@ -647,6 +666,7 @@ async function boot() {
         if (awayMs > 15 * 60 * 1000 && now - lastGreetAt > 15 * 60 * 1000) {
           lastGreetAt = now;
           void triggerProactive();
+          trackEvent({ type: "greeting", summary: "主动问候了用户" });
           return;
         }
       }
@@ -664,6 +684,7 @@ async function boot() {
     if (activeMs > 90 * 60 * 1000 && sinceGreet > greetIntervalMs * 3 && !wasIdle) {
       lastGreetAt = now;
       void triggerProactive();
+          trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
 
@@ -671,6 +692,7 @@ async function boot() {
     if ((hour >= 23 || hour < 2) && sinceGreet > 30 * 60 * 1000) {
       lastGreetAt = now;
       void triggerProactive();
+          trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
 
@@ -678,6 +700,7 @@ async function boot() {
     if (hour >= 6 && hour < 10 && lastGreetAt === 0) {
       lastGreetAt = now;
       void triggerProactive();
+          trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
 
@@ -685,6 +708,7 @@ async function boot() {
     if (sinceGreet > 60 * 60 * 1000) {
       lastGreetAt = now;
       void triggerProactive();
+          trackEvent({ type: "greeting", summary: "主动问候了用户" });
     }
   }, 5 * 60 * 1000);
 
@@ -694,6 +718,7 @@ async function boot() {
 
   // ---------- 音频 ----------
   const analyzer = new AudioAnalyzer();
+  let breathingPhase = 0; // 呼吸累积相位（支持 BPM 同步平滑切换）
   const startAudio = async () => {
     if (!settings.audioEnabled) return;
     try {
@@ -825,6 +850,7 @@ async function boot() {
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
       view.playClick();
+      incrementInteractionCount();
       showInfoPanel();
       if (settings.assistant.enabled) {
         openAssistant(getModelRect());
@@ -853,13 +879,68 @@ async function boot() {
   // ---------- Astrobot 预留钩子 ----------
   astrobotOn((msg) => {
     if (msg.type === "emote" || msg.type === "gesture") view.playClick();
+      incrementInteractionCount();
     if (msg.type === "speak") view.playGobble();
     if (msg.type === "move") {
       void engine.teleportRandom();
     }
   });
 
-  // ---------- 主循环 ----------
+  
+  if (settings.diary?.enabled !== false) {
+    checkAndGenerateDiary().then(diary => {
+      if (diary) toast("📖 昨天的日记写好啦~");
+    }).catch(() => {});
+  }
+/** 显示更新公告弹窗 */
+function showAnnouncement(title: string, lines: string[], version: string) {
+  const panel = document.createElement("div");
+  panel.id = "announcement-panel";
+  panel.className = "model-panel";
+  panel.style.width = "300px";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "mp-title";
+  titleEl.textContent = title;
+  panel.appendChild(titleEl);
+
+  for (const line of lines) {
+    if (!line) {
+      const spacer = document.createElement("div");
+      spacer.style.height = "6px";
+      panel.appendChild(spacer);
+      continue;
+    }
+    const p = document.createElement("div");
+    p.style.cssText = "font-size:12.5px;color:#5a4a65;line-height:1.7;padding:2px 0;";
+    p.textContent = line;
+    panel.appendChild(p);
+  }
+
+  const btns = document.createElement("div");
+  btns.className = "as-set-btns";
+  btns.style.marginTop = "12px";
+  const okBtn = document.createElement("button");
+  okBtn.className = "as-btn as-btn-primary";
+  okBtn.textContent = "知道了";
+  okBtn.addEventListener("click", () => {
+    markAnnounced(version);
+    panel.remove();
+  });
+  btns.appendChild(okBtn);
+  panel.appendChild(btns);
+
+  document.body.appendChild(panel);
+  positionPanelNearModel(panel);
+}
+
+  // ---------- 更新公告（模型加载完成后弹出） ----------
+  setTimeout(() => {
+    const ann = getUnreadAnnouncement();
+    if (ann) showAnnouncement(ann.title, ann.lines, ann.version);
+  }, 3000);
+
+// ---------- 主循环 ----------
   const driver: PetDriver = idleDriver();
   let lastNow = performance.now();
   app.app.ticker.add(() => {
@@ -916,8 +997,12 @@ async function boot() {
     driver.vx = engine.vx;
     driver.cursorDx = engine.cursorDx;
     driver.cursorDy = engine.cursorDy;
-    // 待机时呼吸放缓
-    driver.breathing = (now / 1000) * Math.PI * 2 * (engine.isIdle ? 0.18 : 0.42);
+    // 呼吸同步化：有音乐时跟随 BPM（一次呼吸 = 4 拍），无音乐时默认速率
+    const breathSpeed = analyzer.bpm > 40
+      ? (analyzer.bpm / 60) * Math.PI * 2 / 4
+      : (engine.isIdle ? 0.18 : 0.42) * Math.PI * 2;
+    breathingPhase += dt * breathSpeed;
+    driver.breathing = breathingPhase;
     driver.excited = engine.excitementValue;
     driver.idleTop = engine.isIdleTop;
     driver.idle = engine.isIdle;
@@ -1250,6 +1335,20 @@ async function toggleModelPanel() {
       empty.textContent = "（无已导入模型）";
       host.appendChild(empty);
     }
+    // 模型调节入口（仅 PSD 模型）
+    if (currentModel.type !== "live2d") {
+      const adjRow = document.createElement("div");
+      adjRow.className = "mp-item";
+      const adjSpan = document.createElement("span");
+      adjSpan.textContent = "🎨 模型调节（测试）";
+      adjRow.appendChild(adjSpan);
+      adjRow.addEventListener("click", () => {
+        host.classList.add("hidden");
+        toggleModelAdjustPanel();
+      });
+      host.appendChild(adjRow);
+    }
+
     // 导入入口
     const importRow = document.createElement("div");
     importRow.className = "mp-item";
@@ -1504,6 +1603,8 @@ function buildMenu(engine: BehaviorEngine) {
       label: "对话记录",
       onPick: () => toggleChatHistory(),
     },
+    { id: "diary", label: "📖 日记本", onPick: () => toggleDiaryPanel() },
+    { id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() },
     {
       id: "feedback",
       label: "反馈",
@@ -1580,6 +1681,175 @@ async function toggleIdle() {
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
 }
 
+
+// ---------- 模型调节面板 ----------
+function toggleModelAdjustPanel() {
+  const panel = document.getElementById("model-adjust-panel") as HTMLElement | null;
+  if (panel && !panel.classList.contains("hidden")) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  // 仅 PSD 模型支持
+  if (!(view instanceof Rigged2DView)) {
+    toast("当前模型不支持调节", "warn");
+    return;
+  }
+  const rigView = view as Rigged2DView;
+
+  const p = panel || (() => {
+    const el = document.createElement("div");
+    el.id = "model-adjust-panel";
+    el.className = "model-panel";
+    document.body.appendChild(el);
+    return el;
+  })();
+
+  const modelName = currentModel.name ?? "default";
+  const savedParams = settings.modelParams[modelName] ?? {};
+  const savedAuto = settings.modelAuto[modelName] ?? {};
+
+  const render = () => {
+    p.innerHTML = "";
+
+    // 标题
+    const title = document.createElement("div");
+    title.className = "mp-title";
+    title.textContent = "🎨 模型调节（测试）";
+    p.appendChild(title);
+
+    // 自动行为开关
+    const autoTitle = document.createElement("div");
+    autoTitle.className = "mp-hint";
+    autoTitle.textContent = "自动行为";
+    autoTitle.style.fontWeight = "600";
+    p.appendChild(autoTitle);
+
+    const autoOptions: Array<{ key: "autoBlink" | "autoRand" | "autoIdle"; label: string; desc: string }> = [
+      { key: "autoBlink", label: "自动眨眼", desc: "随机眨眼动画" },
+      { key: "autoRand", label: "随机小动作", desc: "视线/头部随机漂移" },
+      { key: "autoIdle", label: "待机晃动", desc: "静止时轻微摇晃" },
+    ];
+
+    for (const opt of autoOptions) {
+      const row = document.createElement("div");
+      row.className = "mp-item";
+      const label = document.createElement("span");
+      label.textContent = opt.label;
+      const desc = document.createElement("span");
+      desc.style.cssText = "font-size:10px;color:#8a7a95;margin-left:auto;";
+      desc.textContent = opt.desc;
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = savedAuto[opt.key] ?? true;
+      toggle.addEventListener("change", () => {
+        rigView.setAutoOption(opt.key, toggle.checked);
+        if (!settings.modelAuto[modelName]) settings.modelAuto[modelName] = {};
+        settings.modelAuto[modelName][opt.key] = toggle.checked;
+        saveSettings(settings);
+      });
+      row.append(label, desc, toggle);
+      p.appendChild(row);
+    }
+
+    // 分隔
+    const sep = document.createElement("div");
+    sep.className = "sep";
+    sep.style.margin = "6px 0";
+    p.appendChild(sep);
+
+    // 物理/外观参数
+    const paramTitle = document.createElement("div");
+    paramTitle.className = "mp-hint";
+    paramTitle.textContent = "物理 & 外观";
+    paramTitle.style.fontWeight = "600";
+    p.appendChild(paramTitle);
+
+    const paramDefs: Array<{ key: string; label: string; min: number; max: number; step: number }> = [
+      { key: "physAmp", label: "物理幅度", min: 0, max: 5, step: 0.1 },
+      { key: "soft", label: "柔软度", min: 0, max: 5, step: 0.1 },
+      { key: "fhAmp", label: "发丝幅度", min: 0, max: 5, step: 0.1 },
+      { key: "fhSoft", label: "发丝柔软度", min: 0, max: 2, step: 0.05 },
+      { key: "bust", label: "胸腔位置", min: 0, max: 5, step: 0.1 },
+      { key: "bustY", label: "胸腔偏移", min: 0, max: 3, step: 0.1 },
+      { key: "eyeEase", label: "眼睛平滑", min: 0.05, max: 1, step: 0.05 },
+      { key: "mouthEase", label: "嘴型平滑", min: 0.05, max: 1, step: 0.05 },
+      { key: "mouthScale", label: "嘴巴缩放", min: 0.3, max: 2, step: 0.05 },
+
+      { key: "irisScale", label: "瞳孔缩放", min: 0.3, max: 2, step: 0.05 },
+    ];
+
+    for (const pd of paramDefs) {
+      const row = document.createElement("div");
+      row.className = "mp-item";
+      row.style.flexDirection = "column";
+      row.style.alignItems = "stretch";
+      row.style.gap = "2px";
+
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;justify-content:space-between;align-items:center;";
+      const label = document.createElement("span");
+      label.textContent = pd.label;
+      const valSpan = document.createElement("span");
+      valSpan.style.cssText = "font-size:11px;color:#8a7a95;min-width:30px;text-align:right;";
+      const currentVal = savedParams[pd.key] ?? rigView.getDefault(pd.key);
+      valSpan.textContent = currentVal.toFixed(2);
+      header.append(label, valSpan);
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = String(pd.min);
+      slider.max = String(pd.max);
+      slider.step = String(pd.step);
+      slider.value = String(currentVal);
+      slider.className = "as-slider";
+      slider.addEventListener("input", () => {
+        const v = parseFloat(slider.value);
+        valSpan.textContent = v.toFixed(2);
+        rigView.setParam(pd.key, v);
+        if (!settings.modelParams[modelName]) settings.modelParams[modelName] = {};
+        settings.modelParams[modelName][pd.key] = v;
+        saveSettings(settings);
+      });
+
+      row.append(header, slider);
+      p.appendChild(row);
+    }
+
+    // 重置按钮
+    const btns = document.createElement("div");
+    btns.className = "as-set-btns";
+    const resetBtn = document.createElement("button");
+    resetBtn.className = "as-btn";
+    resetBtn.textContent = "重置默认";
+    resetBtn.addEventListener("click", () => {
+      delete settings.modelParams[modelName];
+      delete settings.modelAuto[modelName];
+      saveSettings(settings);
+      // 恢复默认值
+      for (const pd of paramDefs) {
+        rigView.setParam(pd.key, rigView.getDefault(pd.key));
+      }
+      for (const opt of autoOptions) {
+        rigView.setAutoOption(opt.key, true);
+      }
+      render();
+      toast("已恢复默认参数");
+    });
+    const backBtn = document.createElement("button");
+    backBtn.className = "as-btn";
+    backBtn.textContent = "返回";
+    backBtn.addEventListener("click", () => {
+      p.classList.add("hidden");
+    });
+    btns.append(resetBtn, backBtn);
+    p.appendChild(btns);
+  };
+
+  render();
+  p.classList.remove("hidden");
+  positionPanelNearModel(p);
+}
 
 // ---------- 信息板（桌宠伴侣信息） ----------
 let infoPanelEl: HTMLElement | null = null;
@@ -1804,6 +2074,15 @@ function updateInfoPanelContent(el: HTMLElement, companion: string, weather: str
       const c = formatDuration(Date.now() - companionStart);
       const w = document.querySelector(".info-panel-weather")?.textContent?.replace("🌡 ", "") ?? "";
       updateInfoPanelContent(el, c, w);
+    });
+  });
+  // 功能按钮（日记、抽卡）
+  el.querySelectorAll(".info-feat-btn").forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      const feat = (btn as HTMLElement).dataset.feat;
+      if (feat === "diary") toggleDiaryPanel();
+      if (feat === "card") toggleDailyCardPanel();
     });
   });
 }
@@ -2186,7 +2465,7 @@ async function toggleAssistantSettings() {
 
     const provider = document.createElement("select");
     provider.className = "as-input as-select";
-    provider.innerHTML = `<option value="deepseek">DeepSeek（内置）</option><option value="custom">自定义 OpenAI 兼容</option>`;
+    (Object.keys(PROVIDERS) as Array<keyof typeof PROVIDERS>).forEach(k => { const opt = document.createElement("option"); opt.value = k; opt.textContent = PROVIDERS[k].label; provider.appendChild(opt); })
     provider.value = settings.assistant.provider;
     mkRow("提供商", provider);
 
@@ -2195,11 +2474,21 @@ async function toggleAssistantSettings() {
     baseUrl.placeholder = "如 https://api.openai.com/v1";
     baseUrl.value = settings.assistant.customBaseUrl;
     const baseUrlRow = mkRow("API 端点", baseUrl);
+    // Ollama 使用提示
+    const ollamaHint = document.createElement("div");
+    ollamaHint.className = "as-privacy";
+    ollamaHint.style.cssText = "display:none;";
+    ollamaHint.innerHTML = "💡 <b>Ollama：</b>① 安装 <code>ollama.com</code> ② 运行 <code>ollama serve</code> ③ <code>ollama pull qwen2.5:7b</code> ④ 点下方「自动获取模型」 ⑤ API Key 留空";
+    host.appendChild(ollamaHint);
+
     const toggleBaseUrl = () => {
-      baseUrlRow.style.display = provider.value === "custom" ? "flex" : "none";
+      const p = provider.value as keyof typeof PROVIDERS;
+      const info = PROVIDERS[p];
+      baseUrlRow.style.display = p === "custom" ? "flex" : "none";
+      key.placeholder = info?.placeholder ?? "API Key";
+      ollamaHint.style.display = p === "ollama" ? "block" : "none";
     };
     provider.addEventListener("change", toggleBaseUrl);
-    toggleBaseUrl();
 
     const key = document.createElement("input");
     key.className = "as-input";
@@ -2207,6 +2496,7 @@ async function toggleAssistantSettings() {
     key.placeholder = "API Key";
     key.value = "";
     mkRow("API Key", key);
+    toggleBaseUrl(); // set initial placeholder
     // API Key 存 Rust 侧（DPAPI 加密），打开面板时回填
     void invoke<string>("get_api_key")
       .then((k) => {
@@ -2275,8 +2565,10 @@ async function toggleAssistantSettings() {
           key.value.trim(),
           baseUrl.value.trim(),
         );
-      } catch {
+      } catch (e: unknown) {
         models = [];
+        const errMsg = e instanceof Error ? e.message : String(e);
+        toast(`获取失败：${errMsg}`, "warn");
       } finally {
         fetchBtn.disabled = false;
         fetchBtn.textContent = "自动获取模型";
@@ -2300,7 +2592,7 @@ async function toggleAssistantSettings() {
         }
         toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
       } else {
-        toast("未获取到模型列表（可能接口不支持），请在「模型名」手填", "warn");
+        // error already shown in catch
       }
     });
     mkRow("", fetchBtn);
@@ -2596,6 +2888,7 @@ function toggleAudio(on: boolean) {
 }
 
 void boot();
+
 
 
 

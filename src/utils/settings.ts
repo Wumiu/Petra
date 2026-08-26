@@ -1,7 +1,17 @@
-﻿const KEY = "live2d-pet-settings";
+const KEY = "live2d-pet-settings";
 
 export type ActivityLevel = "low" | "mid" | "high";
-export type AssistantProvider = "deepseek" | "custom";
+export type AssistantProvider =
+  | "deepseek"
+  | "openai"
+  | "moonshot"
+  | "zhipu"
+  | "qwen"
+  | "siliconflow"
+  | "openrouter"
+  | "groq"
+  | "ollama"
+  | "custom";
 
 export interface BoundsPadding {
   left: number;
@@ -20,6 +30,15 @@ export interface AssistantSettings {
   greetInterval: number;
 }
 
+export interface DiarySettings {
+  enabled: boolean;
+  autoGenerate: boolean;
+}
+
+export interface DailyCardSettings {
+  enabled: boolean;
+}
+
 export interface Settings {
   audioEnabled: boolean;
   activity: ActivityLevel;
@@ -35,6 +54,12 @@ export interface Settings {
   /** 免确认 shell（持久化，重启后保持） */
   allowAllShell: boolean;
   assistant: AssistantSettings;
+  diary: DiarySettings;
+  dailyCard: DailyCardSettings;
+  /** 模型调节参数（per-model，key=模型名） */
+  modelParams: Record<string, Record<string, number>>;
+  /** 模型自动行为开关（per-model） */
+  modelAuto: Record<string, Record<string, boolean>>;
 }
 
 const DEFAULTS: Settings = {
@@ -56,6 +81,15 @@ const DEFAULTS: Settings = {
     customBaseUrl: "",
     greetInterval: 20,
   },
+  diary: {
+    enabled: true,
+    autoGenerate: true,
+  },
+  dailyCard: {
+    enabled: true,
+  },
+  modelParams: {},
+  modelAuto: {},
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */
