@@ -17,7 +17,7 @@ export interface MenuItemSpec {
  */
 export function setupContextMenu(
   build: () => MenuItemSpec[],
-  onOpen?: () => void,
+  onOpen?: () => Promise<void> | void,
   getVisibleRect?: () => { left: number; top: number; right: number; bottom: number },
   isInsideModel?: (x: number, y: number) => boolean,
   getModelRect?: () => { left: number; top: number; right: number; bottom: number } | null,
@@ -118,7 +118,17 @@ export function setupContextMenu(
     }
   };
 
-  const showAt = (x: number, y: number) => {
+  const showAt = async (x: number, y: number) => {
+    visible = true;
+    // 先执行 onOpen（里面可以 await 拉取最新状态，例如开机自启/置顶），
+    // 再 render()，避免菜单先按旧缓存渲染出错误状态。
+    try {
+      await onOpen?.();
+    } catch {
+      /* 状态拉取失败不阻塞菜单 */
+    }
+    // 等待期间用户可能已经左键关闭菜单，这里不要再弹出来
+    if (!visible) return;
     render();
     menu.classList.remove("hidden");
     const w = menu.offsetWidth;
@@ -136,8 +146,6 @@ export function setupContextMenu(
     menu.style.top = `${top}px`;
     menu.style.maxHeight = `${Math.max(40, vr.bottom - vr.top - 16)}px`;
     menu.style.overflowY = "auto";
-    visible = true;
-    onOpen?.();
   };
 
   const hide = (src = "?") => {

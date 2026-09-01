@@ -5,9 +5,10 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowPos,
-    GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOZORDER,
-    SWP_NOSIZE, WS_EX_TRANSPARENT,
+    GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW,
+    SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOREDRAW, SWP_NOZORDER, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT,
 };
 
 use crate::{CursorPos, WorkArea};
@@ -75,6 +76,12 @@ pub fn work_area_at(x: i32, y: i32) -> WorkArea {
 
 /// 唯一的 native 穿透写入口。
 /// 目标状态与真实 WS_EX_TRANSPARENT 一致时，不再调用任何写接口。
+///
+/// Tauri/tao 的 `set_ignore_cursor_events` 会把设置投递到窗口事件线程异步执行，
+/// 立即回读 GWL_EXSTYLE 常常还是旧值，导致“设置后未生效”的误报。
+/// 因此这里在调用 Tauri API 保持其内部 WindowFlags 同步后，再直接同步写
+/// GWL_EXSTYLE（与 tao 一致：置位/清除 WS_EX_TRANSPARENT | WS_EX_LAYERED），
+/// 确保穿透状态立即生效且可验证。
 pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_LOG_AT: AtomicU64 = AtomicU64::new(0);
@@ -87,18 +94,46 @@ pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
         return;
     }
 
+    // 1) 通知 Tauri/tao 更新内部 WindowFlags（异步，但必须调用，避免后续 apply_diff
+    //    用旧 flags 覆盖我们的直接设置）。
     let _ = win.set_ignore_cursor_events(ignore);
-    // 验证 WS_EX_TRANSPARENT 是否真正生效（WebView2 可能静默失败），不一致则重试
+
+    // 2) 直接同步修改窗口样式，使 WS_EX_TRANSPARENT 立即生效。
+    let mask = (WS_EX_TRANSPARENT.0 as isize) | (WS_EX_LAYERED.0 as isize);
+    let new_style = if ignore {
+        style | mask
+    } else {
+        style & !mask
+    };
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_style);
+        // SWP_FRAMECHANGED 让新样式立即生效（尤其是清除 WS_EX_TRANSPARENT 后需要重绘）。
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+
+    // 3) 验证；若仍不一致，等待 Tauri 异步任务落地后重试一次。
     let mut verified = false;
-    for _ in 0..3 {
+    for attempt in 0..5 {
         let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
         let transparent = style & (WS_EX_TRANSPARENT.0 as isize) != 0;
         if transparent == ignore {
             verified = true;
             break;
         }
-        // 用 Tauri API 重试（内部会维护 tao flags）
-        let _ = win.set_ignore_cursor_events(ignore);
+        if attempt == 0 {
+            // 给 tao 事件线程一点时间处理第 1 步的异步请求
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        } else {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
     if !verified {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
@@ -110,6 +145,42 @@ pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
             unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
             ));
         }
+    }
+}
+
+/// 窗口当前是否带有 WS_EX_TOPMOST 样式。
+pub fn is_topmost(win: &tauri::WebviewWindow) -> bool {
+    let Some(hwnd) = hwnd_of(win) else {
+        return false;
+    };
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    style & (WS_EX_TOPMOST.0 as isize) != 0
+}
+
+/// 直接设置窗口置顶/取消置顶（不激活、不移动、不改变尺寸）。
+/// 相比只依赖 Tauri 的 set_always_on_top，这里直接用 Win32 立即生效，
+/// 供置顶看门狗在窗口丢失 WS_EX_TOPMOST 时补回。
+pub fn set_topmost(win: &tauri::WebviewWindow, on: bool) {
+    let Some(hwnd) = hwnd_of(win) else {
+        return;
+    };
+    let topmost = HWND_TOPMOST;
+    let notopmost = HWND_NOTOPMOST;
+    let insert_after: Option<&HWND> = if on {
+        Some(&topmost)
+    } else {
+        Some(&notopmost)
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            insert_after,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
 
