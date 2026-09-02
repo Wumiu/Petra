@@ -19,7 +19,6 @@ function formatDate(dateStr: string): string {
 function closePanel() {
   if (panelEl) {
     panelEl.classList.add("hidden");
-    panelEl = null;
     expandedDate = null;
   }
 }
@@ -88,15 +87,20 @@ function renderList(host: HTMLElement) {
         e.stopPropagation();
         regenBtn.disabled = true;
         regenBtn.textContent = "生成中…";
-        const result = await regenerateDiary(diary.date);
-        if (result) {
-          toast("日记已重新生成");
-          if (panelEl) renderList(panelEl);
-        } else {
-          toast("生成失败，请检查 API 设置", "warn");
-          regenBtn.disabled = false;
-          regenBtn.textContent = "🔄 重新生成";
+        try {
+          const result = await regenerateDiary(diary.date);
+          if (result) {
+            toast(result.aiGenerated ? "日记已重新生成" : "已生成简单纪要（配置 API 后更生动）");
+            if (panelEl) renderList(panelEl);
+            return;
+          }
+          toast("生成失败：该日期没有可用的互动记录", "warn");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast(`重新生成失败：${msg}`, "warn");
         }
+        regenBtn.disabled = false;
+        regenBtn.textContent = "🔄 重新生成";
       });
       actions.appendChild(regenBtn);
 
@@ -143,19 +147,21 @@ function positionPanel(el: HTMLElement, panelW: number) {
 }
 
 export function toggleDiaryPanel(): void {
-  if (panelEl && !panelEl.classList.contains("hidden")) {
-    closePanel();
-    return;
-  }
-
+  // 复用同一个面板元素（避免反复开关在 body 里堆积隐藏节点）
   if (!panelEl) {
     panelEl = document.createElement("div");
     panelEl.id = "diary-panel";
     panelEl.className = "diary-panel model-panel";
+    panelEl.classList.add("hidden"); // 初始隐藏：首次 toggle 直接走"打开"分支
     document.body.appendChild(panelEl);
     panelEl.addEventListener("pointerdown", (e) => {
       if (e.target === panelEl) closePanel();
     });
+  }
+
+  if (!panelEl.classList.contains("hidden")) {
+    closePanel();
+    return;
   }
 
   renderList(panelEl);

@@ -405,8 +405,8 @@ async function send(text: string) {
       // 无工具调用：文字入历史
       const finalText = loading.textContent || res.text;
       history.push({ role: "assistant", content: finalText });
-      // 记录对话事件（日记系统）
-      trackEvent({ type: "chat", summary: (finalText || "").slice(0, 50) });
+      // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
+      trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
       const cmd = extractCommand(finalText);
       if (cmd) {
@@ -613,7 +613,6 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
         } else {
           history.push({ role: "tool", tool_call_id: tc.id, content: `${date} 没有日记哦~` });
         }
-      }
       } else {
         const diaries = loadDiaries().slice(0, 3);
         if (diaries.length === 0) {
@@ -625,7 +624,7 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
       }
     }
   }
-
+}
 
 /** 从中文文本中提取关键词（简单规则，不依赖分词库） */
 function extractKeywords(text: string): string[] {

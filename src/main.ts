@@ -878,8 +878,10 @@ async function boot() {
 
   // ---------- Astrobot 预留钩子 ----------
   astrobotOn((msg) => {
-    if (msg.type === "emote" || msg.type === "gesture") view.playClick();
+    if (msg.type === "emote" || msg.type === "gesture") {
+      view.playClick();
       incrementInteractionCount();
+    }
     if (msg.type === "speak") view.playGobble();
     if (msg.type === "move") {
       void engine.teleportRandom();
@@ -888,9 +890,25 @@ async function boot() {
 
   
   if (settings.diary?.enabled !== false) {
-    checkAndGenerateDiary().then(diary => {
-      if (diary) toast("📖 昨天的日记写好啦~");
+    checkAndGenerateDiary().then(list => {
+      if (list.length === 1) toast("📖 昨天的日记写好啦~");
+      else if (list.length > 1) toast(`📖 补写了 ${list.length} 篇日记~`);
     }).catch(() => {});
+    // 跨天自动补写：整天开着应用跨过午夜，日期变化后自动为刚结束的那天写日记
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const dayKey = () => {
+      const n = new Date();
+      return `${n.getFullYear()}-${pad2(n.getMonth() + 1)}-${pad2(n.getDate())}`;
+    };
+    let lastDay = dayKey();
+    setInterval(() => {
+      const cur = dayKey();
+      if (cur === lastDay) return;
+      lastDay = cur;
+      checkAndGenerateDiary().then(list => {
+        if (list.length > 0) toast(`📖 昨天的日记写好啦~`);
+      }).catch(() => {});
+    }, 60 * 1000);
   }
 /** 显示更新公告弹窗 */
 function showAnnouncement(title: string, lines: string[], version: string) {
@@ -1907,7 +1925,7 @@ async function showInfoPanel() {
   if (cachedWeather && Date.now() - cachedWeather.time < 600000) {
     weatherHtml = cachedWeather.text;
   } else {
-    invoke<string>("get_weather")
+    invoke<string>("get_weather", { city: settings.weatherCity || null })
       .then((raw) => {
         weatherHtml = formatWeatherHtml(raw);
         cachedWeather = { text: weatherHtml, time: Date.now() };

@@ -1016,16 +1016,30 @@ fn send_notification(title: String, body: String) {
 }
 
 #[tauri::command]
-async fn get_weather() -> Result<String, String> {
-    // PowerShell 与网络 I/O 都可能在代理不可达时阻塞数秒。Tauri command 若在
-    // 运行时工作线程上直接等待，会让首次点击（信息面板请求天气）明显卡顿。
-    // 将整个阻塞操作放到专用线程，WebView/事件循环始终保持可响应。
-    tauri::async_runtime::spawn_blocking(|| {
-        let output = hidden_command("powershell")
-            .args([
-                "-NoProfile", "-Command",
-                r#"try {
-                $r = Invoke-WebRequest -Uri 'https://wttr.in/?format=j1&lang=zh' -TimeoutSec 6 -UseBasicParsing;
+async fn get_weather(city: Option<String>) -> Result<String, String> {
+    let city_arg = city.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 构建查询 URL：优先用用户设置的城市，否则尝试 Windows 位置 API
+        let url = if !city_arg.trim().is_empty() {
+            format!("https://wttr.in/{}?format=j1&lang=zh", city_arg.trim())
+        } else {
+            // 尝试通过 Windows 位置 API 获取真实坐标（不受 VPN 影响）
+            let coord_cmd = r#"Add-Type -AssemblyName System.Device; $w = New-Object System.Device.Location.GeoCoordinateWatcher; $w.Start(); Start-Sleep -Milliseconds 1500; $c = $w.Position.Location; if ($c.IsUnknown) { "" } else { "$($c.Latitude),$($c.Longitude)" }; $w.Stop()"#;
+            let coord_output = hidden_command("powershell")
+                .args(["-NoProfile", "-Command", coord_cmd])
+                .output();
+            let coords = coord_output.ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty() && s.contains(","));
+            if let Some(c) = coords {
+                format!("https://wttr.in/{}?format=j1&lang=zh", c)
+            } else {
+                // Windows 位置不可用，回退到 IP 定位
+                "https://wttr.in/?format=j1&lang=zh".to_string()
+            }
+        };
+        let ps_cmd = format!(r#"try {{
+                $r = Invoke-WebRequest -Uri '{}' -TimeoutSec 6 -UseBasicParsing;
                 $j = $r.Content | ConvertFrom-Json;
                 $c = $j.current_condition[0];
                 $w = $j.weather[0];
@@ -1034,10 +1048,13 @@ async fn get_weather() -> Result<String, String> {
                 $temp = $c.temp_C;
                 $max = $w.maxtempC;
                 $min = $w.mintempC;
-                $rain = $w.hourly[4].chanceofrain; # 中午时段降雨概率
+                $rain = $w.hourly[4].chanceofrain;
                 "$loc|$desc|$temp|$max|$min|$rain"
-                } catch { "获取失败|天气获取失败|—|—|—|—" }"#,
-            ])
+                }} catch {{ "获取失败|天气获取失败|—|—|—|—" }}"#,
+            url
+        );
+        let output = hidden_command("powershell")
+            .args(["-NoProfile", "-Command", &ps_cmd])
             .output()
             .map_err(|e| format!("启动失败: {e}"))?;
         if !output.status.success() {
@@ -1048,7 +1065,6 @@ async fn get_weather() -> Result<String, String> {
     .await
     .map_err(|e| format!("天气任务异常: {e}"))?
 }
-
 /// 定时关机（分钟后）。
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
@@ -1700,9 +1716,6 @@ mod tests {
         assert!(validate_shell_command("shutdown /s").is_err(), "非白名单命令必须拦截");
     }
 }
-
-
-
 
 
 

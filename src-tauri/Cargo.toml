@@ -1,6 +1,6 @@
 [package]
 name = "petra"
-version = "0.2.2"
+version = "0.2.3"
 description = "Petra desktop pet"
 edition = "2021"
 [lib]

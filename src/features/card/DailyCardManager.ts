@@ -139,7 +139,7 @@ ${chatSummaries ? `今天的对话：${chatSummaries}` : ""}
 
   try {
     const result = await Promise.race([
-      chatStream(provider, apiKey, model, history, "", [], customBaseUrl, () => {}),
+      chatStream(provider, apiKey, model, history, "", [], customBaseUrl, () => {}, false),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("AI 超时")), AI_TIMEOUT_MS)
       ),

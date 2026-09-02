@@ -253,7 +253,7 @@ function buildMessages(history: ChatMessage[], persona: string, memory: MemorySt
   return [{ role: "system", content: systemPrompt(persona, memory) }, ...msgs];
 }
 
-/** OpenAI 兼容流式 chat；返回完整文本 + 工具调用 */
+/** OpenAI 兼容流式 chat；返回完整文本 + 工具调用。enableTools=false 时不带 tools（纯文本生成，如日记/抽卡文案） */
 export async function chatStream(
   provider: AssistantProvider,
   apiKey: string,
@@ -262,6 +262,7 @@ export async function chatStream(
   persona: string,
   memory: MemoryStore, customBaseUrl: string,
   onDelta: (t: string) => void,
+  enableTools = true,
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const base = resolveBase(provider, customBaseUrl);
   const m = model || PROVIDERS[provider].defaultModel;
@@ -276,14 +277,17 @@ export async function chatStream(
     body: JSON.stringify({
       model: m,
       messages,
-      tools: TOOLS,
+      // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
+      // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
+      ...(enableTools ? { tools: TOOLS } : {}),
       stream: true,
     }),
   });
   if (!res.ok || !res.body) {
-    throw new Error(`API 错误 ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const errText = await res.text().catch(() => "");
+    const hint = provider === "custom" ? " (自定义端点请确认URL是否正确，部分API需要/v1后缀)" : "";
+    throw new Error(`API 错误 ${res.status}${hint}: ${errText.slice(0, 200)}`);
   }
-
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
