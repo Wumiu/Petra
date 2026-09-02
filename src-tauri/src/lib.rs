@@ -6,13 +6,28 @@ mod trash;
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State};
 
+/// Windows GUI 子系统中启动控制台程序（powershell/cmd/reg/shutdown）时，
+/// 默认会弹出一个新的控制台窗口。加 CREATE_NO_WINDOW 避免窗口闪现。
+const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
+
+fn hidden_command(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+    cmd
+}
+
 pub struct AudioState {
+    pub enabled: Arc<AtomicBool>,
+}
+
+pub struct TopmostState {
     pub enabled: Arc<AtomicBool>,
 }
 
@@ -112,7 +127,7 @@ fn log_line(s: &str) {
 }
 
 fn read_reg_value(subkey: &str, value: &str) -> String {
-    std::process::Command::new("reg")
+    hidden_command("reg")
         .args(["query", subkey, "/v", value])
         .output()
         .map(|o| {
@@ -160,29 +175,6 @@ fn log_environment() {
     }
 }
 
-/// 诊断探针：延时注入 JS，把 WebView2 视角的加载状态打回日志。
-/// 报告 __BOOT__ / readyState / #dbg 文本 / 资源加载摘要（transferSize=0 = 拿到 200 但无内容）。
-fn spawn_diag_probe(win: tauri::WebviewWindow) {
-    std::thread::spawn(move || {
-        for delay in [3u64, 10, 20] {
-            std::thread::sleep(std::time::Duration::from_secs(delay));
-            let js = concat!(
-                "window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('debug_mark',",
-                "{msg: 'PROBE:' + JSON.stringify({boot: !!window.__BOOT__, state: document.readyState,",
-                " title: document.title, dbg: (document.getElementById('dbg')||{}).textContent || '',",
-                " scripts: [].map.call(document.scripts, function(s){return (s.type||'?')+':'+(s.src.split('/').pop()||'inline');}),",
-                " res: performance.getEntriesByType('resource').slice(-14).map(function(e){",
-                " return (e.transferSize===0?'ZERO':'ok')+':'+(e.name.split('/').pop()||e.name)+':'+Math.round(e.duration)+'ms';})}})}"
-            );
-            if let Err(e) = win.eval(js) {
-                log_line(&format!("PROBE EVAL FAILED({delay}s): {e}"));
-            } else {
-                log_line(&format!("PROBE EVAL OK({delay}s)"));
-            }
-        }
-    });
-}
-
 #[tauri::command]
 fn trash_files(paths: Vec<String>) -> Result<TrashResult, String> {
     log_line(&format!("trash_files: {} paths", paths.len()));
@@ -223,17 +215,23 @@ fn should_accept_input(
     cursor: Option<(i32, i32)>,
     now: std::time::Instant,
 ) -> bool {
-    if !snapshot.initialized || renderer_locked || native_dragging {
+    // 前端尚未上报交互区域前（例如启动加载模型期间），窗口必须保持鼠标穿透，
+    // 否则透明的 700x700 窗口会挡住屏幕中央，导致点击桌面和其他窗口无效。
+    if !snapshot.initialized {
+        return false;
+    }
+    if renderer_locked || native_dragging {
         return true;
     }
     let Some(last_update) = snapshot.last_update else {
-        return true;
+        return false;
     };
+    // 前端长时间未更新区域（可能已卡死）时同样穿透，避免透明窗口持续拦截屏幕。
     if now.duration_since(last_update) > INTERACTION_STATE_STALE_AFTER {
-        return true;
+        return false;
     }
     let Some((x, y)) = cursor else {
-        return true;
+        return false;
     };
     point_in_interactive_regions(x, y, &snapshot.regions)
 }
@@ -276,17 +274,21 @@ fn hide_pet(app: AppHandle) {
 }
 
 #[tauri::command]
-fn set_topmost(app: AppHandle, on: bool) -> bool {
+fn set_topmost(app: AppHandle, state: State<'_, TopmostState>, on: bool) -> bool {
     if let Some(win) = app.get_webview_window("main") {
+        // 同步 Tauri 内部标志，避免后续其它窗口操作覆盖
         let _ = win.set_always_on_top(on);
+        // 直接 Win32 立即生效
+        screen::set_topmost(&win, on);
+        state.enabled.store(on, Ordering::SeqCst);
         return true;
     }
     false
 }
 
 #[tauri::command]
-fn is_topmost(app: AppHandle) -> bool {
-    app.get_webview_window("main").map(|w| w.is_always_on_top().unwrap_or(false)).unwrap_or(false)
+fn is_topmost(state: State<'_, TopmostState>) -> bool {
+    state.enabled.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
@@ -963,7 +965,7 @@ using System.Runtime.InteropServices;
 public class Vol {{ [DllImport("winmm.dll")] public static extern int waveOutSetVolume(IntPtr h, uint v); }}
 "@; [Vol]::waveOutSetVolume([IntPtr]::Zero, {packed})"#
     );
-    let _ = std::process::Command::new("powershell")
+    let _ = hidden_command("powershell")
         .args(["-NoProfile", "-Command", &script])
         .output();
     match mute {
@@ -1004,7 +1006,7 @@ fn send_notification(title: String, body: String) {
         title.replace('\'', "''"),
         body.replace('\'', "''")
     );
-    let _ = std::process::Command::new("powershell")
+    let _ = hidden_command("powershell")
         .args(["-NoProfile", "-Command", &script])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1019,7 +1021,7 @@ async fn get_weather() -> Result<String, String> {
     // 运行时工作线程上直接等待，会让首次点击（信息面板请求天气）明显卡顿。
     // 将整个阻塞操作放到专用线程，WebView/事件循环始终保持可响应。
     tauri::async_runtime::spawn_blocking(|| {
-        let output = std::process::Command::new("powershell")
+        let output = hidden_command("powershell")
             .args([
                 "-NoProfile", "-Command",
                 r#"try {
@@ -1054,7 +1056,7 @@ fn schedule_shutdown(minutes: u32) -> Result<String, String> {
         return Err("时间范围：1~1440 分钟".into());
     }
     let secs = minutes * 60;
-    let output = std::process::Command::new("shutdown")
+    let output = hidden_command("shutdown")
         .args(["/s", "/t", &secs.to_string()])
         .output()
         .map_err(|e| format!("执行失败: {e}"))?;
@@ -1069,7 +1071,7 @@ fn schedule_shutdown(minutes: u32) -> Result<String, String> {
 /// 取消定时关机。
 #[tauri::command]
 fn cancel_shutdown() -> Result<String, String> {
-    let output = std::process::Command::new("shutdown")
+    let output = hidden_command("shutdown")
         .args(["/a"])
         .output()
         .map_err(|e| format!("执行失败: {e}"))?;
@@ -1142,7 +1144,7 @@ fn run_shell(command: String) -> Result<String, String> {
     log_line(&format!("run_shell: {command}"));
     // chcp 65001 切 UTF-8 代码页，避免 cmd 内置命令 GBK 输出乱码
     let full = format!("chcp 65001>nul & {command}");
-    let mut child = std::process::Command::new("cmd")
+    let mut child = hidden_command("cmd")
         .args(["/C", &full])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1229,6 +1231,27 @@ fn spawn_pet_mover(app: AppHandle) {
         if screen::move_window_toward(&win, tx, ty, speed, 0.016, clamp) {
             // 到位（或窗口不可见）→ 清除目标，避免空转
             *motion.target.lock().unwrap() = None;
+        }
+    });
+}
+
+/// 置顶看门狗：仅在窗口丢失 WS_EX_TOPMOST 样式时补回。
+/// 不周期性无条件重断言 HWND_TOPMOST，避免把 Petra 反复拉到其他置顶窗口
+/// （NeXus、任务管理器等）之上，破坏系统置顶层的稳定顺序。
+fn spawn_topmost_watcher(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let Some(state) = app.try_state::<TopmostState>() else {
+            continue;
+        };
+        if !state.enabled.load(Ordering::SeqCst) {
+            continue;
+        }
+        let Some(win) = app.get_webview_window("main") else {
+            continue;
+        };
+        if !screen::is_topmost(&win) {
+            screen::set_topmost(&win, true);
         }
     });
 }
@@ -1460,24 +1483,24 @@ mod interaction_tests {
     }
 
     #[test]
-    fn uninitialized_state_fails_open() {
+    fn uninitialized_state_is_click_through() {
         let now = std::time::Instant::now();
         let snapshot = InteractionSnapshot {
             regions: Vec::new(),
             initialized: false,
             last_update: None,
         };
-        assert!(should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now));
     }
 
     #[test]
-    fn stale_state_fails_open() {
+    fn stale_state_is_click_through() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(
             vec![region("pet", 100, 100, 100, 100)],
             now - INTERACTION_STATE_STALE_AFTER - std::time::Duration::from_millis(1),
         );
-        assert!(should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now));
     }
 
     #[test]
@@ -1495,10 +1518,10 @@ mod interaction_tests {
     }
 
     #[test]
-    fn cursor_read_failure_fails_open() {
+    fn cursor_read_failure_is_click_through() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(should_accept_input(&snapshot, false, false, None, now));
+        assert!(!should_accept_input(&snapshot, false, false, None, now));
     }
 }
 
@@ -1516,6 +1539,9 @@ pub fn run() {
             None,
         ))
         .manage(AudioState {
+            enabled: Arc::new(AtomicBool::new(true)),
+        })
+        .manage(TopmostState {
             enabled: Arc::new(AtomicBool::new(true)),
         })
         .manage(PetMotion {
@@ -1578,12 +1604,7 @@ pub fn run() {
             spawn_clickthrough_watcher(handle.clone());
             spawn_pet_mover(handle.clone());
             spawn_drag_follower(handle.clone());
-
-            if cfg!(debug_assertions) {
-                if let Some(win) = app.get_webview_window("main") {
-                    spawn_diag_probe(win);
-                }
-            }
+            spawn_topmost_watcher(handle.clone());
 
             let state = app.state::<AudioState>();
             let enabled = state.enabled.clone();

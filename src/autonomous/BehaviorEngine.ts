@@ -1,4 +1,4 @@
-﻿import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { clamp } from "../utils/math";
 
 interface XY {
@@ -69,8 +69,10 @@ export class BehaviorEngine {
   lastBoundsOnScreen: { left: number; top: number; right: number; bottom: number } | null = null;
   // 窗口实际左上角（逻辑坐标，Rust cursor_pos 权威上报，供模型边缘补偿判断真实出屏量）
   private windowPos: XY = { x: 0, y: 0 };
+  private windowPosValid = false;
   // 待机模式（沉到屏幕边缘，只露头顶+眼睛，完全静止）
   private idle = false;
+  private idleSettling = false; // 进入待机后、窗口尚未完成定位前，保持旧 modelOffset 不归零
   private idleTop = false;
   private idlePos: XY = { x: 100, y: 100 };
   private scaleFactor = 1; // 物理↔逻辑（IPC 边界转换用）；引擎内部全逻辑坐标
@@ -102,10 +104,16 @@ export class BehaviorEngine {
 
   /**
    * 待机模式开关：沉到就近屏幕边缘（窗口在上半→顶部倒挂，下半→底部），露出 200px。
+   * 进入流程先冻结漫游、计算目标位置、清空 mover 目标，最后才置 idle；
+   * 置 idle 后 main 会立刻 setPosition，此时才允许 syncModelOffset 把 modelOffset 归零，
+   * 避免窗口尚未移动、模型先因 offset 归零而瞬移。
    */
-  async setIdle(on: boolean, charBounds?: { top: number; bottom: number }) {
-    this.idle = on;
+  async setIdle(on: boolean, charBounds?: { left: number; top: number; right: number; bottom: number }) {
     if (on) {
+      // 先冻结漫游/目标上报，await 期间不允许 update 继续把旧目标发给 mover
+      this.target = null;
+      this.fleeUntil = 0;
+      this.suspendUntil = performance.now() + 3600_000; // 1 小时防漫游
       await this.pollArea();
       // 就近边缘：以窗口中心判断（用户直觉：桌宠在屏幕哪半就往哪边沉）
       const a = this.area ?? { left: 0, top: 0, width: 1920, height: 1080 };
@@ -114,7 +122,25 @@ export class BehaviorEngine {
       void invoke("debug_mark", {
         msg: `idle:posY=${Math.round(this.pos.y)} mid=${Math.round(midY)} top=${this.idleTop}`,
       }).catch(() => {});
-      // 使用角色实际边界计算待机位置，确保头部始终可见
+
+      // 水平位置：进入待机后 modelOffset 会归零，因此以“模型当前屏幕位置”反推窗口 x，
+      // 再把模型水平夹回工作区内，避免右下/左下等贴边位置进入待机时模型瞬移到屏外。
+      let x = this.pos.x;
+      if (charBounds) {
+        const modelLeft = charBounds.left;
+        const modelRight = charBounds.right;
+        x = this.pos.x + this.modelOffset.x; // 抵消即将归零的 modelOffset，保持模型屏幕 x 不变
+        const minX = a.left + EDGE_PAD - modelLeft;
+        const maxX = a.left + a.width - EDGE_PAD - modelRight;
+        if (maxX >= minX) {
+          x = clamp(x, minX, maxX);
+        } else {
+          // 模型比工作区还宽时，优先保证左边缘可见
+          x = minX;
+        }
+      }
+
+      // 使用角色实际边界计算垂直待机位置，确保头部始终可见
       let y: number;
       if (charBounds) {
         const margin = 30; // 安全边距
@@ -139,22 +165,30 @@ export class BehaviorEngine {
       }
       // 防御 clamp：确保窗口有部分留在屏内
       const yClamped = Math.max(a.top - this.win, Math.min(a.top + a.height, y));
-      this.idlePos = { x: this.pos.x, y: yClamped };
+      this.idlePos = { x, y: yClamped };
       this.pos = { ...this.idlePos };
-      this.target = null;
-      this.fleeUntil = 0;
-      this.suspendUntil = performance.now() + 3600_000; // 1 小时防漫游
-      // 先清 mover 目标再定位，避免竞态把窗口拉回旧漫游点
+      // 先清 mover 目标，再切 idle；main 随后立刻 setPosition 到 idleTarget，
+      // idleSettling 保证 setPosition 完成前 modelOffset 不归零。
       try {
         await invoke("clear_pet_target");
       } catch {
         /* 忽略 */
       }
+      this.idle = true;
+      this.idleSettling = true;
     } else {
+      this.idle = false;
+      this.idleSettling = false;
       this.idleTop = false; // 退出待机复位倒挂信号，避免残留倒立
       this.target = null;
       this.suspendUntil = performance.now() + 1500;
+      this.clearTarget();
     }
+  }
+
+  /** main 在 win.setPosition(idleTarget) 完成后调用，允许 modelOffset 归零。 */
+  markIdleSettled() {
+    this.idleSettling = false;
   }
 
   vx = 0; // -1..1
@@ -182,6 +216,9 @@ export class BehaviorEngine {
   }
 
   async teleportRandom() {
+    // 待机期间不允许任何随机移动（例如启动 5s 后的首次漫游定时器），
+    // 否则会把窗口从待机贴边位置拉回工作区内部。
+    if (this.idle) return;
     await this.pollArea();
     this.pickTarget(true);
     this.dwellUntil = 0;
@@ -192,13 +229,18 @@ export class BehaviorEngine {
   setActivityLevel(level: "low" | "mid" | "high") {
     this.activityLevel = level;
     this.actParams = ACTIVITY_LEVELS[level] ?? this.actParams;
+    // 切换档位时同步真实窗口位置，避免引擎本地 pos 与 Rust 实际窗口位置漂移，
+    // 导致下一目标以漂移后的 pos 计算、窗口被“瞬移”回活动范围。
+    if (this.windowPosValid) {
+      this.pos = { ...this.windowPos };
+    }
+    this.target = null;
+    this.fleeUntil = 0;
+    this.clearTarget();
     if (level === "low") {
       // 低频率：停止一切移动（含逗猫棒与 Rust mover 残留目标），保证原地静止
-      this.target = null;
-      this.fleeUntil = 0;
       this.trackAt = 0;
       this.excitement = 0;
-      this.clearTarget();
     }
   }
 
@@ -245,6 +287,7 @@ export class BehaviorEngine {
       this.cursor = { x: c.x / this.scaleFactor, y: c.y / this.scaleFactor };
       this.cursorRel = { x: c.rx / this.scaleFactor, y: c.ry / this.scaleFactor };
       this.windowPos = { x: c.left / this.scaleFactor, y: c.top / this.scaleFactor };
+      this.windowPosValid = true;
       // 鼠标移动速度：按真实轮询间隔计算（逻辑 px/s）
       const moved = Math.hypot(this.cursor.x - prev.x, this.cursor.y - prev.y);
       this.cursorSpeed = moved / (POLL_CURSOR_MS / 1000);
@@ -295,7 +338,7 @@ export class BehaviorEngine {
   }
 
   private async pushTarget(speed?: number) {
-    if (!this.target) return;
+    if (!this.target || this.idle) return;
     try {
       // 引擎内部逻辑坐标 → 发给 mover 前转物理
       const x = Math.round(this.target.x * this.scaleFactor);
@@ -355,7 +398,25 @@ export class BehaviorEngine {
       // 模型头顶中心相对窗口中心的偏移
       const headX = this.rawOffset.x + (b ? (b.left + b.right) / 2 - this.win / 2 : 0);
       const headY = this.rawOffset.y + (b ? b.top - this.win / 2 : -this.win / 2);
-      this.target = { x: this.cursor.x - this.win / 2 - headX, y: this.cursor.y - this.win / 2 - headY };
+      let tx = this.cursor.x - this.win / 2 - headX;
+      let ty = this.cursor.y - this.win / 2 - headY;
+      // 逗猫棒不穿过屏幕边界：把目标窗口位置夹回“模型完整留在工作区内”的范围。
+      // 鼠标到达屏幕边缘时，模型停在边缘，而不是被窗口带出屏幕。
+      const a = this.area ?? { left: 0, top: 0, width: 1920, height: 1080 };
+      if (a) {
+        if (b) {
+          const minX = a.left + EDGE_PAD - b.left;
+          const maxX = a.left + a.width - EDGE_PAD - b.right;
+          const minY = a.top + EDGE_PAD - b.top;
+          const maxY = a.top + a.height - EDGE_PAD - b.bottom;
+          tx = maxX >= minX ? clamp(tx, minX, maxX) : minX;
+          ty = maxY >= minY ? clamp(ty, minY, maxY) : minY;
+        } else {
+          tx = clamp(tx, a.left + EDGE_PAD, a.left + a.width - this.win - EDGE_PAD);
+          ty = clamp(ty, a.top + EDGE_PAD, a.top + a.height - this.win - EDGE_PAD);
+        }
+      }
+      this.target = { x: tx, y: ty };
       const speed = this.activityLevel === "high" ? CHASE_SPEED * 4 : CHASE_SPEED * 2;
       void this.pushTarget(speed);
       return;
@@ -450,10 +511,28 @@ export class BehaviorEngine {
   /** 模型偏移补偿：窗口出屏时，模型反向偏移保持角色不出屏（每帧调用） */
   syncModelOffset(bounds?: { left: number; top: number; right: number; bottom: number }) {
     if (this.idle) {
-      this.modelOffset.x = 0;
-      this.modelOffset.y = 0;
+      // 进入待机后要等窗口真正移动到待机位置，才能把模型 offset 归零；
+      // 否则窗口还在旧位置时模型会先跳回窗口内未补偿位置（可能瞬移出屏）。
+      if (!this.idleSettling) {
+        this.modelOffset.x = 0;
+        this.modelOffset.y = 0;
+      }
       return;
     }
+    // 逗猫棒模式：模型应跟随鼠标，允许窗口/模型自然穿过屏幕边界。
+    // 这里不再做“窗口出屏→模型反向偏移保持可见”的补偿，否则贴边时
+    // 补偿量与追踪目标互相拉扯，导致边缘来回闪动。
+    if (this.tracking) {
+      const b = bounds ?? this.charBoundsCache ?? { left: 0, top: 0, right: this.win, bottom: this.win };
+      this.charBoundsCache = b;
+      this.rawOffset.x = 0;
+      this.rawOffset.y = 0;
+      // 平滑回中，避免开启追踪瞬间模型视觉跳一下
+      this.modelOffset.x += (0 - this.modelOffset.x) * 0.3;
+      this.modelOffset.y += (0 - this.modelOffset.y) * 0.3;
+      return;
+    }
+
     const a = this.area;
     if (!a) return;
     const b = bounds ?? { left: 0, top: 0, right: this.win, bottom: this.win };

@@ -1086,14 +1086,21 @@ function clearElement(el: HTMLElement) {
 let autostartCache = false;
 let topmostCache = false;
 
-function onMenuOpen() {
+async function onMenuOpen() {
   // 右键打开菜单时暂停移动
   engine.suspend(60000);
   void invoke("clear_pet_target").catch(() => {});
-  void invoke<boolean>("get_autostart").then((v) => {
-    autostartCache = v;
-  });
-  void invoke<boolean>("is_topmost").then(v => { topmostCache = v; }).catch(() => {});
+  // 菜单渲染前先拉取真实状态，避免“开机自启：关”但实际为开这类显示错误
+  try {
+    autostartCache = await invoke<boolean>("get_autostart");
+  } catch {
+    autostartCache = false;
+  }
+  try {
+    topmostCache = await invoke<boolean>("is_topmost");
+  } catch {
+    topmostCache = false;
+  }
   requestInteractionRegionSync(true);
 }
 
@@ -1669,14 +1676,18 @@ async function toggleIdle() {
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
     savePetPosition(p.x / scaleFactor, p.y / scaleFactor);
   }
-  // 获取角色边界用于精确待机定位
+  // 获取角色边界用于精确待机定位（left/right 也参与水平夹紧，避免贴边进入待机时瞬移出屏）
   const charBounds = view.getCharacterBounds?.();
-  await engine.setIdle(settings.idleMode, charBounds ? { top: charBounds.top, bottom: charBounds.bottom } : undefined);
+  await engine.setIdle(settings.idleMode, charBounds ?? undefined);
   // 仅进入待机时定位到边缘；退出时保持当前位置
   if (settings.idleMode) {
     const t = engine.idleTarget;
-    // 引擎与 setPosition 都是逻辑坐标
-    void getCurrentWindow().setPosition(new LogicalPosition(t.x, t.y));
+    // 引擎与 setPosition 都是逻辑坐标；等待窗口定位完成后再允许 modelOffset 归零
+    try {
+      await getCurrentWindow().setPosition(new LogicalPosition(t.x, t.y));
+    } finally {
+      engine.markIdleSettled();
+    }
   }
   toast(settings.idleMode ? "困了，先眯一会儿…" : "醒啦～");
 }
