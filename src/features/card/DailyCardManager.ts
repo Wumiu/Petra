@@ -155,8 +155,10 @@ ${chatSummaries ? `今天的对话：${chatSummaries}` : ""}
   return { text: card.baseText, ai: false };
 }
 
-/** 执行每日抽卡 */
-export async function dailyDraw(): Promise<DrawResult> {
+/** 执行每日抽卡。
+ *  skipAiText=true（聊天工具路径）：跳过单独生成 AI 文案，省一次 LLM 调用；
+ *  聊天中的小助手会用自己的人设重新演绎祝福语。 */
+export async function dailyDraw(opts?: { skipAiText?: boolean }): Promise<DrawResult> {
   // 检查是否已抽过
   const existing = getTodayDraw();
   if (existing) return existing;
@@ -169,10 +171,12 @@ export async function dailyDraw(): Promise<DrawResult> {
   // 随机选卡
   const card = rollCard(rarity);
 
-  // AI 文案
+  // AI 文案（聊天工具路径可跳过）
   const settings = loadSettings();
   const persona = settings.assistant.persona;
-  const { text, ai } = await generateAiText(card, persona);
+  const { text, ai } = opts?.skipAiText
+    ? { text: card.baseText, ai: false }
+    : await generateAiText(card, persona);
 
   const result: DrawResult = { date, card, aiText: text, aiGenerated: ai, rarity };
 

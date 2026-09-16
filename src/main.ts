@@ -24,7 +24,10 @@ import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settin
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
-import { listModels, PROVIDERS } from "./assistant/AssistantClient";
+import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
+import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
+import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, setMiniGameLifecycle } from "./games/host";
+import { registerRiichiGame } from "./games/riichi";
 import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
@@ -623,6 +626,25 @@ async function boot() {
     () => engine.suspend(3600_000),
     () => engine.suspend(IDLE_AFTER_DRAG_MS),
   );
+  // 小游戏打开：暂停漫游、收起对话气泡；关闭：恢复正常漫游
+  setMiniGameLifecycle(
+    () => {
+      engine.suspend(3600_000);
+      closeAssistant();
+      clearBubbles();
+    },
+    () => {
+      engine.suspend(IDLE_AFTER_DRAG_MS);
+    },
+  );
+  // 情感引擎 → 角色表现：AI/用户情绪驱动表情 + 动作（本地规则，零 token）
+  registerEmotionReactor((tag) => {
+    if (view instanceof Rigged2DView) {
+      view.setExpression(emotionExpression(tag), 2.6);
+    }
+    const action = emotionToAction(tag);
+    if (action) view.playAction(action, false);
+  });
   // 启动一律正常站立（不自动恢复待机）
   if (settings.idleMode) {
     settings.idleMode = false;
@@ -688,11 +710,19 @@ async function boot() {
       return;
     }
 
-    // 深夜关怀
-    if ((hour >= 23 || hour < 2) && sinceGreet > 30 * 60 * 1000) {
+    // 熬夜关怀（23 点至凌晨 5 点）
+    if ((hour >= 23 || hour < 5) && sinceGreet > 30 * 60 * 1000) {
       lastGreetAt = now;
       void triggerProactive();
-          trackEvent({ type: "greeting", summary: "主动问候了用户" });
+          trackEvent({ type: "greeting", summary: "深夜关心了还在熬夜的用户" });
+      return;
+    }
+
+    // 心情低谷关怀：宠物心情很低（用户最近情绪低落）→ 触发安慰型问候
+    if (getMood().happiness < 0.35 && sinceGreet > 45 * 60 * 1000) {
+      lastGreetAt = now;
+      void triggerProactive();
+          trackEvent({ type: "greeting", summary: "察觉主人心情低落，主动安慰了用户" });
       return;
     }
 
@@ -850,6 +880,7 @@ async function boot() {
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
       view.playClick();
+      reactToTouch();
       incrementInteractionCount();
       showInfoPanel();
       if (settings.assistant.enabled) {
@@ -1022,6 +1053,7 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     breathingPhase += dt * breathSpeed;
     driver.breathing = breathingPhase;
     driver.excited = engine.excitementValue;
+    driver.mood = getMoodDriverValue();
     driver.idleTop = engine.isIdleTop;
     driver.idle = engine.isIdle;
     driver.dragging = !!drag && drag.moved;
@@ -1630,6 +1662,21 @@ function buildMenu(engine: BehaviorEngine) {
     },
     { id: "diary", label: "📖 日记本", onPick: () => toggleDiaryPanel() },
     { id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() },
+    {
+      id: "minigames",
+      label: "🎮 小游戏",
+      state: isMiniGameOpen() ? "进行中" : undefined,
+      submenu: [
+        ...listMiniGames().map((g) => ({
+          id: "mg-" + g.id,
+          label: g.emoji + " " + g.name,
+          onPick: () => {
+            if (openMiniGame(g.id)) toast("开局！和桌宠来一把～");
+          },
+        })),
+        { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },
+      ],
+    },
     {
       id: "feedback",
       label: "反馈",
@@ -2559,6 +2606,13 @@ async function toggleAssistantSettings() {
     persona.value = settings.assistant.persona;
     mkRow("人格设定", persona);
 
+    // 对用户的称呼
+    const nickname = document.createElement("input");
+    nickname.className = "as-input";
+    nickname.placeholder = "对用户的称呼（如“主人”，留空由 AI 决定）";
+    nickname.value = settings.assistant.nickname ?? "";
+    mkRow("对用户的称呼", nickname);
+
     // 主动问候间隔时间设置
     const greetRow = document.createElement("div");
     greetRow.className = "as-set-row";
@@ -2626,6 +2680,35 @@ async function toggleAssistantSettings() {
     });
     mkRow("", fetchBtn);
 
+    // AI 用量统计（本地估算，帮助用户感知 token 消耗）
+    const usageRow = document.createElement("div");
+    usageRow.className = "as-set-row";
+    usageRow.style.cssText = "align-items:flex-start;";
+    const usageLabel = document.createElement("span");
+    usageLabel.className = "as-set-label";
+    usageLabel.textContent = "AI 用量";
+    const usageBox = document.createElement("div");
+    usageBox.style.cssText = "flex:1;font-size:11.5px;color:#8a7a95;line-height:1.8;";
+    const fmtTokens = (n: number) => (n >= 10000 ? (n / 1000).toFixed(1) + "k" : String(n));
+    const renderUsage = () => {
+      const u = getUsageStats();
+      const cachedPart = u.cachedTokens > 0 ? " · 缓存命中 " + fmtTokens(u.cachedTokens) : "";
+      usageBox.textContent = u.calls > 0
+        ? "共 " + u.calls + " 次调用 · 输入 " + fmtTokens(u.inputTokens) + " · 输出 " + fmtTokens(u.outputTokens) + cachedPart + " tok（服务端优先，本地估算兜底）"
+        : "暂无记录（服务端优先，本地估算兜底）";
+    };
+    renderUsage();
+    const usageReset = document.createElement("button");
+    usageReset.className = "as-btn";
+    usageReset.style.cssText = "padding:2px 8px;font-size:11px;flex:none;";
+    usageReset.textContent = "清零";
+    usageReset.addEventListener("click", () => {
+      resetUsageStats();
+      renderUsage();
+    });
+    usageRow.append(usageLabel, usageBox, usageReset);
+    host.appendChild(usageRow);
+
     const btns = document.createElement("div");
     btns.className = "as-set-btns";
 
@@ -2658,6 +2741,7 @@ async function toggleAssistantSettings() {
       settings.assistant.customBaseUrl = baseUrl.value.trim();
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
+      settings.assistant.nickname = nickname.value.trim();
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       settings.assistant.greetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
@@ -2915,6 +2999,9 @@ function toggleAudio(on: boolean) {
   void invoke("set_audio_enabled", { enabled: on });
   toast(on ? "耳朵竖起来啦～" : "暂时不想听音乐了");
 }
+
+// 注册小游戏（右键菜单「🎮 小游戏」入口）
+registerRiichiGame();
 
 void boot();
 

@@ -1,5 +1,5 @@
 import type { Container } from "pixi.js";
-import type { PetDriver, PetView } from "../PetDriver";
+import type { EmotionExpression, PetDriver, PetView } from "../PetDriver";
 import { PsdRuntime, type RigParams } from "./PsdRuntime";
 import { findAction, sampleAction, pickPoolAction, type ActionDef } from "../actions";
 import { clamp } from "../../utils/math";
@@ -63,6 +63,7 @@ export class Rigged2DView implements PetView {
   private exprDur = 1.6;
   private exprNext = 0;
   private expr: Expression = EXPRESSIONS[0];
+  private lastMood = 0; // 情感引擎心情通道（-1..1）
 
   // 动作播放器
   private action: ActionDef | null = null;
@@ -150,6 +151,7 @@ export class Rigged2DView implements PetView {
 
   update(d: PetDriver, dt: number) {
     this.musicPhase += dt;
+    this.lastMood = d.mood ?? 0;
     const sway = this.swayEnabled && !this.action ? 1 : 0;
     this.gobblePulse = Math.max(0, this.gobblePulse - dt * 2.2);
     this.clickPulse = Math.max(0, this.clickPulse - dt * 6);
@@ -192,7 +194,12 @@ export class Rigged2DView implements PetView {
 
       if (nowMs > this.exprNext || beatTrigger) {
         // 音乐模式下只抽 happy/neutral 表情
-        this.expr = pickExpression(Rigged2DView.rand, isMusic ? MUSIC_EXPRESSIONS : undefined);
+        let pool: Expression[] | undefined = isMusic ? MUSIC_EXPRESSIONS : undefined;
+        // 心情偏置：低落时更容易出现委屈/生气表情，开心时更多微笑表情
+        if (!isMusic && Math.abs(this.lastMood) > 0.3 && Rigged2DView.rand() < 0.45) {
+          pool = EXPRESSIONS.filter((x) => x.mood === (this.lastMood > 0 ? "happy" : "sad"));
+        }
+        this.expr = pickExpression(Rigged2DView.rand, pool);
         this.exprT = 0;
         this.exprDur = isMusic ? 1.2 + Rigged2DView.rand() * 0.6 : 1.6 + Rigged2DView.rand() * 0.8;
         this.exprNext = nowMs + exprInterval;
@@ -425,6 +432,14 @@ export class Rigged2DView implements PetView {
     this.actionT = 0;
     this.actionLoop = false;
     this.setAuto(true);
+  }
+
+  /** 情感引擎注入临时表情：覆盖随机表情 durSec 秒，之后恢复随机池 */
+  setExpression(params: EmotionExpression, durSec = 2.5) {
+    this.expr = { ...EXPRESSIONS[0], ...params };
+    this.exprT = 0;
+    this.exprDur = Math.max(1, durSec);
+    this.exprNext = performance.now() + durSec * 1000;
   }
 
   private setAuto(on: boolean) {

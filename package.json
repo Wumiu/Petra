@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:riichi": "tsc src/games/riichi/tiles.ts src/games/riichi/rules.ts src/games/riichi/engine.ts --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/riichi-rules.test.js && node tests/riichi-sim.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

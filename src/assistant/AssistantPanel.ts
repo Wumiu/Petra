@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { chatStream, extractCommand, stripCommand, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { chatStream, extractCommand, stripCommand, PROVIDERS, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { classifyEmotion, reactNow, emotionEmoji, boostMood, getMood } from "./EmotionEngine";
+import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
@@ -362,6 +364,73 @@ function lastBubble(): HTMLElement | null {
   return kids.length ? (kids[kids.length - 1] as HTMLElement) : null;
 }
 
+/** 当前时段 key（记忆召回用） */
+function timeOfDayKey(): string {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 10) return "morning";
+  if (hour >= 10 && hour < 14) return "midday";
+  if (hour >= 14 && hour < 18) return "afternoon";
+  if (hour >= 18 && hour < 22) return "evening";
+  if (hour >= 22 || hour < 2) return "night";
+  return "late_night";
+}
+
+/** 陪伴时长（与 main.ts 共用 localStorage 起始时间） */
+function formatCompanion(): string {
+  try {
+    const saved = localStorage.getItem("petra-companion-start");
+    const start = saved ? parseInt(saved, 10) : Date.now();
+    const ms = Math.max(0, Date.now() - start);
+    const hours = Math.floor(ms / 3600000);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}天${hours % 24}小时`;
+    if (hours > 0) return `${hours}小时`;
+    return `${Math.floor(ms / 60000)}分钟`;
+  } catch {
+    return "一段时间";
+  }
+}
+
+/** 把原始 API 错误翻译成友善提示（402 余额不足 / 401 Key 无效 / 429 限流等） */
+function friendlyApiError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/402|insufficient balance|余额不足|欠费/i.test(raw)) {
+    return "💸 API 余额不足（402）：请到「小助手设置」充值，或换一个可用的 API Key。\n（AI 暂时下线，但右键 →「🎮 小游戏」，桌宠还能陪你打麻将哦～）";
+  }
+  if (/401|invalid_api_key|unauthorized|令牌|鉴权/i.test(raw)) {
+    return "🔑 API Key 无效或已过期，请到「小助手设置」重新填写。";
+  }
+  if (/429|rate limit|too many requests|限流/i.test(raw)) {
+    return "⏳ 请求太频繁了（429），缓一缓再聊吧～";
+  }
+  if (/timeout|超时|failed to fetch|networkerror|网络/i.test(raw)) {
+    return "🌐 网络不可用或超时，检查网络/代理后再试。";
+  }
+  if (/404|model not found|模型/i.test(raw)) {
+    return "🤖 模型名无效（404）：请在设置里点「自动获取模型」重新选一个。";
+  }
+  return raw;
+}
+
+/** 注入 system prompt 的紧凑环境上下文（约 20-30 token：称呼 + 时间 + 陪伴时长，增强陪伴感） */
+function buildChatContext(nickname: string): string {
+  const now = new Date();
+  const hour = now.getHours();
+  let tod = "晚上";
+  if (hour >= 5 && hour < 9) tod = "早晨";
+  else if (hour >= 9 && hour < 12) tod = "上午";
+  else if (hour >= 12 && hour < 14) tod = "中午";
+  else if (hour >= 14 && hour < 18) tod = "下午";
+  else if (hour >= 18 && hour < 23) tod = "晚上";
+  else tod = "深夜";
+  const day = now.toLocaleDateString("zh-CN", { weekday: "long" });
+  const parts: string[] = [];
+  if (nickname) parts.push(`对用户的称呼：${nickname}`);
+  parts.push(`现在：${day}${tod}${hour}点`);
+  parts.push(`已陪伴用户${formatCompanion()}`);
+  return `[环境] ${parts.join("；")}`;
+}
+
 async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
@@ -373,6 +442,11 @@ async function send(text: string) {
   }
   history.push({ role: "user", content: text });
   saveHistory();
+  // 情感反馈：先分析用户消息（零 token），立即驱动角色表情/动作 + 心情
+  const userEmo = classifyEmotion(text);
+  reactNow(userEmo);
+  boostMood("chat");
+  if (userEmo !== "neutral") boostMood(userEmo);
   busy = true;
   const loading = addBubble("ai", "");
   let streamed = false;
@@ -381,18 +455,22 @@ async function send(text: string) {
     const MAX_ROUNDS = 4;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (round > 0) loading.textContent = "";
+      // token 优化：记忆按场景/话题召回（≤6 条），而非全量注入 system prompt
+      const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text }).slice(0, 6);
       const res = await chatStream(
         s.assistant.provider,
         apiKey,
         s.assistant.model,
         history,
         s.assistant.persona,
-        memory,
+        ctxMemories,
         s.assistant.customBaseUrl,
         (delta) => {
           streamed = true;
           loading.textContent += delta;
         },
+        true,
+        buildChatContext(s.assistant.nickname),
       );
 
       if (res.toolCalls.length) {
@@ -405,6 +483,14 @@ async function send(text: string) {
       // 无工具调用：文字入历史
       const finalText = loading.textContent || res.text;
       history.push({ role: "assistant", content: finalText });
+      // 情感反馈：AI 回复带情绪 → 角色表情/动作 + 气泡 emoji 前缀 + 气泡着色 + 心情变化
+      const aiEmo = classifyEmotion(finalText);
+      if (aiEmo !== "neutral") {
+        reactNow(aiEmo);
+        loading.textContent = `${emotionEmoji(aiEmo)} ${finalText}`;
+        loading.dataset.emotion = aiEmo;
+        boostMood(aiEmo);
+      }
       // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
       trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
@@ -428,8 +514,11 @@ async function send(text: string) {
     if (!loading.textContent.trim()) loading.textContent = "(空回复)";
     scheduleFade(loading, 8000);
   } catch (e) {
-    loading.textContent = String(e);
-    scheduleFade(loading, 6000);
+    loading.textContent = friendlyApiError(e);
+    loading.dataset.emotion = "worried";
+    // 出错时桌宠也难过一下，但不消耗任何 token
+    reactNow("worried");
+    scheduleFade(loading, 9000);
   } finally {
     busy = false;
     resetTimer();
@@ -564,6 +653,7 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
       const message = String(tc.args.message || "时间到了");
       const ms = Math.max(5000, Math.min(86400000, minutes * 60000));
       setTimeout(() => {
+        boostMood("reminder_done");
         toast(`提醒：${message}`, "info");
       }, ms);
       history.push({ role: "tool", tool_call_id: tc.id, content: `已设定 ${minutes} 分钟后提醒：${message}` });
@@ -589,7 +679,8 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
     }
     if (tc.name === "daily_card") {
       try {
-        const result = await dailyDraw();
+        // skipAiText：聊天里小助手会用自己的人设重新演绎祝福语，无需再单独生成一次
+        const result = await dailyDraw({ skipAiText: true });
         const { collected, total } = getCollectionProgress();
         const lines = [
           "【抽卡结果】",
@@ -656,6 +747,7 @@ function recallRelevantMemories(context: {
   currentApp?: string;
   currentTitle?: string;
   idleMinutes?: number;
+  userText?: string;
 }): MemoryEntry[] {
   if (memory.length === 0) return [];
   
@@ -673,6 +765,15 @@ function recallRelevantMemories(context: {
     for (const kw of m.keywords) {
       if (ctx.toLowerCase().includes(kw.toLowerCase())) {
         score += 5;
+      }
+    }
+    // 与用户当前消息相关的记忆显著加分
+    const ut = (context.userText ?? "").toLowerCase();
+    if (ut) {
+      for (const kw of m.keywords) {
+        if (ut.includes(kw.toLowerCase())) {
+          score += 6;
+        }
       }
     }
     // 时间相关记忆加分
@@ -700,8 +801,11 @@ async function extractMemoriesFromChat(s: any, apiKey: string) {
     { role: "user", content: transcript },
   ];
   try {
-    const base = s.assistant.provider === "custom" ? s.assistant.customBaseUrl : "https://api.deepseek.com";
-    const model = s.assistant.model || "deepseek-chat";
+    // 修复：按实际 provider 解析端点（此前非 custom 一律硬编码 DeepSeek，其他厂商记忆提取静默失败）
+    const base = s.assistant.provider === "custom"
+      ? s.assistant.customBaseUrl
+      : PROVIDERS[s.assistant.provider as AssistantProvider]?.base ?? "https://api.deepseek.com";
+    const model = s.assistant.model || PROVIDERS[s.assistant.provider as AssistantProvider]?.defaultModel || "deepseek-chat";
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -778,27 +882,37 @@ export async function triggerProactive() {
     : "";
   const ctx = [currentApp ? `正在使用：${currentApp}` : "", currentTitle ? `窗口标题：${currentTitle.slice(0, 60)}` : ""].filter(Boolean).join("；");
 
-  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}\n\n` +
+  // 心情低谷 → 安慰模式（心情随主人情绪联动，低落说明最近主人不开心）
+  const comfortLine = getMood().happiness < 0.35
+    ? "\n【安慰模式】主人的心情最近有些低落，用你的人设温柔地安慰、陪伴一句，别提\"心情指数\"这类系统概念。"
+    : "";
+  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}\n\n` +
     "自然地和主人打个招呼或说一句关心的话，保持你的人设风格。\n" +
     "\n要求：简短（1-2句）、口语化、有温度、不要像客服。" +
     "如果有相关记忆可以自然引用，但不要生硬堆砌。\n" +
     "不要说\"作为AI\"之类的话，你就是桌宠伙伴。";
 
-  history.push({ role: "user", content: prompt });
+  // token 优化：问候用独立临时历史，不污染主对话历史（后续请求不携带问候上下文）
+  const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
   busy = true;
   lifecycleOnOpen?.();
   const bubble = addBubble("ai", "");
   try {
-    await chatStream(s.assistant.provider, apiKey, s.assistant.model, history, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
+    // enableTools=false：问候不需要工具，省掉整套工具定义的输入 token
+    await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       bubble.textContent += d;
-    });
-    history.push({ role: "assistant", content: bubble.textContent });
-    saveHistory();
+    }, false);
     for (const m of relevantMemories) {
       const orig = memory.find(e => e.id === m.id);
       if (orig) orig.lastUsedAt = Date.now();
     }
     saveMemory();
+    boostMood("greeting_sent");
+    const emo = classifyEmotion(bubble.textContent);
+    if (emo !== "neutral") {
+      reactNow(emo);
+      bubble.dataset.emotion = emo;
+    }
     scheduleFade(bubble, 10000);
   } catch {
     bubble.remove();
@@ -827,9 +941,15 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
   lifecycleOnOpen?.();
   const bubble = addBubble("ai", "");
   try {
+    // enableTools=false：点评不需要工具，省 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       bubble.textContent += d;
-    });
+    }, false);
+    const emo = classifyEmotion(bubble.textContent);
+    if (emo !== "neutral") {
+      reactNow(emo);
+      bubble.dataset.emotion = emo;
+    }
     // 不保存到主 history，避免影响主动问候
     scheduleFade(bubble, 8000);
   } catch {

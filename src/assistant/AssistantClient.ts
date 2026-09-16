@@ -63,24 +63,14 @@ function resolveBase(provider: AssistantProvider, customBaseUrl: string): string
 }
 
 const BASE_PROMPT =
-  "你是桌面小助手，回复简洁友好。工具使用原则：\n" +
-  "1. 用户要求打开/启动本机已安装的软件（如网易云音乐、微信、QQ、记事本、计算器、VS Code、浏览器）时，必须调用 launch_application 工具，只需传入应用名称，不要猜路径；\n" +
-  "2. 只有明确需要执行受支持的系统命令（如 ipconfig、dir、ping 等查询类操作）时才调用 run_shell；普通“打开软件”请求一律不要用 run_shell；\n" +
-  "3. 工具执行结果会以 tool 消息返回，请用简洁自然语言如实转述给用户（如“已经帮你打开网易云音乐啦”）；工具返回失败时如实告知用户失败原因，不要假装成功；\n" +
-  "run_shell 是 Windows cmd 命令，必须严格遵守语法：\n" +
-  "1. 路径一律用反斜杠（如 C:\\Program Files\\xxx），严禁使用 //；\n" +
-  "2. 命令必须一条完整可执行，不要加 // 或任何注释，不要输出解释文字到命令里；\n" +
-  "3. 拿不准确切路径时，宁可提示用户不要乱猜路径。\n" +
-  "当用户透露出任何个人信息、偏好、习惯、情绪、计划时（如名字、生日、作息、喜欢的东西、最近在忙什么、心情如何），请主动调用 remember 工具归档到长期记忆。" +
-  "即使用户只是随口提到（如\"今天好累\"\"我在学吉他\"），也要记录。用户明确说\"记住 xx\"时必须调用 remember。\n" +
-  "4. 用户说\"帮我搜/查 xxx\"时调用 search_web 打开浏览器搜索。\n" +
-  "5. 用户说\"提醒我/xx分钟后叫我\"时调用 set_reminder。\n" +
-  "6. 用户问天气时调用 get_weather 获取实时天气。\n" +
-  "7. 用户说\"关机/定时关机/xx分钟后关机\"时调用 schedule_shutdown。\n" +
-  "8. 用户说\"取消关机\"时调用 cancel_shutdown。\n" +
-  "对话历史较长时只需记住最新上下文。\n" +
-    "9. 用户说\"抽卡/今日运势/来一发\"时调用 daily_card。拿到结果后用你的人设风格重新演绎祝福语，加入自己的点评，不要原样复述。\n" +
-    "10. 用户问\"日记/今天写了什么/看看日记\"时调用 view_diary 查看日记。";
+  "你是用户的桌面桌宠小助手，回复简洁、口语化、有温度，符合你的人设。\n" +
+  "工具原则：\n" +
+  "· 打开软件 → launch_application（只传应用名，不猜路径）；查询类系统命令（ipconfig/dir/ping 等）→ run_shell；打开软件一律不要用 run_shell；\n" +
+  "· run_shell 语法：路径用反斜杠、一条完整命令、不加注释；拿不准路径就提示用户，不要乱猜；\n" +
+  "· 搜/查 → search_web；提醒 → set_reminder；天气 → get_weather；关机/取消关机 → schedule_shutdown/cancel_shutdown；抽卡 → daily_card；看日记 → view_diary；\n" +
+  "· 工具结果用简洁口语如实转述，失败就如实告知，不要假装成功。\n" +
+  "· 用户透露个人信息/偏好/习惯/情绪/计划（哪怕随口提到，如\"今天好累\"\"我在学吉他\"）就调用 remember 归档；用户说\"记住 xx\"必须调用 remember。\n" +
+  "对话历史较长时只需记住最新上下文。";
 
 const TOOLS = [
   {
@@ -88,7 +78,7 @@ const TOOLS = [
     function: {
       name: "launch_application",
       description:
-        "当用户要求打开/启动本机已安装的软件（如网易云音乐、微信、QQ、记事本、计算器、VS Code、浏览器）时调用。只需传应用名称，系统会自动解析安装位置。执行结果返回后请用自然语言转述。",
+        "打开/启动本机已安装的软件时调用。只传应用名称，系统自动解析安装位置。",
       parameters: {
         type: "object",
         properties: { application: { type: "string", description: "应用名称，如\"网易云音乐\"、\"记事本\"、\"VS Code\"" } },
@@ -101,7 +91,7 @@ const TOOLS = [
     function: {
       name: "run_shell",
       description:
-        "执行一条 Windows cmd 查询命令（白名单：ipconfig/dir/ping/netstat/systeminfo/tasklist/whoami/tree/type/echo 等只读命令）。禁止执行修改/删除/系统操作，打开软件请用 launch_application。执行结果返回后请用自然语言转述。",
+        "执行一条 Windows cmd 只读查询命令（白名单：ipconfig/dir/ping/netstat/systeminfo/tasklist/whoami/tree/type/echo 等）。禁止修改/删除类操作。",
       parameters: {
         type: "object",
         properties: { command: { type: "string", description: "要执行的完整 cmd 命令" } },
@@ -113,7 +103,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "remember",
-      description: "把用户的个人信息/偏好/习惯归档到长期记忆。category 可选：identity(身份如名字生日)、preference(偏好如喜欢咖啡)、habit(习惯如熬夜)、schedule(作息)、relationship(人际关系)、event(事件)、other。importance: 1=核心(名字生日等不会变的)、2=重要(习惯偏好)、3=琐碎。",
+      description: "把用户的个人信息/偏好/习惯归档到长期记忆。category: identity(名字生日)/preference/habit/schedule/relationship/event/other。importance: 1=核心 2=重要 3=琐碎。",
       parameters: {
         type: "object",
         properties: {
@@ -202,7 +192,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "daily_card",
-      description: "帮用户抽取今日运势卡牌。无需参数。返回卡牌主题、稀有度和祝福语。每天只能抽一次，已抽过则返回今天的结果。拿到结果后，用你的人设风格重新包装祝福语，加入你自己的点评或吐槽，不要原样复述。",
+      description: "抽取今日运势卡牌（每天一次，已抽过返回今天结果）。拿到结果后用你的人设风格重新包装祝福语，加入自己的点评，不要原样复述。",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -221,11 +211,14 @@ const TOOLS = [
   },
 ];
 
-function systemPrompt(persona: string, memory: MemoryStore): string {
+/** system prompt 最多注入的记忆条数（token 控制；聊天时按场景召回后再传入） */
+const MAX_MEMORY_IN_PROMPT = 20;
+
+function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): string {
   let mem = "";
   if (memory.length > 0) {
-    // 按重要度排序，核心记忆在前
-    const sorted = [...memory].sort((a, b) => a.importance - b.importance);
+    // 按重要度排序，核心记忆在前，超限截断
+    const sorted = [...memory].sort((a, b) => a.importance - b.importance).slice(0, MAX_MEMORY_IN_PROMPT);
     mem = "\n\n关于用户的记忆（按重要度排序）：\n" +
       sorted.map((m) => {
         const age = Date.now() - m.createdAt;
@@ -234,12 +227,12 @@ function systemPrompt(persona: string, memory: MemoryStore): string {
         return `- [${m.category}] ${m.content} ${timeNote}`;
       }).join("\n");
   }
-  return `${persona ? persona + "\n\n" : ""}${BASE_PROMPT}${mem}`;
+  return `${persona ? persona + "\n\n" : ""}${extraContext ? extraContext + "\n\n" : ""}${BASE_PROMPT}${mem}`;
 }
 
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
  *  截断时不切断 tool_calls 序列（不删除紧跟 tool 消息的 assistant 消息）。 */
-function buildMessages(history: ChatMessage[], persona: string, memory: MemoryStore): ChatMessage[] {
+function buildMessages(history: ChatMessage[], persona: string, memory: MemoryStore, extraContext = ""): ChatMessage[] {
   const MAX_MSGS = 20;
   const MAX_CHARS = 6000;
   let msgs = history.slice(-MAX_MSGS);
@@ -250,7 +243,7 @@ function buildMessages(history: ChatMessage[], persona: string, memory: MemorySt
     total -= msgs[0].content?.length ?? 0;
     msgs = msgs.slice(1);
   }
-  return [{ role: "system", content: systemPrompt(persona, memory) }, ...msgs];
+  return [{ role: "system", content: systemPrompt(persona, memory, extraContext) }, ...msgs];
 }
 
 /** OpenAI 兼容流式 chat；返回完整文本 + 工具调用。enableTools=false 时不带 tools（纯文本生成，如日记/抽卡文案） */
@@ -263,11 +256,16 @@ export async function chatStream(
   memory: MemoryStore, customBaseUrl: string,
   onDelta: (t: string) => void,
   enableTools = true,
+  extraContext = "",
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const base = resolveBase(provider, customBaseUrl);
   const m = model || PROVIDERS[provider].defaultModel;
   if (!m) throw new Error("未设置模型名");
-  const messages = buildMessages(history, persona, memory);
+  const messages = buildMessages(history, persona, memory, extraContext);
+  // 输入 token 估算（消息 + 工具定义），用于本地用量统计兜底
+  const inputTokens = estimateTokens(JSON.stringify(messages)) + (enableTools ? estimateToolsTokens() : 0) + 4;
+  // 支持流式 usage 回传的提供商白名单（其余端点可能拒绝未知字段）
+  const supportsStreamUsage = USAGE_STREAM_PROVIDERS.has(provider);
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: {
@@ -280,6 +278,7 @@ export async function chatStream(
       // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
       // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
       ...(enableTools ? { tools: TOOLS } : {}),
+      ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
       stream: true,
     }),
   });
@@ -293,6 +292,8 @@ export async function chatStream(
   let buffer = "";
   let text = "";
   const toolCalls: { id: string; name: string; args: string }[] = [];
+  // 服务端真实 usage（最后一个 chunk 返回，需 include_usage）
+  let serverUsage: { input: number; output: number; cached: number } | null = null;
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -321,6 +322,14 @@ export async function chatStream(
             if (tc.function?.arguments) toolCalls[idx].args += tc.function.arguments;
           }
         }
+        // 末 chunk 的 usage：{ prompt_tokens, completion_tokens, prompt_tokens_details.cached_tokens }
+        if (json.usage && typeof json.usage.total_tokens === "number") {
+          serverUsage = {
+            input: json.usage.prompt_tokens ?? inputTokens,
+            output: json.usage.completion_tokens ?? 0,
+            cached: json.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          };
+        }
       } catch {
         /* 忽略不完整 JSON */
       }
@@ -334,7 +343,99 @@ export async function chatStream(
       args: parseArgs(tc.args),
     }))
     .filter((tc) => tc.name && tc.args);
+  const outputTokens = estimateTokens(text) + estimateTokens(toolCalls.map((t) => t.args).join(" "));
+  // 服务端有真实 usage 时优先用真实值
+  recordUsage(
+    serverUsage ? serverUsage.input : inputTokens,
+    serverUsage ? serverUsage.output : outputTokens,
+    serverUsage ? serverUsage.cached : 0,
+  );
   return { text, toolCalls: parsed };
+}
+
+// ==================== 本地 token 估算与用量统计 ====================
+// 说明：不依赖服务端 usage 字段（各厂商流式支持不一致），用字符规则本地估算，
+// 仅用于给用户展示相对用量趋势，非计费依据。
+
+export interface UsageStats {
+  calls: number;       // 总调用次数
+  inputTokens: number; // 输入 token（服务端 usage 可用时用真实值，否则本地估算）
+  outputTokens: number; // 输出 token
+  cachedTokens: number; // 服务端报告的前缀缓存命中 token（DeepSeek 等）
+  lastInput: number;
+  lastOutput: number;
+  lastCached: number;
+  lastAt: number;
+}
+
+const USAGE_KEY = "petra-token-usage";
+/** 支持流式 stream_options.include_usage 的提供商白名单（OpenAI 兼容且实测支持） */
+const USAGE_STREAM_PROVIDERS: ReadonlySet<string> = new Set([
+  "deepseek", "openai", "moonshot", "qwen", "siliconflow", "openrouter", "groq",
+]);
+const DEFAULT_USAGE: UsageStats = { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, lastInput: 0, lastOutput: 0, lastCached: 0, lastAt: 0 };
+let toolsTokensCache = -1;
+
+/** 估算一段文本的 token 数：中文≈0.8/字，其他≈3.6 字/token，emoji≈1 */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const isCjk =
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK 统一表意
+      (code >= 0x3000 && code <= 0x30ff) || // CJK 标点/假名
+      (code >= 0xff00 && code <= 0xffef) || // 全角
+      code > 0x10000;                        // emoji 等
+    if (isCjk) cjk++;
+    else other++;
+  }
+  return Math.max(1, Math.round(cjk * 0.8 + other / 3.6));
+}
+
+/** 工具定义整体 token 估算（缓存，仅算一次） */
+function estimateToolsTokens(): number {
+  if (toolsTokensCache < 0) toolsTokensCache = estimateTokens(JSON.stringify(TOOLS)) + 8;
+  return toolsTokensCache;
+}
+
+export function getUsageStats(): UsageStats {
+  try {
+    const raw = localStorage.getItem(USAGE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      return { ...DEFAULT_USAGE, ...p };
+    }
+  } catch {
+    /* 忽略 */
+  }
+  return { ...DEFAULT_USAGE };
+}
+
+export function resetUsageStats(): void {
+  try {
+    localStorage.removeItem(USAGE_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function recordUsage(input: number, output: number, cached = 0): void {
+  try {
+    const s = getUsageStats();
+    s.calls++;
+    s.inputTokens += input;
+    s.outputTokens += output;
+    s.cachedTokens += cached;
+    s.lastInput = input;
+    s.lastOutput = output;
+    s.lastCached = cached;
+    s.lastAt = Date.now();
+    localStorage.setItem(USAGE_KEY, JSON.stringify(s));
+  } catch {
+    /* 忽略 */
+  }
 }
 
 function parseArgs(args: string): Record<string, unknown> {

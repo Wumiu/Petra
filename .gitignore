@@ -19,6 +19,9 @@ api_key.bin
 *.log
 src-tauri/logs/
 
+# 测试编译产物
+tests/build/
+
 # OS
 .DS_Store
 Thumbs.db

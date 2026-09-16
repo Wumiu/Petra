@@ -1,3 +1,16 @@
+/** 情感引擎注入的表情参数（相对默认表情的偏移），Rigged2DView.setExpression 用 */
+export interface EmotionExpression {
+  brow?: number;      // -1..1 眉毛
+  mouthOpen?: number; // 0..1.3 嘴开
+  mouthForm?: number; // -1..1 嘴形（+笑 -撇嘴）
+  eyeX?: number;      // -1..1 视线横
+  eyeY?: number;      // -1..1 视线纵
+  closeL?: number;    // 0..1 左眼闭合
+  closeR?: number;    // 0..1 右眼闭合
+  irisScale?: number; // 瞳缩放偏移
+  tilt?: number;      // 歪头
+}
+
 export interface PetDriver {
   bass: number; // 0..1 低频能量
   mid: number; // 0..1 中频能量
@@ -10,6 +23,7 @@ export interface PetDriver {
   cursorDy: number; // -1..1 鼠标相对窗口中心的纵向偏移
   breathing: number; // 呼吸相位 0..2π
   excited: number; // 0..1 逗猫棒兴奋度（越高越投入）
+  mood: number; // -1..1 心情（情感引擎：低=低落 高=开心），影响随机表情倾向
   idleTop: boolean; // 待机且倒挂（顶部待机 → 渲染旋转 180°）
   idle: boolean; // 待机模式（暂停随机表情、安静）
   dragging: boolean; // 拖拽中（下半身摆动）
@@ -27,6 +41,8 @@ export interface PetView {
   playClick(): void; // 被点击反馈
   playAction(id: string, loop?: boolean): void; // 播放动作（动作库 id，loop 循环）
   stopAction(): void; // 停止当前动作，回落待机
+  /** 情感引擎注入临时表情（可选实现；durSec 秒后恢复随机表情） */
+  setExpression?(params: EmotionExpression, durSec?: number): void;
   setSwayEnabled(on: boolean): void;
   /** 设置模型显示尺寸（窗口跟随缩放时，canvas 显示尺寸同步为窗口边长） */
   setScale(displayW: number): void;
@@ -51,6 +67,7 @@ export function idleDriver(): PetDriver {
     cursorDy: 0,
     breathing: 0,
     excited: 0,
+    mood: 0,
     idleTop: false,
     idle: false,
     dragging: false,

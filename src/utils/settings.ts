@@ -28,6 +28,8 @@ export interface AssistantSettings {
   customBaseUrl: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
+  /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
+  nickname: string;
 }
 
 export interface DiarySettings {
@@ -80,6 +82,7 @@ const DEFAULTS: Settings = {
     persona: "",
     customBaseUrl: "",
     greetInterval: 20,
+    nickname: "",
   },
   diary: {
     enabled: true,
@@ -106,7 +109,14 @@ export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    const s: Settings = { ...DEFAULTS, ...parsed };
+    // 嵌套对象深合并：旧版本存档缺少新字段时回退默认值
+    const s: Settings = {
+      ...DEFAULTS,
+      ...parsed,
+      assistant: { ...DEFAULTS.assistant, ...(parsed.assistant ?? {}) },
+      diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
+      dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
+    };
     currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
     currentLevel = s.activity ?? DEFAULTS.activity;
     return s;
