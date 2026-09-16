@@ -1081,9 +1081,134 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-/// 在线获取歌词（LRCLIB：免费、无需 API Key、含 LRC 时间戳）。
-/// 走 PowerShell Invoke-WebRequest，与 get_weather 一致：不新增 Rust HTTP 依赖，
-/// 也绕开 WebView 的跨域限制。先精确匹配 /api/get，失败再退到 /api/search。
+/// 取歌词的 PowerShell 脚本（多来源链：网易云 → QQ音乐 → 酷狗 → LRCLIB）。
+/// 用脚本文件而非 -Command，避免超长单行与转义地狱；占位符由 Rust 侧替换。
+/// 注意：脚本本身保持 ASCII，路径占位符可能含非 ASCII（用户名），写盘时带 UTF-8 BOM 供 PS 5.1 正确解析。
+const LYRICS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$UA = 'Petra/0.2.3 (+https://github.com/Wumiu/Petra)'
+$BR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+$OUT = '@OUT@'
+$ART = [System.Uri]::UnescapeDataString('@ARTIST_ENC@')
+$items = New-Object System.Collections.Generic.List[object]
+$err = ''
+# 最佳艺人匹配档位：0=完全相同 1=包含 2=不匹配。为 2 时继续问下一个来源（例如网易云只有翻唱）
+$bestRank = 9
+# 最佳艺人匹配档位：0=完全相同 1=包含 2=不匹配。为 2 时继续问下一个来源（例如网易云只有翻唱）
+$bestRank = 9
+
+function Get-Rank([string]$singer) {
+  if ([string]::IsNullOrEmpty($ART) -or [string]::IsNullOrEmpty($singer)) { return 1 }
+  if ($singer -eq $ART) { return 0 }
+  if ($singer.Contains($ART) -or $ART.Contains($singer)) { return 1 }
+  return 2
+}
+
+# ---------- 1) 网易云音乐 ----------
+if ($items.Count -eq 0) {
+  try {
+    $h = @{ Referer = 'https://music.163.com/'; 'User-Agent' = $BR }
+    $r = Invoke-WebRequest -Uri '@NE_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
+    $songs = @(($r.Content | ConvertFrom-Json).result.songs)
+    $songs = @($songs | Sort-Object { Get-Rank ([string]$_.artists[0].name) })
+    $n = [Math]::Min(3, $songs.Count)
+    $i = 0
+    while ($i -lt $n -and $items.Count -lt 3) {
+      $sg = $songs[$i]; $i++
+      try {
+        $lr = Invoke-WebRequest -Uri ('https://music.163.com/api/song/lyric?id=' + $sg.id + '&lv=1&kv=1&tv=-1') -Headers $h -TimeoutSec 8 -UseBasicParsing
+        $lj = $lr.Content | ConvertFrom-Json
+        $ly = [string]$lj.lrc.lyric
+        if ($ly.Length -gt 20) {
+          $items.Add([ordered]@{ source = 'netease'; trackName = [string]$sg.name; artistName = [string]$sg.artists[0].name; duration = [int]($sg.duration / 1000); instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.tlyric.lyric })
+          $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$sg.artists[0].name)))
+        }
+      } catch { Start-Sleep -Milliseconds 250 }
+    }
+  } catch { $err = $_.Exception.Message }
+}
+
+# ---------- 2) QQ 音乐 ----------
+if ($items.Count -eq 0 -or $bestRank -ge 2) {
+  try {
+    $h = @{ Referer = 'https://y.qq.com/'; 'User-Agent' = $BR }
+    $r = Invoke-WebRequest -Uri '@QQ_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
+    $songs = @(($r.Content | ConvertFrom-Json).data.song.list)
+    $songs = @($songs | Sort-Object { Get-Rank ([string]$_.singer[0].name) })
+    $n = [Math]::Min(3, $songs.Count)
+    $i = 0
+    while ($i -lt $n -and $items.Count -lt 3) {
+      $sg = $songs[$i]; $i++
+      try {
+        $lr = Invoke-WebRequest -Uri ('https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=' + $sg.songmid + '&format=json&nobase64=1&g_tk=5381') -Headers $h -TimeoutSec 8 -UseBasicParsing
+        $lj = $lr.Content | ConvertFrom-Json
+        $ly = [string]$lj.lyric
+        if ($ly.Length -gt 20) {
+          $items.Add([ordered]@{ source = 'qq'; trackName = [string]$sg.songname; artistName = [string]$sg.singer[0].name; duration = [int]$sg.interval; instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.trans })
+          $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$sg.singer[0].name)))
+        }
+      } catch { Start-Sleep -Milliseconds 250 }
+    }
+  } catch { $err = $_.Exception.Message }
+}
+
+# ---------- 3) 酷狗音乐 ----------
+if ($items.Count -eq 0 -or $bestRank -ge 2) {
+  try {
+    $h = @{ 'User-Agent' = $BR }
+    # 酷狗搜索会间歇性返回空候选（实测 0 条 / 10 条 交替），必须重试
+    $cands = @()
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+      try {
+        $r = Invoke-WebRequest -Uri '@KG_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
+        $cands = @(($r.Content | ConvertFrom-Json).candidates)
+      } catch { $err = $_.Exception.Message }
+      if ($cands.Count -gt 0) { break }
+      Start-Sleep -Milliseconds 900
+    }
+    $cands = @($cands | Sort-Object { Get-Rank ([string]$_.singer) })
+    $n = [Math]::Min(3, $cands.Count)
+    $i = 0
+    while ($i -lt $n -and $items.Count -lt 3) {
+      $c = $cands[$i]; $i++
+      try {
+        $b64 = ''
+        for ($attempt2 = 1; $attempt2 -le 2; $attempt2++) {
+          $dl = Invoke-WebRequest -Uri ('https://lyrics.kugou.com/download?ver=1&client=pc&id=' + $c.id + '&accesskey=' + $c.accesskey + '&fmt=lrc&charset=utf8') -Headers $h -TimeoutSec 8 -UseBasicParsing
+          $b64 = [string](($dl.Content | ConvertFrom-Json).content)
+          if ($b64.Length -gt 0) { break }
+          Start-Sleep -Milliseconds 800
+        }
+        if ($b64.Length -gt 0) {
+          $ly = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+          if ($ly.Length -gt 20) {
+            $items.Add([ordered]@{ source = 'kugou'; trackName = [string]$c.song; artistName = [string]$c.singer; duration = [int]($c.duration / 1000); instrumental = $false; syncedLyrics = $ly; translatedLyrics = '' })
+            $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$c.singer)))
+          }
+        }
+      } catch { Start-Sleep -Milliseconds 250 }
+    }
+  } catch { $err = $_.Exception.Message }
+}
+
+# ---------- 4) LRCLIB 兜底 ----------
+if ($items.Count -gt 0) {
+  [System.IO.File]::WriteAllText($OUT, ($items | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+  Write-Output 'OK'
+  exit 0
+}
+$ok = $false
+foreach ($u in @('@LR_GET@', '@LR_SEARCH@')) {
+  if ($ok) { break }
+  try {
+    Invoke-WebRequest -Uri $u -UserAgent $UA -TimeoutSec 8 -UseBasicParsing -OutFile $OUT | Out-Null
+    $ok = $true
+  } catch { $err = $_.Exception.Message; Start-Sleep -Milliseconds 1200 }
+}
+if ($ok) { Write-Output 'OK_LRCLIB' } else { Write-Output ('ERR ' + $err); exit 1 }
+"#;
+
+/// 在线获取歌词：多来源链（网易云 → QQ音乐 → 酷狗 → LRCLIB），均返回带时间戳的 LRC。
 #[tauri::command]
 async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1094,21 +1219,27 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
         }
         let alb = album.unwrap_or_default().trim().to_string();
 
-        let get_url = format!(
+        let q = format!("{} {}", t, a).trim().to_string();
+        // 各来源搜索 URL（全部百分号编码，脚本里只用单引号包裹，无注入面）
+        let ne_search = format!(
+            "https://music.163.com/api/search/get/web?s={}&type=1&limit=5",
+            url_encode(&t)
+        );
+        let qq_search = format!(
+            "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=5&w={}&format=json",
+            url_encode(&q)
+        );
+        let kg_search = format!(
+            "https://krcs.kugou.com/search?ver=1&man=yes&client=mobi&keyword={}&duration=&hash=",
+            url_encode(&q)
+        );
+        let lr_get = format!(
             "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}",
             url_encode(&t),
             url_encode(&a),
             url_encode(&alb)
         );
-        let search_url = format!(
-            "https://lrclib.net/api/search?q={}",
-            url_encode(format!("{} {}", t, a).trim())
-        );
-        // 网易云音乐（用户实际使用的播放器，对日系同人/vocaloid/华语覆盖明显优于 LRCLIB）
-        let ne_url = format!(
-            "https://music.163.com/api/search/get/web?s={}&type=1&limit=5",
-            url_encode(&t)
-        );
+        let lr_search = format!("https://lrclib.net/api/search?q={}", url_encode(&q));
 
         // 临时文件名带时间戳，避免并发/重入时互相覆盖
         let stamp = std::time::SystemTime::now()
@@ -1117,24 +1248,31 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             .unwrap_or(0);
         let tmp = std::env::temp_dir().join(format!("petra_lyrics_{}_{}.json", std::process::id(), stamp));
         let tmp_s = tmp.to_string_lossy().to_string();
+        let tmp_ps1 = std::env::temp_dir().join(format!("petra_lyrics_{}_{}.ps1", std::process::id(), stamp));
+        let ps1_s = tmp_ps1.to_string_lossy().to_string();
         let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&tmp_ps1);
 
-        // 取词顺序：① 网易云（歌名搜索 → 取前几首里第一首有 LRC 的）② LRCLIB 精确匹配 ③ LRCLIB 搜索
-        // 两个来源都返回"带时间戳的 LRC"，统一成同一形状交给前端挑选。
-        let ps = format!(
-            "$ProgressPreference='SilentlyContinue'; $uab='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'; $ua='Petra/0.2.3 (+https://github.com/Wumiu/Petra)'; $hdr=@{{ Referer='https://music.163.com/'; 'User-Agent'=$uab }}; $err=''; $ok=$false; $items=New-Object System.Collections.Generic.List[object]; try {{ $s=Invoke-WebRequest -Uri '{ne}' -Headers $hdr -TimeoutSec 8 -UseBasicParsing; $j=$s.Content | ConvertFrom-Json; $songs=@($j.result.songs); $cnt=[Math]::Min(3, @($songs).Count); $idx=0; while ($idx -lt $cnt -and $items.Count -lt 2) {{ $sg=$songs[$idx]; $idx++; try {{ $l=Invoke-WebRequest -Uri ('https://music.163.com/api/song/lyric?id=' + $sg.id + '&lv=1&kv=1&tv=-1') -Headers $hdr -TimeoutSec 8 -UseBasicParsing; $lj=$l.Content | ConvertFrom-Json; $ly=[string]$lj.lrc.lyric; if ($ly.Length -gt 20) {{ $items.Add([ordered]@{{ source='netease'; trackName=[string]$sg.name; artistName=[string]$sg.artists[0].name; albumName=''; duration=[int]($sg.duration / 1000); instrumental=$false; syncedLyrics=$ly; translatedLyrics=[string]$lj.tlyric.lyric; plainLyrics='' }}) }} }} catch {{ Start-Sleep -Milliseconds 300 }} }} }} catch {{ $err=$_.Exception.Message }}; if ($items.Count -gt 0) {{ [System.IO.File]::WriteAllText('{tmp}', ($items | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false))); $ok=$true }}; if (-not $ok) {{ $i=0; $urls=@('{get}','{search}'); while ($i -lt 2 -and -not $ok) {{ $u=$urls[$i]; $i++; try {{ Invoke-WebRequest -Uri $u -UserAgent $ua -TimeoutSec 8 -UseBasicParsing -OutFile '{tmp}' | Out-Null; $ok=$true }} catch {{ $err=$_.Exception.Message; Start-Sleep -Milliseconds 1200 }} }} }}; if ($ok) {{ 'OK' }} else {{ 'ERR ' + $err }}",
-            ne = ne_url,
-            get = get_url,
-            tmp = tmp_s,
-            search = search_url
-        );
+        let script = LYRICS_SCRIPT
+            .replace("@OUT@", &tmp_s)
+            .replace("@ARTIST_ENC@", &url_encode(&a))
+            .replace("@NE_SEARCH@", &ne_search)
+            .replace("@QQ_SEARCH@", &qq_search)
+            .replace("@KG_SEARCH@", &kg_search)
+            .replace("@LR_GET@", &lr_get)
+            .replace("@LR_SEARCH@", &lr_search);
+        // 带 UTF-8 BOM 写盘：脚本本身是 ASCII，但临时路径可能含非 ASCII（用户名），
+        // PowerShell 5.1 只有见到 BOM 才会按 UTF-8 解析。
+        std::fs::write(&tmp_ps1, format!("\u{feff}{}", script))
+            .map_err(|e| format!("写入取词脚本失败: {e}"))?;
 
         let out = hidden_command("powershell")
-            .args(["-NoProfile", "-Command", &ps])
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &ps1_s])
             .output()
             .map_err(|e| format!("启动失败: {e}"))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let _ = std::fs::remove_file(&tmp_ps1);
 
         let body = std::fs::read_to_string(&tmp).unwrap_or_default();
         let _ = std::fs::remove_file(&tmp);
@@ -1148,11 +1286,20 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             return Err(format!("歌词接口无响应（{detail}）"));
         }
         // 成功也记一行：便于区分"接口没查到"与"接口坏了"
+        let src = if body.contains("netease") {
+            "网易云"
+        } else if body.contains("kugou") {
+            "酷狗"
+        } else if body.contains("qq") {
+            "QQ音乐"
+        } else {
+            "LRCLIB"
+        };
         crate::log_line(&format!(
             "[lyrics] {t} - {a} → {} 字节，{}，来源{}",
             body.len(),
             if body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
-            if body.contains("\"source\":") && body.contains("netease") { "网易云" } else { "LRCLIB" }
+            src
         ));
         Ok(body)
     })

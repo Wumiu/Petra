@@ -93,8 +93,33 @@ pub fn start_media_poller(app: AppHandle) {
             {
                 Ok(manager) => {
                     fail_streak = 0;
-                    match manager.GetCurrentSession() {
-                        Ok(session) => {
+                    // 优先挑"正在播放"的会话：多播放器并存时（例如网易云暂停、QQ 音乐在放）
+                    // GetCurrentSession 可能给到已暂停的那个。QQ音乐/酷狗同样走这条通用路径。
+                    let mut picked: Option<GlobalSystemMediaTransportControlsSession> = None;
+                    if let Ok(list) = manager.GetSessions() {
+                        let count = list.Size().unwrap_or(0);
+                        for i in 0..count {
+                            if let Ok(s) = list.GetAt(i) {
+                                let playing = s
+                                    .GetPlaybackInfo()
+                                    .ok()
+                                    .and_then(|info| info.PlaybackStatus().ok())
+                                    .map(|st| {
+                                        st == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing
+                                    })
+                                    .unwrap_or(false);
+                                if playing {
+                                    picked = Some(s);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if picked.is_none() {
+                        picked = manager.GetCurrentSession().ok();
+                    }
+                    match picked {
+                        Some(session) => {
                             let np = read_session(&session);
                             let key = format!(
                                 "{}|{}|{}|{}|{}",
@@ -109,7 +134,7 @@ pub fn start_media_poller(app: AppHandle) {
                                 let _ = app.emit("media:nowplaying", np);
                             }
                         }
-                        Err(_) => {
+                        None => {
                             if last_key != "__none__" {
                                 last_key = String::from("__none__");
                                 let _ = app.emit("media:nowplaying", NowPlaying::default());

@@ -25,6 +25,17 @@ export function setupContextMenu(
   const menu = document.getElementById("menu") as HTMLElement;
   let visible = false;
 
+  /**
+   * 按"菜单顶边 → 可见区底部"的实际空间设置最大高度。
+   * 展开子菜单后内容变高，必须重算，否则底边（重启/退出）会跑出可视区、连滚动条都够不到。
+   */
+  const fitMenu = () => {
+    const vr = getVisibleRect?.() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const top = Number.parseFloat(menu.style.top || "0") || 0;
+    menu.style.maxHeight = `${Math.max(60, Math.floor(vr.bottom - top - 8))}px`;
+    menu.style.overflowY = "auto";
+  };
+
   /** 收起全部子菜单（含嵌套层级） */
   const closeAllSubmenus = () => {
     menu.querySelectorAll(".pet-menu").forEach((el) => el.classList.add("hidden"));
@@ -85,10 +96,14 @@ export function setupContextMenu(
           // 直接看 DOM 判断展开状态，避免与"点击别处收起"产生状态不同步
           if (!sub.classList.contains("hidden")) {
             sub.classList.add("hidden");
+            fitMenu();
             return;
           }
           closeSiblings();
           sub.classList.remove("hidden");
+          // 展开后内容变高：重算高度（超出即滚动），并把新展开的子菜单滚进可视区
+          fitMenu();
+          sub.scrollIntoView({ block: "nearest" });
         });
 
         container.appendChild(row);
@@ -135,8 +150,7 @@ export function setupContextMenu(
     if (top < vr.top) top = vr.top;
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
-    menu.style.maxHeight = `${Math.max(40, vr.bottom - vr.top - 16)}px`;
-    menu.style.overflowY = "auto";
+    fitMenu();
   };
 
   const hide = (src = "?") => {
@@ -179,5 +193,6 @@ export function setupContextMenu(
     if (!target || !menu.contains(target)) return;
     if (target.closest(".mi")) return; // 行自身的点击逻辑已 stopPropagation
     closeAllSubmenus();
+    fitMenu();
   });
 }

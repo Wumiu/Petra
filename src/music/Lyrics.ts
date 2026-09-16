@@ -7,7 +7,7 @@
  *   - error        ：接口/网络失败（不写负缓存，下次还能再试）
  */
 import { invoke } from "@tauri-apps/api/core";
-import { parseLrc, pickBestLyrics, normalizeKey, type LyricLine, type LrclibItem } from "./LrcParser";
+import { parseLrc, pickBestLyrics, stripTitleLines, normalizeKey, type LyricLine, type LrclibItem } from "./LrcParser";
 
 // v2：缓存里同时保存译文
 const CACHE_KEY = "petra-lyrics-cache-v2";
@@ -102,7 +102,7 @@ export async function getLyrics(
 
   const best = pickBestLyrics(items, title, artist, durationMs);
   if (best && best.syncedLyrics) {
-    const lines = parseLrc(best.syncedLyrics);
+    const lines = stripTitleLines(parseLrc(best.syncedLyrics), title);
     if (lines.length > 0) {
       // 译文（网易云 tlyric）：与原文同时间戳，逐行对齐
       const trans = best.translatedLyrics ? parseLrc(best.translatedLyrics) : [];

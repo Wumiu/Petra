@@ -168,6 +168,20 @@ ok("lookupTranslation handles empty list", P.lookupTranslation([], 5000) === nul
 ok("lookupTranslation picks nearest of neighbours", P.lookupTranslation(trans, 10000) === "不管怎么做都好累啊", P.lookupTranslation(trans, 10000));
 ok("lookupTranslation respects tolerance", P.lookupTranslation(trans, 9000) === null, P.lookupTranslation(trans, 9000));
 
+// QQ/酷狗歌词：词/曲 制作行过滤
+const qqLrc = ["[00:00.00]晴天 (Live) - 周杰伦 (Jay Chou)", "[00:09.00]词：周杰伦", "[00:18.00]曲：周杰伦", "[00:27.01]故事的小黄花", "[00:30.41]从出生那年就飘着"].join("\n");
+const qqLines = P.parseLrc(qqLrc);
+ok("parseLrc drops 词/曲 credit lines", qqLines.length === 3, qqLines.map(function (l) { return l.text; }));
+ok("parseLrc keeps real lyric starting with 曲 only when no colon", P.parseLrc("[00:01.00]曲终人散的时候")[0].text === "曲终人散的时候");
+const stripped = P.stripTitleLines(qqLines, "晴天");
+ok("stripTitleLines removes title line", stripped.length === 2 && stripped[0].text === "故事的小黄花", stripped.map(function (l) { return l.text; }));
+ok("stripTitleLines keeps normal dashed lyric", P.stripTitleLines(P.parseLrc("[00:01.00]你走 - 我也走"), "晴天").length === 1);
+
+// HTML 实体解码
+ok("decodeEntities handles &#10;", P.decodeEntities("a&#10;b") === "a\nb");
+ok("decodeEntities handles &apos;", P.decodeEntities("it&apos;s") === "it's");
+ok("parseLrc decodes entities", P.parseLrc("[00:01.00]it&apos;s me")[0].text === "it's me");
+
 console.log("");
 console.log("music: pass=" + pass + " fail=" + fail);
 process.exit(fail > 0 ? 1 : 0);

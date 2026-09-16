@@ -22,12 +22,47 @@ export interface LrclibItem {
 
 const TAG_RE = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
 /** 网易云歌词常把制作信息写成第一行（"作曲 : xxx"），这类行不是歌词，过滤掉 */
-const CREDIT_RE = /^\s*(作词|作曲|编曲|制作人|出品|监制|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|弦乐|笛|OP|SP|PV|MV|企划|统筹|发行|文案|封面|插画|设计|特别感谢|原作|原曲)\s*[:：]/;
+const CREDIT_RE = /^\s*(作词|作曲|词曲|词|曲|编曲|制作人|制作|出品|监制|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|弦乐|笛|演唱|演奏|OP|SP|PV|MV|企划|统筹|发行|文案|封面|插画|设计|特别感谢|原作|原曲)\s*[:：]/;
+
+/** 解码 QQ 音乐等来源可能带的 HTML 实体（&#10; &apos; 等） */
+export function decodeEntities(text: string): string {
+  if (!text || text.indexOf("&") < 0) return text;
+  return text
+    .replace(/&#(\d+);/g, (_m, d: string) => {
+      const code = Number(d);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_m, h: string) => {
+      const code = parseInt(h, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * 去掉"标题行"：QQ / 酷狗歌词常把 "歌名 - 歌手" 作为第一行。
+ * 仅当该行以完整歌名开头且含分隔符时才丢弃，避免误删正常歌词。
+ */
+export function stripTitleLines(lines: LyricLine[], title: string): LyricLine[] {
+  const want = normalizeKey(title);
+  if (!want) return lines;
+  return lines.filter((l) => {
+    if (!/[-–—]/.test(l.text)) return true;
+    const head = normalizeKey(l.text.split(/[-–—]/)[0] ?? "");
+    return !(head && head.startsWith(want));
+  });
+}
 const PUNCT_RE = /[\s\u3000~!@#$%^&*()+\-=\[\]{};:'",.<>/?\\|！￥…（）—【】《》、？：“”；’]/g;
 
 /** 解析 LRC：支持一行多时间戳；跳过 [ar:][ti:] 等元信息与纯空行 */
-export function parseLrc(lrc: string): LyricLine[] {
-  if (!lrc) return [];
+export function parseLrc(raw: string): LyricLine[] {
+  if (!raw) return [];
+  const lrc = decodeEntities(raw);
   // [offset:±ms]：部分 LRC 用它标注与音频的整体偏差（正值 = 歌词应延后）
   let offsetMs = 0;
   const om = /\[offset:\s*([+-]?\d+)\s*\]/i.exec(lrc);
