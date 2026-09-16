@@ -174,11 +174,11 @@ export function registerEmotionReactor(cb: (tag: EmotionTag) => void): void {
   reactor = cb;
 }
 
-/** 触发情绪反应（节流：最小间隔 4s，避免动作刷屏） */
-export function reactNow(tag: EmotionTag): void {
+/** 触发情绪反应。关键游戏事件可 force 抢占普通节流，确保表情/动作与事件对应。 */
+export function reactNow(tag: EmotionTag, force = false): void {
   if (!reactor || tag === "neutral") return;
   const now = Date.now();
-  if (now - lastReactAt < REACT_MIN_INTERVAL_MS) return;
+  if (!force && now - lastReactAt < REACT_MIN_INTERVAL_MS) return;
   lastReactAt = now;
   reactor(tag);
 }
