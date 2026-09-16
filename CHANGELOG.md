@@ -6,6 +6,7 @@
 
 - 合并组员提交 74b85c6「upgrade riichi mahjong visuals and interactions」：立直麻将表现层重做（原创 SVG 牌面 tileAssets、手牌/摸牌/牌河/副露/宝牌指示/牌山牌背统一视觉）、引擎与视图交互改进、游戏内表情反应可抢占节流（reactNow force）、新增 tests/riichi-state.test.js 与 scripts/riichi-ui-smoke.mjs、scripts/riichi-round2-acceptance.mjs 验收脚本
 
+- 合并组员提交 96e297c「polish riichi visuals and interactions」：牌面换成 FluffyStuff/riichi-mahjong-tiles 的 Regular 牌组（Public Domain/CC0，随附许可证），37 个 SVG 资源；新增 scripts/riichi-visual-review.mjs 视觉验收脚本；游戏层允许 data-tauri-drag-region 拖拽窗口（capabilities 增加 core:window:allow-start-dragging）
 - 小助手能力放开与自知：新增 7 个工具——open_url（打开网址）、open_path（打开文件/文件夹）、list_installed_apps（列出可启动软件）、active_window_title（主人在用什么软件）、get_idle_seconds（离开多久）、send_notification（桌面通知）、lock_screen（锁屏）；其中前 4 类复用已有 Rust 命令，新增 3 个命令（list_installed_apps / open_path / lock_screen）
 - 系统提示重写：加入「你能做什么」能力清单（含麻将、歌词气泡、表情反馈等桌宠玩法），让小助手能回答"你会什么"；并新增「不要抢话题」规则
 - 修复"聊什么都绕到抽卡"：daily_card / view_diary 的工具描述改为"仅在用户明确要求时调用"，并在提示词中明确禁止在日常闲聊里主动提起抽卡/日记/天气
