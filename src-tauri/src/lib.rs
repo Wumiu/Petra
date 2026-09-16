@@ -1,5 +1,6 @@
 mod audio;
 mod launch;
+mod media;
 mod proxy;
 mod screen;
 mod trash;
@@ -1065,6 +1066,99 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
     .await
     .map_err(|e| format!("天气任务异常: {e}"))?
 }
+
+/// 查询参数百分号编码（避免引入额外依赖；只用于歌词接口的 query string）
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// 在线获取歌词（LRCLIB：免费、无需 API Key、含 LRC 时间戳）。
+/// 走 PowerShell Invoke-WebRequest，与 get_weather 一致：不新增 Rust HTTP 依赖，
+/// 也绕开 WebView 的跨域限制。先精确匹配 /api/get，失败再退到 /api/search。
+#[tauri::command]
+async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = title.trim().to_string();
+        let a = artist.trim().to_string();
+        if t.is_empty() {
+            return Err("缺少歌名".to_string());
+        }
+        let alb = album.unwrap_or_default().trim().to_string();
+
+        let get_url = format!(
+            "https://lrclib.net/api/get?track_name={}&artist_name={}&album_name={}",
+            url_encode(&t),
+            url_encode(&a),
+            url_encode(&alb)
+        );
+        let search_url = format!(
+            "https://lrclib.net/api/search?q={}",
+            url_encode(format!("{} {}", t, a).trim())
+        );
+        // 网易云音乐（用户实际使用的播放器，对日系同人/vocaloid/华语覆盖明显优于 LRCLIB）
+        let ne_url = format!(
+            "https://music.163.com/api/search/get/web?s={}&type=1&limit=5",
+            url_encode(&t)
+        );
+
+        // 临时文件名带时间戳，避免并发/重入时互相覆盖
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("petra_lyrics_{}_{}.json", std::process::id(), stamp));
+        let tmp_s = tmp.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&tmp);
+
+        // 取词顺序：① 网易云（歌名搜索 → 取前几首里第一首有 LRC 的）② LRCLIB 精确匹配 ③ LRCLIB 搜索
+        // 两个来源都返回"带时间戳的 LRC"，统一成同一形状交给前端挑选。
+        let ps = format!(
+            "$ProgressPreference='SilentlyContinue'; $uab='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'; $ua='Petra/0.2.3 (+https://github.com/Wumiu/Petra)'; $hdr=@{{ Referer='https://music.163.com/'; 'User-Agent'=$uab }}; $err=''; $ok=$false; $items=New-Object System.Collections.Generic.List[object]; try {{ $s=Invoke-WebRequest -Uri '{ne}' -Headers $hdr -TimeoutSec 8 -UseBasicParsing; $j=$s.Content | ConvertFrom-Json; $songs=@($j.result.songs); $cnt=[Math]::Min(3, @($songs).Count); $idx=0; while ($idx -lt $cnt -and $items.Count -lt 2) {{ $sg=$songs[$idx]; $idx++; try {{ $l=Invoke-WebRequest -Uri ('https://music.163.com/api/song/lyric?id=' + $sg.id + '&lv=1&kv=1&tv=-1') -Headers $hdr -TimeoutSec 8 -UseBasicParsing; $lj=$l.Content | ConvertFrom-Json; $ly=[string]$lj.lrc.lyric; if ($ly.Length -gt 20) {{ $items.Add([ordered]@{{ source='netease'; trackName=[string]$sg.name; artistName=[string]$sg.artists[0].name; albumName=''; duration=[int]($sg.duration / 1000); instrumental=$false; syncedLyrics=$ly; translatedLyrics=[string]$lj.tlyric.lyric; plainLyrics='' }}) }} }} catch {{ Start-Sleep -Milliseconds 300 }} }} }} catch {{ $err=$_.Exception.Message }}; if ($items.Count -gt 0) {{ [System.IO.File]::WriteAllText('{tmp}', ($items | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false))); $ok=$true }}; if (-not $ok) {{ $i=0; $urls=@('{get}','{search}'); while ($i -lt 2 -and -not $ok) {{ $u=$urls[$i]; $i++; try {{ Invoke-WebRequest -Uri $u -UserAgent $ua -TimeoutSec 8 -UseBasicParsing -OutFile '{tmp}' | Out-Null; $ok=$true }} catch {{ $err=$_.Exception.Message; Start-Sleep -Milliseconds 1200 }} }} }}; if ($ok) {{ 'OK' }} else {{ 'ERR ' + $err }}",
+            ne = ne_url,
+            get = get_url,
+            tmp = tmp_s,
+            search = search_url
+        );
+
+        let out = hidden_command("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .map_err(|e| format!("启动失败: {e}"))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+
+        let body = std::fs::read_to_string(&tmp).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp);
+        let body = body.trim_start_matches('\u{feff}').trim().to_string();
+
+        if body.is_empty() {
+            // PowerShell 的语法/网络错误走 stderr，带上它才能定位问题
+            let detail = if !stderr.is_empty() { stderr } else { stdout };
+            let detail: String = detail.chars().take(200).collect();
+            crate::log_line(&format!("[lyrics] 取歌词失败 {t} - {a}：{detail}"));
+            return Err(format!("歌词接口无响应（{detail}）"));
+        }
+        // 成功也记一行：便于区分"接口没查到"与"接口坏了"
+        crate::log_line(&format!(
+            "[lyrics] {t} - {a} → {} 字节，{}，来源{}",
+            body.len(),
+            if body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
+            if body.contains("\"source\":") && body.contains("netease") { "网易云" } else { "LRCLIB" }
+        ));
+        Ok(body)
+    })
+    .await
+    .map_err(|e| format!("歌词任务异常: {e}"))?
+}
 /// 定时关机（分钟后）。
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
@@ -1593,7 +1687,7 @@ pub fn run() {
             set_api_key, get_api_key, send_feedback, export_feedback,
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,
-            set_volume, send_notification, get_weather,
+            set_volume, send_notification, get_weather, fetch_lyrics,
             schedule_shutdown, cancel_shutdown,
         ])
         .setup(|app| {
@@ -1621,6 +1715,10 @@ pub fn run() {
             spawn_pet_mover(handle.clone());
             spawn_drag_follower(handle.clone());
             spawn_topmost_watcher(handle.clone());
+
+            // 正在播放媒体信息（SMTC）：与播放器窗口是否可见无关
+            let media_handle = app.handle().clone();
+            std::thread::spawn(move || media::start_media_poller(media_handle));
 
             let state = app.state::<AudioState>();
             let enabled = state.enabled.clone();

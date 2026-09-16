@@ -62,6 +62,10 @@ export interface Settings {
   modelParams: Record<string, Record<string, number>>;
   /** 模型自动行为开关（per-model） */
   modelAuto: Record<string, Record<string, boolean>>;
+  /** 歌词气泡：识别正在播放的歌并时不时弹出当前歌词（本地/在线歌词，无 token 消耗） */
+  musicLyrics: boolean;
+  /** 歌词翻译：在原文下方显示中文翻译（来源提供译文时才显示） */
+  lyricsTranslate: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -93,6 +97,8 @@ const DEFAULTS: Settings = {
   },
   modelParams: {},
   modelAuto: {},
+  musicLyrics: true,
+  lyricsTranslate: true,
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */

@@ -27,6 +27,7 @@ import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiK
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, setMiniGameLifecycle } from "./games/host";
+import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
 import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
@@ -327,9 +328,12 @@ function getWindowVisibleRect(): { left: number; top: number; right: number; bot
 function positionFloatingUi(
   toasts: HTMLElement | null,
   bubbles: HTMLElement | null,
+  lyric: HTMLElement | null,
   mr: { left: number; top: number; right: number; bottom: number; width: number; height: number },
   vr: { left: number; top: number; right: number; bottom: number },
 ) {
+  /** 小助手气泡占用的高度（歌词气泡要叠到它上方，避免互相遮挡） */
+  let bubblesHeight = 0;
   if (toasts && toasts.children.length > 0) {
     // bottom 是相对窗口底部的距离：可见范围 [innerHeight - vr.bottom, innerHeight - vr.top]
     const minBottom = window.innerHeight - vr.bottom + 8;
@@ -365,6 +369,26 @@ function positionFloatingUi(
     bubbles.style.top = `${Math.round(top)}px`;
     bubbles.style.bottom = "auto";
     bubbles.style.transform = "translateX(-50%)";
+    bubblesHeight = bh + 6;
+  }
+  if (lyric && lyric.children.length > 0) {
+    // 歌词气泡：优先贴在模型上方；小助手气泡也在时叠到它上面
+    const visibleW = vr.right - vr.left - 8;
+    lyric.style.maxWidth = `${Math.max(80, visibleW)}px`;
+    const lw = lyric.offsetWidth || 250;
+    const lh = lyric.offsetHeight || 44;
+    const idealCx = mr.left + mr.width / 2;
+    const minCx = vr.left + lw / 2 + 4;
+    const maxCx = vr.right - lw / 2 - 4;
+    const cx = minCx <= maxCx ? Math.max(minCx, Math.min(idealCx, maxCx)) : (vr.left + vr.right) / 2;
+    let top = mr.top - lh - 12 - bubblesHeight; // 模型上方（叠在小助手气泡之上）
+    if (top < vr.top) top = mr.top - lh - 12; // 叠层放不下 → 紧贴模型上方
+    if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
+    if (top + lh > vr.bottom) top = Math.max(vr.top, vr.bottom - lh - 4); // 仍放不下 → 钳制可见区
+    lyric.style.left = `${Math.round(cx)}px`;
+    lyric.style.top = `${Math.round(top)}px`;
+    lyric.style.bottom = "auto";
+    lyric.style.transform = "translateX(-50%)";
   }
 }
 
@@ -770,6 +794,9 @@ async function boot() {
   });
   void startAudio();
 
+  // 歌词气泡（SMTC 识别正在播放 + 在线歌词）
+  if (settings.musicLyrics) startMusicLyrics();
+
   // ---------- 交互 ----------
   setupTrashDrop(() => view, win, (path) => void importPsdFromPath(path));
   setupReminder();
@@ -1037,6 +1064,10 @@ function showAnnouncement(title: string, lines: string[], version: string) {
       dragOutsideFrames = 0;
     }
     updateModelBounds(cb);
+    // 歌词时钟：喂入音频能量（起播/循环/失准判定），不消耗 token
+    if (settings.musicLyrics) {
+      noteAudioLevel(Math.max(analyzer.bass, analyzer.mid, analyzer.treble), dt * 1000);
+    }
     driver.bass = analyzer.bass;
     driver.mid = analyzer.mid;
     driver.treble = analyzer.treble;
@@ -1054,6 +1085,7 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     driver.breathing = breathingPhase;
     driver.excited = engine.excitementValue;
     driver.mood = getMoodDriverValue();
+    driver.singing = isSinging();
     driver.idleTop = engine.isIdleTop;
     driver.idle = engine.isIdle;
     driver.dragging = !!drag && drag.moved;
@@ -1067,8 +1099,9 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     setVisibleRect(vr);
     const toasts = document.getElementById("toasts");
     const bubbles = document.getElementById("as-bubbles");
+    const lyricBubbles = document.getElementById("lyric-bubbles");
     if (!drag || !drag.moved) {
-      positionFloatingUi(toasts, bubbles, mr, vr);
+      positionFloatingUi(toasts, bubbles, lyricBubbles, mr, vr);
     }
     // 拖拽中所有打开的面板跟随模型位置
     if (drag && drag.moved) {
@@ -1098,7 +1131,7 @@ function showAnnouncement(title: string, lines: string[], version: string) {
         ib.style.top = `${Math.round(top)}px`;
         ib.style.bottom = "auto";
       }
-      positionFloatingUi(toasts, bubbles, mr, vr);
+      positionFloatingUi(toasts, bubbles, lyricBubbles, mr, vr);
       // 其他面板（model-panel、chat-history 等）
       document.querySelectorAll(".model-panel:not(.hidden), #chat-history-panel").forEach(el => {
         positionPanelNearModel(el as HTMLElement);
@@ -1591,9 +1624,43 @@ function buildMenu(engine: BehaviorEngine) {
       submenu: [
         {
           id: "audio",
-          label: "跟随音乐（未完善）",
+          label: "跟随音乐",
           state: settings.audioEnabled ? "开" : "关",
-          onPick: () => toggleAudio(!settings.audioEnabled),
+          submenu: [
+            {
+              id: "audio-follow",
+              label: "跟随音乐（未完善）",
+              state: settings.audioEnabled ? "开" : "关",
+              onPick: () => toggleAudio(!settings.audioEnabled),
+            },
+            {
+              id: "lyrics-bubble",
+              label: "歌词气泡",
+              state: settings.musicLyrics ? "开" : "关",
+              onPick: () => {
+                settings.musicLyrics = !settings.musicLyrics;
+                saveSettings(settings);
+                if (settings.musicLyrics) {
+                  startMusicLyrics();
+                  toast("歌词气泡已开启");
+                } else {
+                  stopMusicLyrics();
+                  toast("歌词气泡已关闭");
+                }
+              },
+            },
+            {
+              id: "lyrics-translate",
+              label: "歌词翻译",
+              state: settings.lyricsTranslate ? "开" : "关",
+              onPick: () => {
+                settings.lyricsTranslate = !settings.lyricsTranslate;
+                saveSettings(settings);
+                setLyricsTranslate(settings.lyricsTranslate);
+                toast(settings.lyricsTranslate ? "歌词显示中文翻译" : "歌词不再显示翻译");
+              },
+            },
+          ],
         },
         {
           id: "activity",

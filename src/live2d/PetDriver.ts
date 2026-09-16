@@ -24,6 +24,7 @@ export interface PetDriver {
   breathing: number; // 呼吸相位 0..2π
   excited: number; // 0..1 逗猫棒兴奋度（越高越投入）
   mood: number; // -1..1 心情（情感引擎：低=低落 高=开心），影响随机表情倾向
+  singing: boolean; // 跟唱中（有歌词在跟）：跳过随机单眼眨眼，眨眼交给自然眨眼（双眼、完整）
   idleTop: boolean; // 待机且倒挂（顶部待机 → 渲染旋转 180°）
   idle: boolean; // 待机模式（暂停随机表情、安静）
   dragging: boolean; // 拖拽中（下半身摆动）
@@ -68,6 +69,7 @@ export function idleDriver(): PetDriver {
     breathing: 0,
     excited: 0,
     mood: 0,
+    singing: false,
     idleTop: false,
     idle: false,
     dragging: false,

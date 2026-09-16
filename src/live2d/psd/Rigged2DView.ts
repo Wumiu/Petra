@@ -229,19 +229,27 @@ export class Rigged2DView implements PetView {
         this.bpmPhase += dt * (d.bpm / 60) * Math.PI * 2;
         bpmSway = Math.sin(this.bpmPhase) * 0.5;
       }
-      if (this.musicWinkT > 0) {
-        this.musicWinkT -= dt;
-        if (this.musicWinkT <= 0) this.musicWinkNext = 2 + Math.random() * 6;
-      } else if (this.musicWinkNext > 0) {
-        this.musicWinkNext -= dt;
-        if (this.musicWinkNext <= 0) {
-          this.musicWinkT = 0.35;
-          this.musicWinkSide = Math.random() < 0.5 ? "L" : "R";
+      // 跟唱时不打随机单眼眨眼：0.35s 的单眼脉冲会被缓动吃掉大半，
+      // 看起来就是"只微微眨一只眼"。此时交给自然眨眼（双眼，完整）。
+      if (d.singing !== true) {
+        if (this.musicWinkT > 0) {
+          this.musicWinkT -= dt;
+          if (this.musicWinkT <= 0) this.musicWinkNext = 2 + Math.random() * 6;
+        } else if (this.musicWinkNext > 0) {
+          this.musicWinkNext -= dt;
+          if (this.musicWinkNext <= 0) {
+            this.musicWinkT = 0.35;
+            this.musicWinkSide = Math.random() < 0.5 ? "L" : "R";
+          }
+        } else {
+          this.musicWinkNext = 2 + Math.random() * 6;
         }
+        winkClose = this.musicWinkT > 0 ? 1 : 0;
       } else {
+        winkClose = 0;
+        this.musicWinkT = 0;
         this.musicWinkNext = 2 + Math.random() * 6;
       }
-      winkClose = this.musicWinkT > 0 ? 1 : 0;
     }
 
     // ---- 下半身摆动 ----

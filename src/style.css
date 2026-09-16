@@ -96,6 +96,17 @@ body {
   margin: 2px 0;
   z-index: 201;
 }
+
+/* 二级以下子菜单：底色略淡 + 轻微缩进，区分层级 */
+.pet-menu .pet-menu .pet-menu {
+  min-width: 132px;
+  margin: 2px 0 2px 6px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: none;
+}
+.pet-menu .mi-nested {
+  font-size: 12.5px;
+}
 .mi:hover,
 .mi.hover {
   background: rgba(255, 185, 210, 0.45);
@@ -1570,5 +1581,44 @@ body {
   white-space: pre-line;
   text-align: center;
 }
+/* ========== 歌词气泡（正在播放 / 当前歌词行） ========== */
+.lyric-bubbles {
+  top: 40px;
+  bottom: auto;
+  width: 250px;
+  align-items: center;
+}
+.as-lyric {
+  align-self: center;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.45;
+  max-width: 100%;
+}
+.as-lyric-song {
+  background: linear-gradient(135deg, #eef4ff, #e2ecff);
+  color: #33456b;
+  font-weight: 600;
+}
+.as-lyric-line {
+  background: rgba(255, 255, 255, 0.95);
+  color: #3a2a45;
+}
+/* 译文：单独一行放在原文下方，字号更小、颜色更淡 */
+.as-lyric-orig {
+  font-size: 12.5px;
+}
+.as-lyric-trans {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #7a6a86;
+}
+.as-lyric-hint {
+  background: rgba(255, 246, 226, 0.95);
+  color: #7a5a2a;
+  font-size: 11.5px;
+}
+
 
 

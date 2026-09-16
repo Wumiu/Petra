@@ -25,21 +25,31 @@ export function setupContextMenu(
   const menu = document.getElementById("menu") as HTMLElement;
   let visible = false;
 
-  const render = () => {
-    menu.innerHTML = "";
-    for (const item of build()) {
+  /** 收起全部子菜单（含嵌套层级） */
+  const closeAllSubmenus = () => {
+    menu.querySelectorAll(".pet-menu").forEach((el) => el.classList.add("hidden"));
+  };
+
+  /**
+   * 递归渲染菜单项：支持多级子菜单（手风琴式向下展开，样式见 .pet-menu .pet-menu）。
+   * 子菜单容器插在父行后面（.mi 是 flex 容器，放进去会被横向排到右侧）。
+   */
+  const renderItems = (items: MenuItemSpec[], container: HTMLElement, depth: number) => {
+    for (const item of items) {
       if (item.separator) {
         const sep = document.createElement("div");
         sep.className = "sep";
-        menu.appendChild(sep);
+        container.appendChild(sep);
         continue;
       }
       const row = document.createElement("div");
-      row.className = `mi${item.danger ? " danger" : ""}`;
-      let sub: HTMLElement | null = null; // 子菜单容器（有子菜单的项）
+      row.className = `mi${item.danger ? " danger" : ""}${depth > 0 ? " mi-nested" : ""}`;
+      if (depth > 0) row.style.paddingLeft = `${10 + depth * 12}px`;
+
       const labelSpan = document.createElement("span");
       labelSpan.textContent = item.label ?? "";
       row.appendChild(labelSpan);
+
       if (item.state !== undefined) {
         const stateSpan = document.createElement("span");
         stateSpan.className = "state";
@@ -50,72 +60,53 @@ export function setupContextMenu(
         }
         row.appendChild(stateSpan);
       }
+
       if (item.submenu && item.submenu.length) {
         const arrow = document.createElement("span");
         arrow.className = "state";
         arrow.textContent = "▶";
         row.appendChild(arrow);
-        sub = document.createElement("div");
-        sub.className = "pet-menu hidden"; // 手风琴式：父项下方静态展开
-        // 子菜单插到 menu（row 之后，随主菜单纵向排列）
-        for (const child of item.submenu) {
-          if (child.separator) {
-            const s = document.createElement("div");
-            s.className = "sep";
-            sub.appendChild(s);
-            continue;
+
+        const sub = document.createElement("div");
+        sub.className = "pet-menu submenu-level hidden";
+        renderItems(item.submenu, sub, depth + 1);
+
+        // 收起同级其它分支（连同它们已展开的深层分支）
+        const closeSiblings = () => {
+          for (const el of Array.from(container.children)) {
+            if (!(el instanceof HTMLElement) || !el.classList.contains("pet-menu")) continue;
+            el.classList.add("hidden");
+            el.querySelectorAll(".pet-menu").forEach((deep) => deep.classList.add("hidden"));
           }
-          const sr = document.createElement("div");
-          sr.className = `mi${child.danger ? " danger" : ""}`;
-          const sl = document.createElement("span");
-          sl.textContent = child.label ?? "";
-          sr.appendChild(sl);
-          if (child.state !== undefined) {
-            const st = document.createElement("span");
-            st.className = "state";
-            st.textContent = child.state;
-            sr.appendChild(st);
-          }
-          sr.addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            hide("submenu-click");
-            child.onPick?.();
-          });
-          sub.appendChild(sr);
-        }
-        // 子菜单不放入 row（.mi 是 flex 容器会把它横向排到右侧），
-        // 改为插到 row 后面，随主菜单纵向排列
-        let subOpen = false;
-        // 点击父项切换子菜单，点击其他地方关闭
-        const closeAllSubs = () => {
-          menu.querySelectorAll(".pet-menu").forEach((el) => el.classList.add("hidden"));
-          subOpen = false;
         };
+
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          
-          if (!sub) return;
-          if (subOpen) {
+          // 直接看 DOM 判断展开状态，避免与"点击别处收起"产生状态不同步
+          if (!sub.classList.contains("hidden")) {
             sub.classList.add("hidden");
-            subOpen = false;
-          } else {
-            closeAllSubs();
-            sub.classList.remove("hidden");
-            subOpen = true;
+            return;
           }
+          closeSiblings();
+          sub.classList.remove("hidden");
         });
-        // 点击子菜单外任何地方关闭所有子菜单
-        document.addEventListener("click", closeAllSubs, { once: true });
+
+        container.appendChild(row);
+        container.appendChild(sub);
       } else {
-        row.addEventListener("click", () => {
+        row.addEventListener("click", (ev) => {
+          ev.stopPropagation();
           hide("row-click");
           item.onPick?.();
         });
+        container.appendChild(row);
       }
-      // row 和子菜单一起插入（sub 在 row 后，纵向展开）
-      menu.appendChild(row);
-      if (sub) menu.appendChild(sub);
     }
+  };
+
+  const render = () => {
+    menu.innerHTML = "";
+    renderItems(build(), menu, 0);
   };
 
   const showAt = async (x: number, y: number) => {
@@ -179,5 +170,14 @@ export function setupContextMenu(
   // Native watcher 检测光标移出整个窗口后关闭菜单。
   document.addEventListener("menu-hide-request", () => {
     if (visible) hide("cursor-outside");
+  });
+
+  // 菜单内非菜单行的空白处点击 → 收起所有子菜单
+  document.addEventListener("click", (e) => {
+    if (!visible) return;
+    const target = e.target as HTMLElement | null;
+    if (!target || !menu.contains(target)) return;
+    if (target.closest(".mi")) return; // 行自身的点击逻辑已 stopPropagation
+    closeAllSubmenus();
   });
 }
