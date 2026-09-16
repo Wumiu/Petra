@@ -22,7 +22,7 @@ ok("136 tiles remain accounted for after dealer draw", game.wall.length + game.d
 });
 
 const faces = Array.from({ length: 34 }, function (_, tile) { return A.tileFaceSrc(tile); });
-ok("all 34 tile kinds have unique SVG image resources", faces.every(function (src) { return src.startsWith("data:image/svg+xml"); }) && new Set(faces).size === 34, new Set(faces).size);
+ok("all 34 tile kinds have unique SVG image resources", faces.every(function (src) { return /^\/mahjong\/tiles\/.+\.svg$/.test(src); }) && new Set(faces).size === 34, new Set(faces).size);
 ok("red-five artwork is mapped separately without enabling it in the wall", [4, 13, 22].every(function (tile) { return A.tileFaceSrc(tile, true) !== A.tileFaceSrc(tile, false); }), null);
 
 const privacyGame = new RiichiGame();

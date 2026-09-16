@@ -1425,7 +1425,10 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: move;
 }
+.mg-head button { cursor: pointer; }
+.mg-title, .mg-score, .mg-handno { pointer-events: none; }
 .mg-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 750; letter-spacing: .5px; }
 .mg-title-mark {
   display: grid;
@@ -1538,12 +1541,12 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-tile {
   position: relative;
   flex: none;
-  width: 35px;
-  height: 49px;
+  width: 36px;
+  height: 48px;
   padding: 0;
   border-radius: 5px;
-  background: #e8dfc8;
-  box-shadow: 0 2px 0 #bbb096, 0 5px 6px rgba(0,0,0,.35);
+  background: linear-gradient(180deg, #fffdf7, #f1ede3);
+  box-shadow: 0 2px 0 #bbb096, 0 5px 6px rgba(0,0,0,.3);
   transform-style: preserve-3d;
   transition: transform .13s ease, filter .13s ease;
 }
@@ -1554,20 +1557,21 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   left: 2px;
   right: -2px;
   bottom: -4px;
-  height: 8px;
+  height: 7px;
   border-radius: 0 0 5px 5px;
-  background: linear-gradient(#c7bda3, #958a72);
-  transform: skewX(-10deg);
+  background: linear-gradient(#d0c7b2, #9c9179);
+  transform: skewX(-9deg);
 }
-.mg-tile-art { display: block; width: 100%; height: 100%; object-fit: fill; border-radius: inherit; pointer-events: none; }
-.mg-tile-sm { width: 27px; height: 38px; }
-.mg-tile-xs { width: 21px; height: 30px; border-radius: 3px; box-shadow: 0 1px 0 #aaa089, 0 3px 4px rgba(0,0,0,.28); }
-.mg-tile-xs::after { bottom: -2px; height: 5px; }
+.mg-tile-back { background: #155b4e; }
+.mg-tile-art { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.mg-tile-sm { width: 28.5px; height: 38px; }
+.mg-tile-xs { width: 22.5px; height: 30px; }
 .mg-tile-click { cursor: pointer; }
 .mg-tile-click:hover,
-.mg-tile-click:focus-within { z-index: 5; transform: translateY(-9px) rotateX(-5deg); filter: brightness(1.08); }
-.mg-tile-drawn { margin-left: 7px; }
-.mg-tile-riichi-candidate { box-shadow: 0 0 0 2px rgba(255,211,94,.62), 0 5px 7px rgba(0,0,0,.35); }
+.mg-tile-click:focus-visible { z-index: 5; transform: translateY(-3px); filter: brightness(1.07) drop-shadow(0 0 3px rgba(255,224,120,.55)); }
+.mg-tile-click:active { filter: brightness(1.12) drop-shadow(0 0 4px rgba(255,224,120,.72)); }
+.mg-tile-drawn { margin-left: 6px; }
+.mg-tile-riichi-candidate { filter: drop-shadow(0 0 3px rgba(255,211,94,.72)); }
 .mg-tile-sideways { transform: rotate(90deg); margin: 2px 5px; z-index: 2; }
 
 .mg-melds { position: absolute; z-index: 5; display: flex; align-items: flex-end; gap: 10px; }
@@ -1576,7 +1580,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-meld { position: relative; display: flex; align-items: flex-end; gap: 0; padding-top: 10px; }
 .mg-meld::before { content: attr(data-kind); position: absolute; top: -1px; left: 2px; font-size: 8px; color: rgba(255,255,255,.65); }
 
-.mg-river-zone { position: absolute; z-index: 3; left: 50%; width: 178px; min-height: 90px; transform: translateX(-50%); }
+.mg-river-zone { position: absolute; z-index: 3; left: 50%; width: 184px; min-height: 108px; transform: translateX(-50%); }
 .mg-river-zone-pet { top: 157px; transform: translateX(-50%) rotate(180deg); }
 .mg-river-zone-me { bottom: 101px; }
 .mg-river { display: grid; grid-template-columns: repeat(6, 23px); grid-auto-rows: 33px; gap: 2px 5px; justify-content: center; }
@@ -1588,22 +1592,22 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-center {
   position: absolute;
   z-index: 3;
-  left: 50%;
+  left: 53px;
   top: 50%;
-  width: 102px;
-  height: 84px;
-  transform: translate(-50%, -50%);
+  width: 86px;
+  min-height: 64px;
+  transform: translateY(-50%);
   box-sizing: border-box;
-  padding: 7px;
+  padding: 5px 6px;
   text-align: center;
   border: 2px solid #bd9b58;
   border-radius: 8px;
   color: #e8e1c7;
   background: linear-gradient(145deg, #202d2a, #101816);
   box-shadow: 0 5px 12px rgba(0,0,0,.38), inset 0 0 0 1px rgba(255,255,255,.08);
-  font-size: 9px;
+  font-size: 8px;
 }
-.mg-round { color: #ffdc77; font: 800 19px/1.1 KaiTi, STKaiti, serif; }
+.mg-round { color: #ffdc77; font: 800 15px/1.1 KaiTi, STKaiti, serif; }
 .mg-wall-count { margin-top: 2px; font-weight: 700; }
 .mg-sticks,.mg-dora-text { margin-top: 2px; opacity: .76; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -1630,7 +1634,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-dead-stack .mg-tile:first-child { top: 3px; }
 .mg-dead-stack .mg-tile:last-child { top: 0; }
 
-.mg-log { position: absolute; z-index: 3; left: 54px; top: 277px; width: 155px; color: rgba(242,248,239,.68); font-size: 8px; line-height: 1.45; }
+.mg-log { position: absolute; z-index: 3; left: 53px; top: calc(50% + 38px); width: 116px; color: rgba(242,248,239,.68); font-size: 8px; line-height: 1.45; }
 .mg-log-line { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 .mg-actions {
@@ -1671,8 +1675,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 
 .mg-motion .mg-anim-draw { animation: mg-draw-in .22s ease-out; }
 .mg-motion .mg-anim-discard { animation: mg-discard-in .22s cubic-bezier(.2,.85,.25,1.25); }
-.mg-motion[data-event="call"] .mg-meld:last-child,
-.mg-motion[data-event="kan"] .mg-meld:last-child { animation: mg-call-in .3s ease-out; }
+.mg-motion .mg-anim-call { animation: mg-call-in .3s ease-out; }
 .mg-motion[data-event="riichi"] .mg-center { animation: mg-riichi-flash .5s ease-out; }
 .mg-motion[data-event="win"] .mg-banner { animation: mg-win-in .42s cubic-bezier(.2,.9,.3,1.15); }
 @keyframes mg-draw-in { from { opacity: .2; transform: translate(24px,-12px) rotate(7deg); } }
@@ -1689,10 +1692,12 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-title > span:last-child, .mg-handno { display: none; }
   .mg-head { gap: 4px; }
   .mg-btn-sm { padding-inline: 5px; }
-  .mg-tile { width: 30px; height: 43px; }
+  .mg-tile { width: 30px; height: 40px; }
   .mg-hand { gap: 0; }
   .mg-wall-left { left: 23px; }
   .mg-wall-right { right: 23px; }
+  .mg-center { left: 40px; width: 78px; }
+  .mg-log { left: 40px; width: 102px; }
 }
 /* ========== 歌词气泡（正在播放 / 当前歌词行） ========== */
 .lyric-bubbles {
