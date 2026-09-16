@@ -668,6 +668,9 @@ async function boot() {
     }
     const action = emotionToAction(tag);
     if (action) view.playAction(action, false);
+    if (import.meta.env.DEV) {
+      document.dispatchEvent(new CustomEvent("petra-emotion-reacted", { detail: { tag, action } }));
+    }
   });
   // 启动一律正常站立（不自动恢复待机）
   if (settings.idleMode) {

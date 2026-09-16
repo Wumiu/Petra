@@ -44,6 +44,7 @@ export function openMiniGame(id: string): boolean {
   root.dataset.petraInteractive = "minigame";
   root.addEventListener("pointerdown", (e) => e.stopPropagation());
   document.body.appendChild(root);
+  document.body.classList.add("mg-active");
   overlay = root;
   const ctx: MiniGameContext = { root, close: () => closeMiniGame() };
   let instance: MiniGameInstance = {};
@@ -53,6 +54,7 @@ export function openMiniGame(id: string): boolean {
     console.warn("[小游戏] 启动失败：", err);
     root.remove();
     overlay = null;
+    document.body.classList.remove("mg-active");
     return false;
   }
   active = { id, instance };
@@ -74,6 +76,7 @@ export function closeMiniGame(silent = false): void {
     overlay.remove();
     overlay = null;
   }
+  document.body.classList.remove("mg-active");
   if (!silent) onCloseCb?.();
 }
 
