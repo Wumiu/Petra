@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- 合并组员提交 74b85c6「upgrade riichi mahjong visuals and interactions」：立直麻将表现层重做（原创 SVG 牌面 tileAssets、手牌/摸牌/牌河/副露/宝牌指示/牌山牌背统一视觉）、引擎与视图交互改进、游戏内表情反应可抢占节流（reactNow force）、新增 tests/riichi-state.test.js 与 scripts/riichi-ui-smoke.mjs、scripts/riichi-round2-acceptance.mjs 验收脚本
+
 - 右键菜单支持多级子菜单：此前渲染器只处理一层，写在子项里的 submenu 会被静默忽略（"跟随音乐"点了没反应就是这个原因）；现在可逐级手风琴展开，并新增第二级以下的层级样式
 - 🎵 歌词气泡：识别当前正在播放的歌曲并在桌宠旁时不时弹出当前歌词行（右键菜单 → 交互 → 跟随音乐 → 歌词气泡）
 - 🈶 歌词翻译：可在「跟随音乐 → 歌词翻译」开关；译文来自网易云 tlyric（与原文同时间戳），按行对齐后**显示在原文下方**（字号更小、颜色更淡），不是接在原文后面；来源没有译文时就只显示原文
