@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, extractCommand, stripCommand, PROVIDERS, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
-import { classifyEmotion, reactNow, emotionEmoji, boostMood, getMood } from "./EmotionEngine";
+import { classifyEmotion, classifyAssistantEmotion, reactNow, emotionEmoji, boostMood, getMood } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
@@ -484,7 +484,7 @@ async function send(text: string) {
       const finalText = loading.textContent || res.text;
       history.push({ role: "assistant", content: finalText });
       // 情感反馈：AI 回复带情绪 → 角色表情/动作 + 气泡 emoji 前缀 + 气泡着色 + 心情变化
-      const aiEmo = classifyEmotion(finalText);
+      const aiEmo = classifyAssistantEmotion(finalText);
       if (aiEmo !== "neutral") {
         reactNow(aiEmo);
         loading.textContent = `${emotionEmoji(aiEmo)} ${finalText}`;
@@ -908,7 +908,7 @@ export async function triggerProactive() {
     }
     saveMemory();
     boostMood("greeting_sent");
-    const emo = classifyEmotion(bubble.textContent);
+    const emo = classifyAssistantEmotion(bubble.textContent);
     if (emo !== "neutral") {
       reactNow(emo);
       bubble.dataset.emotion = emo;
@@ -945,7 +945,7 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       bubble.textContent += d;
     }, false);
-    const emo = classifyEmotion(bubble.textContent);
+    const emo = classifyAssistantEmotion(bubble.textContent);
     if (emo !== "neutral") {
       reactNow(emo);
       bubble.dataset.emotion = emo;

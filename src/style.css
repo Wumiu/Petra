@@ -1373,14 +1373,16 @@ body {
   transform: scale(1.1);
 }
 /* ========== 气泡情绪着色（情感引擎 data-emotion） ========== */
-.as-bubble[data-emotion="happy"] { background: linear-gradient(135deg, #fff7e8, #ffe9d6); }
-.as-bubble[data-emotion="sad"] { background: linear-gradient(135deg, #eef2fb, #dfe7f8); }
-.as-bubble[data-emotion="angry"] { background: linear-gradient(135deg, #ffe9e9, #ffd9d9); }
-.as-bubble[data-emotion="surprised"] { background: linear-gradient(135deg, #f4eaff, #e7d6ff); }
-.as-bubble[data-emotion="shy"] { background: linear-gradient(135deg, #ffeef7, #ffdff0); }
-.as-bubble[data-emotion="tired"] { background: linear-gradient(135deg, #f0f3f7, #e2e8f0); }
-.as-bubble[data-emotion="love"] { background: linear-gradient(135deg, #ffeaf4, #ffd3e6); }
-.as-bubble[data-emotion="worried"] { background: linear-gradient(135deg, #eef7f4, #d9efe9); }
+/* 左侧 3px 彩条 + 更饱和的渐变色，让情绪一眼可见 */
+.as-bubble[data-emotion] { border-left: 3px solid transparent; }
+.as-bubble[data-emotion="happy"] { background: linear-gradient(135deg, #fff1d6, #ffdfae); border-left-color: #f2b34d; }
+.as-bubble[data-emotion="sad"] { background: linear-gradient(135deg, #e8eefb, #d3dff6); border-left-color: #7d9ad6; }
+.as-bubble[data-emotion="angry"] { background: linear-gradient(135deg, #ffe2e2, #ffc9c9); border-left-color: #e06a6a; }
+.as-bubble[data-emotion="surprised"] { background: linear-gradient(135deg, #efe0ff, #ddc4ff); border-left-color: #a97ad8; }
+.as-bubble[data-emotion="shy"] { background: linear-gradient(135deg, #ffe6f2, #ffcde6); border-left-color: #e07ab0; }
+.as-bubble[data-emotion="tired"] { background: linear-gradient(135deg, #eaeef3, #d8dfe8); border-left-color: #8fa0b5; }
+.as-bubble[data-emotion="love"] { background: linear-gradient(135deg, #ffe3f0, #ffc7de); border-left-color: #e8709f; }
+.as-bubble[data-emotion="worried"] { background: linear-gradient(135deg, #e6f6f0, #cdeadf); border-left-color: #5fb99a; }
 
 /* ========== 立直麻将：2.5D 全窗口牌桌 ========== */
 .mg-view {

@@ -1,6 +1,7 @@
 /** 歌词模块单元测试（Node，ASCII 输出）：npm run test:music */
-const P = require("./build/LrcParser.js");
-const { LyricClock } = require("./build/LyricClock.js");
+const P = require("./build/music/LrcParser.js");
+const E = require("./build/assistant/EmotionEngine.js");
+const { LyricClock } = require("./build/music/LyricClock.js");
 
 let pass = 0;
 let fail = 0;
@@ -181,6 +182,21 @@ ok("stripTitleLines keeps normal dashed lyric", P.stripTitleLines(P.parseLrc("[0
 ok("decodeEntities handles &#10;", P.decodeEntities("a&#10;b") === "a\nb");
 ok("decodeEntities handles &apos;", P.decodeEntities("it&apos;s") === "it's");
 ok("parseLrc decodes entities", P.parseLrc("[00:01.00]it&apos;s me")[0].text === "it's me");
+
+// 情绪识别：用户侧保持严格，桌宠说话侧要能命中常见回复
+ok("user side: neutral for 好的", E.classifyEmotion("好的") === "neutral");
+ok("user side: happy for 哈哈", E.classifyEmotion("哈哈哈哈") === "happy");
+ok("user side: worried for 我好担心", E.classifyEmotion("我好担心考试") === "worried");
+ok("assistant side: 好的啦 -> happy", E.classifyAssistantEmotion("好的啦") === "happy", E.classifyAssistantEmotion("好的啦"));
+ok("assistant side: 已经帮你打开啦 -> happy", E.classifyAssistantEmotion("已经帮你打开网易云音乐啦") === "happy");
+ok("assistant side: wave tail -> happy", E.classifyAssistantEmotion("我记住咯～") === "happy");
+ok("assistant side: 别担心 -> worried", E.classifyAssistantEmotion("别担心，我陪着你") === "worried");
+ok("assistant side: 早点休息 -> worried", E.classifyAssistantEmotion("记得早点休息哦") === "worried");
+ok("assistant side: 抱歉 -> sad", E.classifyAssistantEmotion("抱歉，这个我做不到") === "sad");
+ok("assistant side: 当然 -> happy", E.classifyAssistantEmotion("当然可以！") === "happy");
+ok("assistant side: 咦 -> surprised", E.classifyAssistantEmotion("咦，你怎么知道的") === "surprised");
+ok("assistant side: 哼 -> angry", E.classifyAssistantEmotion("哼！人家才不呢") === "angry");
+ok("assistant side: plain text stays neutral", E.classifyAssistantEmotion("今天天气不错") === "neutral", E.classifyAssistantEmotion("今天天气不错"));
 
 console.log("");
 console.log("music: pass=" + pass + " fail=" + fail);

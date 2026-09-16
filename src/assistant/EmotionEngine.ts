@@ -47,6 +47,32 @@ export function classifyEmotion(text: string): EmotionTag {
   return "neutral";
 }
 
+/**
+ * 面向"桌宠自己说话"的规则：AI 回复大多是功能性句子（"好的"、"已经帮你打开了"），
+ * 用上面那套"用户情绪"规则几乎命中不了，所以单独放宽：
+ * 关心安慰、抱歉、娇嗔、成功语气、人设语气词（～/啦/呀/！结尾）都算情绪。
+ */
+const ASSISTANT_EMOTION_RULES: Array<{ tag: EmotionTag; pattern: RegExp }> = [
+  { tag: "worried",   pattern: /别担心|不用担心|没事的|会好起来|注意身体|早点休息|早点睡|别熬夜|少熬夜|多喝水|多休息|照顾好自己|小心点|辛苦了|辛苦啦|加油|摸摸头|我陪着你|有我在|心疼/ },
+  { tag: "love",      pattern: /爱你|最喜欢你|想你|亲亲|么么|抱抱|贴贴|比心|❤|💕|💖|🥰|😘/ },
+  { tag: "sad",       pattern: /抱歉|对不起|不好意思|没能|没帮上|可惜|遗憾|呜呜|难过|😢|🥺/ },
+  { tag: "angry",     pattern: /哼[！!～~]?|讨厌啦|坏蛋|不理你了|生气了|气死我了|😠|😤/ },
+  { tag: "surprised", pattern: /咦|诶|欸|哦？|喔？|哇[！!～~]?|居然|竟然|原来|天哪|天呐|没想到|😲|😮/ },
+  { tag: "shy",       pattern: /害羞|脸红|羞羞|别夸我|哪有|😳/ },
+  { tag: "tired",     pattern: /好困|困了|想睡|睡啦|熬夜|好累|😪|😴|🥱/ },
+  { tag: "happy",     pattern: /哈哈|嘻嘻|嘿嘿|开心|高兴|太好了|太棒|真棒|好耶|没问题|当然|乐意|交给我|包在我身上|好嘞|好的呀|搞定|完成啦|好啦|这就去|马上[就去]|😊|😄|😆|😁|🎉|✌|[～~]$|[呀啦呢]$|[！!]$/ },
+];
+
+/** 桌宠回复的情绪识别：先用"说话侧"规则，再退回通用规则 */
+export function classifyAssistantEmotion(text: string): EmotionTag {
+  if (!text) return "neutral";
+  const t = text.trim();
+  for (const { tag, pattern } of ASSISTANT_EMOTION_RULES) {
+    if (pattern.test(t)) return tag;
+  }
+  return classifyEmotion(t);
+}
+
 /** 情绪 → 气泡 emoji 前缀 */
 export function emotionEmoji(tag: EmotionTag): string {
   switch (tag) {
