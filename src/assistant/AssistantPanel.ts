@@ -573,7 +573,9 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
   const invokeTool = async (tcItem: ToolCall, name: string, args: Record<string, unknown> = {}) => {
     try {
       const result = await invoke<string>(name, args);
-      history.push({ role: "tool", tool_call_id: tcItem.id, content: result });
+      // tool 消息的 content 必须是字符串：数字/对象类返回值（如空闲秒数）统一转成文本
+      const text = typeof result === "string" ? result : JSON.stringify(result);
+      history.push({ role: "tool", tool_call_id: tcItem.id, content: text });
     } catch (e) {
       history.push({ role: "tool", tool_call_id: tcItem.id, content: `失败：${e}` });
     }
@@ -707,6 +709,30 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
       } catch (e) {
         history.push({ role: "tool", tool_call_id: tc.id, content: `打开失败：${e}` });
       }
+    }
+    if (tc.name === "open_url") {
+      await invokeTool(tc, "open_url", { url: String(tc.args.url || "") });
+    }
+    if (tc.name === "open_path") {
+      await invokeTool(tc, "open_path", { path: String(tc.args.path || "") });
+    }
+    if (tc.name === "list_installed_apps") {
+      await invokeTool(tc, "list_installed_apps");
+    }
+    if (tc.name === "active_window_title") {
+      await invokeTool(tc, "active_window_title");
+    }
+    if (tc.name === "get_idle_seconds") {
+      await invokeTool(tc, "get_idle_seconds");
+    }
+    if (tc.name === "send_notification") {
+      await invokeTool(tc, "send_notification", {
+        title: String(tc.args.title || "Petra"),
+        body: String(tc.args.body || ""),
+      });
+    }
+    if (tc.name === "lock_screen") {
+      await invokeTool(tc, "lock_screen");
     }
     if (tc.name === "daily_card") {
       try {

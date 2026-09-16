@@ -1306,6 +1306,43 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
     .await
     .map_err(|e| format!("歌词任务异常: {e}"))?
 }
+/// 列出开始菜单里可启动的软件（供小助手回答"你能打开什么"并按正确名称调用）
+#[tauri::command]
+fn list_installed_apps() -> String {
+    let mut names = launch::list_applications();
+    let total = names.len();
+    names.truncate(60);
+    if total == 0 {
+        return "没有在开始菜单里找到快捷方式".to_string();
+    }
+    let tail = if total > names.len() { "（仅列出前 60 个）" } else { "" };
+    format!("开始菜单里可启动的软件共 {total} 个{tail}：{}", names.join("、"))
+}
+
+/// 用系统默认程序打开文件或文件夹（路径必须存在，避免误开未知目标）
+#[tauri::command]
+fn open_path(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    hidden_command("cmd")
+        .args(["/C", "start", "", &path])
+        .spawn()
+        .map_err(|e| format!("打开失败: {e}"))?;
+    Ok(format!("已打开 {path}"))
+}
+
+/// 锁定屏幕
+#[tauri::command]
+fn lock_screen() -> Result<String, String> {
+    hidden_command("rundll32.exe")
+        .args(["user32.dll,LockWorkStation"])
+        .spawn()
+        .map_err(|e| format!("锁屏失败: {e}"))?;
+    Ok("已锁屏".to_string())
+}
+
 /// 定时关机（分钟后）。
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
@@ -1835,6 +1872,7 @@ pub fn run() {
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,
             set_volume, send_notification, get_weather, fetch_lyrics,
+            list_installed_apps, open_path, lock_screen,
             schedule_shutdown, cancel_shutdown,
         ])
         .setup(|app| {

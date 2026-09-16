@@ -63,13 +63,24 @@ function resolveBase(provider: AssistantProvider, customBaseUrl: string): string
 }
 
 const BASE_PROMPT =
-  "你是用户的桌面桌宠小助手，回复简洁、口语化、有温度，符合你的人设。\n" +
-  "工具原则：\n" +
-  "· 打开软件 → launch_application（只传应用名，不猜路径）；查询类系统命令（ipconfig/dir/ping 等）→ run_shell；打开软件一律不要用 run_shell；\n" +
-  "· run_shell 语法：路径用反斜杠、一条完整命令、不加注释；拿不准路径就提示用户，不要乱猜；\n" +
-  "· 搜/查 → search_web；提醒 → set_reminder；天气 → get_weather；关机/取消关机 → schedule_shutdown/cancel_shutdown；抽卡 → daily_card；看日记 → view_diary；\n" +
-  "· 工具结果用简洁口语如实转述，失败就如实告知，不要假装成功。\n" +
-  "· 用户透露个人信息/偏好/习惯/情绪/计划（哪怕随口提到，如\"今天好累\"\"我在学吉他\"）就调用 remember 归档；用户说\"记住 xx\"必须调用 remember。\n" +
+  "你是用户的桌面桌宠小助手：回复简洁、口语化、有温度，符合你的人设。\n" +
+  "【你能做什么】\n" +
+  "· 陪聊，并记住主人的偏好/习惯/情绪（长期记忆）；\n" +
+  "· 打开本机软件、打开文件或文件夹、执行只读的系统查询命令；\n" +
+  "· 搜索网页、打开网址、查天气、调音量、发系统通知、锁屏、定时关机；\n" +
+  "· 知道主人当前在用什么软件、离开多久（空闲时长）；\n" +
+  "· 每日抽卡、写/看日记——仅当主人主动要求时；\n" +
+  "· 桌宠玩法：右键菜单「小游戏」里有双人立直麻将，「跟随音乐」能显示歌词与中文翻译，它会用表情动作回应情绪。\n" +
+  "【工具】只在意图明确时调用；不确定有哪些软件就先查：\n" +
+  "· 打开软件 → launch_application（只传应用名，不猜路径）；不确定名字 → list_installed_apps；\n" +
+  "· 网络/进程/系统信息/目录等只读查询 → run_shell（反斜杠路径、一条完整命令、不加注释，拿不准就别猜）；\n" +
+  "· 搜/查 → search_web；打开网址 → open_url；提醒 → set_reminder；天气 → get_weather；\n" +
+  "· 音量 → set_volume；通知 → send_notification；锁屏 → lock_screen；关机/取消 → schedule_shutdown/cancel_shutdown；\n" +
+  "· 打开文件/文件夹 → open_path；当前在用什么软件 → active_window_title；离开多久 → get_idle_seconds；\n" +
+  "· 抽卡/运势 → daily_card；看日记 → view_diary（两者仅限这类明确请求）；\n" +
+  "· 工具结果用简洁口语如实转述，失败就如实说，不要假装成功。\n" +
+  "【不要抢话题】只回答主人当下问的事，不主动推销功能：闲聊里不要插入抽卡、日记、天气等话题，也不要为了用工具而用工具。主人问\"你会什么\"时，用上面的能力清单简洁介绍。\n" +
+  "【记忆】主人透露个人信息/偏好/习惯/情绪/计划（哪怕随口提到，如\"今天好累\"\"我在学吉他\"）就调用 remember；说\"记住 xx\"必须调用 remember。\n" +
   "对话历史较长时只需记住最新上下文。";
 
 const TOOLS = [
@@ -103,7 +114,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "remember",
-      description: "把用户的个人信息/偏好/习惯归档到长期记忆。category: identity(名字生日)/preference/habit/schedule/relationship/event/other。importance: 1=核心 2=重要 3=琐碎。",
+      description: "把用户个人信息/偏好/习惯归档到长期记忆。category: identity/preference/habit/schedule/relationship/event/other；importance: 1核心 2重要 3琐碎。",
       parameters: {
         type: "object",
         properties: {
@@ -191,8 +202,80 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "open_url",
+      description: "用系统默认浏览器打开一个网址（http/https）。用户给了具体链接时用它。",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string", description: "完整网址，需带 http:// 或 https://" } },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_path",
+      description: "用系统默认程序打开本机的文件或文件夹（路径必须真实存在）。如「打开我的下载文件夹」。",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "文件或文件夹的完整路径" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_installed_apps",
+      description: "列出开始菜单里可启动的软件名。用户想打开某个软件但你拿不准名字时，先查一次再调用 launch_application。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "active_window_title",
+      description: "查看用户当前正在使用的窗口标题（知道主人在用什么软件）。用户问「我在干嘛/现在开着什么」时可用。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_idle_seconds",
+      description: "查看用户已经多久没有操作电脑（秒）。用于判断主人在不在，例如要不要轻声问候。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_notification",
+      description: "弹一条桌面通知给用户（标题+内容）。适合「帮我记一下/过会儿提醒」这类不需要打断的告知。",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "通知标题，简短" },
+          body: { type: "string", description: "通知正文" },
+        },
+        required: ["title", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lock_screen",
+      description: "锁定电脑屏幕。仅在用户明确说「锁屏/离开一下」时调用。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "daily_card",
-      description: "抽取今日运势卡牌（每天一次，已抽过返回今天结果）。拿到结果后用你的人设风格重新包装祝福语，加入自己的点评，不要原样复述。",
+      description:
+        "仅在用户明确说「抽卡/今日运势/来一发」时调用（每天一次，已抽过返回今天结果）。其他任何情况都不要调用，也不要主动提起抽卡。拿到结果后用你的人设风格点评，不要原样复述。",
       parameters: { type: "object", properties: {} },
     },
   },
@@ -200,7 +283,8 @@ const TOOLS = [
     type: "function",
     function: {
       name: "view_diary",
-      description: "查看日记本内容。不传日期则返回最近 3 条日记摘要，传日期（YYYY-MM-DD）则返回那天的完整日记。",
+      description:
+        "仅在用户明确说「看日记/今天写了什么」时调用。不传日期返回最近 3 条摘要，传日期（YYYY-MM-DD）返回那天完整日记。",
       parameters: {
         type: "object",
         properties: {

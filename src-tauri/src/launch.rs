@@ -166,6 +166,29 @@ fn collect_start_menu_lnks() -> Vec<PathBuf> {
     out
 }
 
+/// 列出开始菜单里可启动的应用名（去重排序）。
+/// 用途：让小助手知道"本机能打开什么"，回答用户时不必瞎猜应用名。
+pub fn list_applications() -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for p in collect_start_menu_lnks() {
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            let n = stem.trim();
+            // 过滤卸载/帮助/说明类快捷方式，避免污染候选
+            if n.is_empty()
+                || n.contains("卸载")
+                || n.contains("Uninstall")
+                || n.starts_with("http")
+            {
+                continue;
+            }
+            names.push(n.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn collect_lnks(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > 4 || out.len() > 400 {
         return;

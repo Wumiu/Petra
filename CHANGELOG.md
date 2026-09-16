@@ -6,6 +6,10 @@
 
 - 合并组员提交 74b85c6「upgrade riichi mahjong visuals and interactions」：立直麻将表现层重做（原创 SVG 牌面 tileAssets、手牌/摸牌/牌河/副露/宝牌指示/牌山牌背统一视觉）、引擎与视图交互改进、游戏内表情反应可抢占节流（reactNow force）、新增 tests/riichi-state.test.js 与 scripts/riichi-ui-smoke.mjs、scripts/riichi-round2-acceptance.mjs 验收脚本
 
+- 小助手能力放开与自知：新增 7 个工具——open_url（打开网址）、open_path（打开文件/文件夹）、list_installed_apps（列出可启动软件）、active_window_title（主人在用什么软件）、get_idle_seconds（离开多久）、send_notification（桌面通知）、lock_screen（锁屏）；其中前 4 类复用已有 Rust 命令，新增 3 个命令（list_installed_apps / open_path / lock_screen）
+- 系统提示重写：加入「你能做什么」能力清单（含麻将、歌词气泡、表情反馈等桌宠玩法），让小助手能回答"你会什么"；并新增「不要抢话题」规则
+- 修复"聊什么都绕到抽卡"：daily_card / view_diary 的工具描述改为"仅在用户明确要求时调用"，并在提示词中明确禁止在日常闲聊里主动提起抽卡/日记/天气
+- tool 消息返回值统一转字符串（get_idle_seconds 等数字返回值此前会以数字塞进 content）
 - 气泡着色改为流式识别：原来只在整段回复输出完后才判定情绪（所以先白后变色），现在边输出边判定（250ms 节流），颜色在说到第一句情绪词时就出现；收尾复用流式中识别到的情绪，避免"中途变色、收尾又变白/丢 emoji"（尾部的"～/！"这类标记在文本继续追加后会失效）
 - 修复小助手气泡"色彩几乎不触发"：原先只按"用户情绪发言"的规则识别回复，而 AI 回复多是功能性句子（"好的啦"/"已经帮你打开…"）→ 新增说话侧规则（安慰关心、抱歉、娇嗔、成功语气、～/啦/呀/！结尾等人设语气词），同一条回复的命中率大幅提升；气泡配色也加强（更饱和的渐变 + 左侧 3px 彩条），用户侧识别仍保持严格
 - 歌词来源扩到 4 条链：网易云 → QQ音乐 → 酷狗 → LRCLIB（均返回带时间戳的 LRC）；艺人完全不匹配时继续问下一家（例如网易云只有翻唱时会自动落到 QQ 拿原唱）；酷狗搜索有 0/10 交替的抖动，已加重试
