@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, extractCommand, stripCommand, PROVIDERS, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
-import { classifyEmotion, classifyAssistantEmotion, reactNow, emotionEmoji, boostMood, getMood } from "./EmotionEngine";
+import { classifyEmotion, classifyAssistantEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
@@ -391,6 +391,32 @@ function formatCompanion(): string {
   }
 }
 
+/**
+ * 流式着色钩子：气泡边显示文字边识别情绪，让颜色尽早出现（原来要等整段输出完才变色）。
+ * 识别到的情绪会被记住，供收尾时复用（避免"中途有色、收尾又变白/丢 emoji"）。
+ */
+function makeStreamColorHook(el: HTMLElement): {
+  push: (delta: string) => void;
+  lastEmotion: () => EmotionTag;
+} {
+  let lastEmo: EmotionTag = "neutral";
+  let lastAt = 0;
+  return {
+    push: (delta: string) => {
+      el.textContent += delta;
+      const now = Date.now();
+      if (now - lastAt < 250) return; // 节流：最多每 250ms 重新判定一次
+      lastAt = now;
+      const emo = classifyAssistantEmotion(el.textContent);
+      if (emo !== "neutral") {
+        lastEmo = emo;
+        if (el.dataset.emotion !== emo) el.dataset.emotion = emo;
+      }
+    },
+    lastEmotion: () => lastEmo,
+  };
+}
+
 /** 把原始 API 错误翻译成友善提示（402 余额不足 / 401 Key 无效 / 429 限流等） */
 function friendlyApiError(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e);
@@ -449,10 +475,12 @@ async function send(text: string) {
   if (userEmo !== "neutral") boostMood(userEmo);
   busy = true;
   const loading = addBubble("ai", "");
+  const colorHook = makeStreamColorHook(loading);
   let streamed = false;
   try {
     // 循环处理：每轮 chatStream → 若有工具调用则执行并继续，否则结束（最多 4 轮）
     const MAX_ROUNDS = 4;
+    let streamEmo: EmotionTag = "neutral";
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (round > 0) loading.textContent = "";
       // token 优化：记忆按场景/话题召回（≤6 条），而非全量注入 system prompt
@@ -467,11 +495,12 @@ async function send(text: string) {
         s.assistant.customBaseUrl,
         (delta) => {
           streamed = true;
-          loading.textContent += delta;
+          colorHook.push(delta);
         },
         true,
         buildChatContext(s.assistant.nickname),
       );
+      if (colorHook.lastEmotion() !== "neutral") streamEmo = colorHook.lastEmotion();
 
       if (res.toolCalls.length) {
         // 工具调用：执行后进入下一轮
@@ -484,7 +513,9 @@ async function send(text: string) {
       const finalText = loading.textContent || res.text;
       history.push({ role: "assistant", content: finalText });
       // 情感反馈：AI 回复带情绪 → 角色表情/动作 + 气泡 emoji 前缀 + 气泡着色 + 心情变化
-      const aiEmo = classifyAssistantEmotion(finalText);
+      // 流式期间已识别到的情绪优先复用（否则"～/！"这类结尾标记在接续文本后可能失效）
+      const finalEmo = classifyAssistantEmotion(finalText);
+      const aiEmo = finalEmo !== "neutral" ? finalEmo : streamEmo;
       if (aiEmo !== "neutral") {
         reactNow(aiEmo);
         loading.textContent = `${emotionEmoji(aiEmo)} ${finalText}`;
@@ -897,10 +928,11 @@ export async function triggerProactive() {
   busy = true;
   lifecycleOnOpen?.();
   const bubble = addBubble("ai", "");
+  const colorHook = makeStreamColorHook(bubble);
   try {
     // enableTools=false：问候不需要工具，省掉整套工具定义的输入 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
-      bubble.textContent += d;
+      colorHook.push(d);
     }, false);
     for (const m of relevantMemories) {
       const orig = memory.find(e => e.id === m.id);
@@ -908,7 +940,8 @@ export async function triggerProactive() {
     }
     saveMemory();
     boostMood("greeting_sent");
-    const emo = classifyAssistantEmotion(bubble.textContent);
+    const finalEmo = classifyAssistantEmotion(bubble.textContent);
+    const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
     if (emo !== "neutral") {
       reactNow(emo);
       bubble.dataset.emotion = emo;
@@ -940,12 +973,14 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
   busy = true;
   lifecycleOnOpen?.();
   const bubble = addBubble("ai", "");
+  const colorHook = makeStreamColorHook(bubble);
   try {
     // enableTools=false：点评不需要工具，省 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
-      bubble.textContent += d;
+      colorHook.push(d);
     }, false);
-    const emo = classifyAssistantEmotion(bubble.textContent);
+    const finalEmo = classifyAssistantEmotion(bubble.textContent);
+    const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
     if (emo !== "neutral") {
       reactNow(emo);
       bubble.dataset.emotion = emo;
