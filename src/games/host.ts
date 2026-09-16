@@ -42,7 +42,10 @@ export function openMiniGame(id: string): boolean {
   const root = document.createElement("div");
   root.className = "mg-view";
   root.dataset.petraInteractive = "minigame";
-  root.addEventListener("pointerdown", (e) => e.stopPropagation());
+  root.addEventListener("pointerdown", (e) => {
+    if ((e.target as HTMLElement).closest?.("[data-tauri-drag-region]")) return;
+    e.stopPropagation();
+  });
   document.body.appendChild(root);
   document.body.classList.add("mg-active");
   overlay = root;

@@ -36,6 +36,7 @@ interface TileOptions {
   back?: boolean;
   sideways?: boolean;
   drawn?: boolean;
+  animate?: boolean;
   clickable?: boolean;
   riichi?: boolean;
 }
@@ -46,14 +47,15 @@ function tileEl(tile: number, options: TileOptions = {}): HTMLElement {
   if (options.tiny) e.classList.add("mg-tile-xs");
   if (options.back) e.classList.add("mg-tile-back");
   if (options.sideways || options.riichi) e.classList.add("mg-tile-sideways");
-  if (options.drawn) e.classList.add("mg-tile-drawn", "mg-anim-draw");
+  if (options.drawn) e.classList.add("mg-tile-drawn");
+  if (options.animate) e.classList.add("mg-anim-draw");
   if (options.clickable) e.classList.add("mg-tile-click");
   e.appendChild(options.back ? createTileBackImage() : createTileImage(tile));
   e.title = options.back ? "牌背" : tileName(tile);
   return e;
 }
 
-function renderRiver(river: RiverTile[], seat: Seat): HTMLElement {
+function renderRiver(river: RiverTile[], seat: Seat, animateLast = false): HTMLElement {
   const grid = el("div", `mg-river mg-river-${seat === 0 ? "me" : "pet"}`);
   river.forEach((entry, index) => {
     const slot = el("div", "mg-river-slot");
@@ -63,7 +65,7 @@ function renderRiver(river: RiverTile[], seat: Seat): HTMLElement {
       slot.appendChild(el("span", "mg-called-mark", "↗"));
     } else {
       const t = tileEl(entry.tile, { tiny: true, riichi: entry.riichi });
-      if (index === river.length - 1) t.classList.add("mg-anim-discard");
+      if (animateLast && index === river.length - 1) t.classList.add("mg-anim-discard");
       slot.appendChild(t);
     }
     grid.appendChild(slot);
@@ -77,10 +79,11 @@ function meldLabel(meld: Meld): string {
   return "吃";
 }
 
-function renderMelds(melds: Meld[], seat: Seat): HTMLElement {
+function renderMelds(melds: Meld[], seat: Seat, animateLast = false): HTMLElement {
   const wrap = el("div", `mg-melds mg-melds-${seat === 0 ? "me" : "pet"}`);
   for (const meld of melds) {
     const group = el("div", "mg-meld");
+    if (animateLast && meld === melds[melds.length - 1]) group.classList.add("mg-anim-call");
     group.dataset.kind = meldLabel(meld);
     meld.tiles.forEach((tile, index) => {
       const concealedEdge = !meld.open && meld.kind === "kan" && (index === 0 || index === meld.tiles.length - 1);
@@ -124,12 +127,14 @@ function renderLiveWall(remaining: number): HTMLElement {
 
 function renderDeadWall(game: RiichiGame): HTMLElement {
   const wrap = el("div", "mg-dead-wall");
-  wrap.appendChild(el("span", "mg-dead-label", "王牌区"));
+  wrap.appendChild(el("span", "mg-dead-label", "宝牌区"));
   for (let i = 0; i < 7; i++) {
     const stack = el("div", "mg-dead-stack");
     stack.appendChild(tileEl(0, { tiny: true, back: true }));
     const indicator = game.doraIndicators[i];
-    stack.appendChild(indicator === undefined ? tileEl(0, { tiny: true, back: true }) : tileEl(indicator, { tiny: true }));
+    const top = indicator === undefined ? tileEl(0, { tiny: true, back: true }) : tileEl(indicator, { tiny: true });
+    if (indicator !== undefined) top.title = `宝牌指示牌：${tileName(indicator)}`;
+    stack.appendChild(top);
     wrap.appendChild(stack);
   }
   return wrap;
@@ -153,9 +158,9 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   let speechPriority = 0;
   let speechUntil = 0;
   let lastCasualSpeech = 0;
+  let renderedEventSeq = 0;
 
   const root = el("div", "mg-riichi");
-  root.addEventListener("pointerdown", (e) => e.stopPropagation());
   ctx.root.appendChild(root);
 
   const clearTimers = () => {
@@ -240,11 +245,16 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   function render(): void {
     if (disposed) return;
     reactToEvent();
+    const event = game.lastEvent;
+    const animateEvent = Boolean(motion && event && event.seq !== renderedEventSeq);
+    if (event) renderedEventSeq = event.seq;
     root.textContent = "";
     root.classList.toggle("mg-motion", motion);
-    root.dataset.event = game.lastEvent?.type ?? "";
+    root.dataset.event = animateEvent ? event?.type ?? "" : "";
 
     const head = el("header", "mg-head");
+    head.title = "按住空白处拖动窗口";
+    head.setAttribute("data-tauri-drag-region", "");
     const brand = el("div", "mg-title");
     brand.append(el("span", "mg-title-mark", "立"), el("span", "", "双人立直麻将"));
     head.appendChild(brand);
@@ -288,14 +298,18 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     petHit.setAttribute("aria-label", "与对面的桌宠互动");
     petSeat.appendChild(petHit);
     if (petLine) petSeat.appendChild(el("div", "mg-pet-speech", petLine));
-    petSeat.appendChild(renderMelds(game.players[1].melds, 1));
+    petSeat.appendChild(renderMelds(game.players[1].melds, 1, animateEvent && (event?.type === "call" || event?.type === "kan") && event.seat === 1));
     const petHand = el("div", "mg-tile-row mg-pet-hand");
-    game.players[1].hand.forEach(() => petHand.appendChild(tileEl(0, { tiny: true, back: true })));
+    game.players[1].hand.forEach((_, index) => petHand.appendChild(tileEl(0, {
+      tiny: true,
+      back: true,
+      animate: animateEvent && event?.type === "draw" && event.seat === 1 && index === game.players[1].hand.length - 1,
+    })));
     petSeat.appendChild(petHand);
     table.appendChild(petSeat);
 
     const petRiverZone = el("section", "mg-river-zone mg-river-zone-pet");
-    petRiverZone.appendChild(renderRiver(game.players[1].river, 1));
+    petRiverZone.appendChild(renderRiver(game.players[1].river, 1, animateEvent && (event?.type === "discard" || event?.type === "riichi") && event.seat === 1));
     table.appendChild(petRiverZone);
 
     const center = el("section", "mg-center");
@@ -308,7 +322,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     table.appendChild(renderDeadWall(game));
 
     const myRiverZone = el("section", "mg-river-zone mg-river-zone-me");
-    myRiverZone.appendChild(renderRiver(game.players[0].river, 0));
+    myRiverZone.appendChild(renderRiver(game.players[0].river, 0, animateEvent && (event?.type === "discard" || event?.type === "riichi") && event.seat === 0));
     table.appendChild(myRiverZone);
 
     const log = el("aside", "mg-log");
@@ -321,12 +335,24 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     const waits = game.waitsHint(0);
     if (waits.length > 0) meMeta.appendChild(el("span", "mg-waits", `听牌 ${waits.map(tileShort).join(" ")}`));
     meSeat.appendChild(meMeta);
-    meSeat.appendChild(renderMelds(game.players[0].melds, 0));
+    meSeat.appendChild(renderMelds(game.players[0].melds, 0, animateEvent && (event?.type === "call" || event?.type === "kan") && event.seat === 0));
     const hand = el("div", "mg-tile-row mg-hand");
     const canDiscard = game.pending?.kind === "turn";
-    game.players[0].hand.forEach((tile, index) => {
-      const isDrawn = game.lastDrawSeat === 0 && game.lastDraw === tile && index === game.players[0].hand.lastIndexOf(tile);
-      const te = tileEl(tile, { clickable: canDiscard, drawn: isDrawn });
+    const handEntries = game.players[0].hand.map((tile, index) => ({ tile, index, drawn: false }));
+    if (game.lastDrawSeat === 0 && game.lastDraw !== null) {
+      const drawnIndex = handEntries.map((entry) => entry.tile).lastIndexOf(game.lastDraw);
+      if (drawnIndex >= 0) {
+        const [drawn] = handEntries.splice(drawnIndex, 1);
+        drawn.drawn = true;
+        handEntries.push(drawn);
+      }
+    }
+    handEntries.forEach(({ tile, index, drawn }) => {
+      const te = tileEl(tile, {
+        clickable: canDiscard,
+        drawn,
+        animate: animateEvent && event?.type === "draw" && event.seat === 0 && drawn,
+      });
       if (game.riichiPending) te.classList.add("mg-tile-riichi-candidate");
       if (canDiscard) te.addEventListener("click", (event) => {
         event.stopPropagation();
