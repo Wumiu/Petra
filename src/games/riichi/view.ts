@@ -5,6 +5,7 @@
 import { RiichiGame, type RiverTile, type Seat } from "./engine";
 import { doraFromIndicator, tileName, tileShort } from "./tiles";
 import { createTileBackImage, createTileImage } from "./tileAssets";
+import { createRiichiIcon, type RiichiIconName } from "./icons";
 import { boostMood, reactNow } from "../../assistant/EmotionEngine";
 import type { Meld } from "./rules";
 import type { MiniGameContext, MiniGameInstance } from "../types";
@@ -27,6 +28,15 @@ function button(label: string, cls: string, onClick: () => void, title?: string)
     ev.stopPropagation();
     onClick();
   });
+  return b;
+}
+
+function toolButton(icon: RiichiIconName, label: string, onClick: () => void, pressed?: boolean): HTMLButtonElement {
+  const actionLabel = pressed === undefined ? label : `${pressed ? "关闭" : "开启"}${label}`;
+  const b = button("", "mg-tool", onClick, actionLabel);
+  b.setAttribute("aria-label", actionLabel);
+  if (pressed !== undefined) b.setAttribute("aria-pressed", String(pressed));
+  b.append(createRiichiIcon(icon), el("span", "mg-tool-label", label));
   return b;
 }
 
@@ -256,19 +266,23 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     head.title = "按住空白处拖动窗口";
     head.setAttribute("data-tauri-drag-region", "");
     const brand = el("div", "mg-title");
-    brand.append(el("span", "mg-title-mark", "立"), el("span", "", "双人立直麻将"));
+    brand.append(el("span", "mg-title-mark", "立"), el("span", "mg-title-text", "双人立直麻将"));
     head.appendChild(brand);
+    const overview = el("div", "mg-overview");
     const score = el("div", "mg-score");
-    score.append(el("span", "mg-score-me", `你 ${game.players[0].score}`), el("span", "mg-score-sep", " — "), el("span", "mg-score-pet", `${game.players[1].score} 桌宠`));
-    head.appendChild(score);
-    head.appendChild(el("div", "mg-handno", `东场 · 第 ${game.handNo} 局`));
+    score.append(el("span", "mg-score-me", `你 ${game.players[0].score}`), el("span", "mg-score-sep", "·"), el("span", "mg-score-pet", `桌宠 ${game.players[1].score}`));
+    const status = el("div", "mg-status");
+    status.append(el("span", "mg-handno", `东 ${game.handNo} 局`), el("span", "mg-status-sep", "·"), el("span", "mg-wall-count", `余 ${game.wall.length}`));
+    if (game.sticks) status.append(el("span", "mg-status-sep", "·"), el("span", "mg-sticks", `供托 ${game.sticks}`));
+    overview.append(score, status);
+    head.appendChild(overview);
     const tools = el("div", "mg-head-btns");
-    tools.appendChild(button(motion ? "动效 开" : "动效 关", "mg-btn-sm", () => {
+    tools.appendChild(toolButton("sparkles", "动效", () => {
       motion = !motion;
       localStorage.setItem(MOTION_KEY, motion ? "1" : "0");
       render();
-    }, "减少或关闭麻将动画"));
-    tools.appendChild(button(petInteraction ? "互动 开" : "互动 关", "mg-btn-sm", () => {
+    }, motion));
+    tools.appendChild(toolButton("message-circle", "互动", () => {
       petInteraction = !petInteraction;
       localStorage.setItem(PET_KEY, petInteraction ? "1" : "0");
       if (!petInteraction) {
@@ -279,9 +293,9 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
         window.clearTimeout(idleTimer);
       }
       render();
-    }, "关闭桌宠台词与提醒"));
-    tools.appendChild(button("重开", "mg-btn-sm", () => { clearTimers(); playerTurns = 0; game.newMatch(); }));
-    tools.appendChild(button("退出", "mg-btn-sm", () => ctx.close()));
+    }, petInteraction));
+    tools.appendChild(toolButton("rotate-ccw", "重开", () => { clearTimers(); playerTurns = 0; game.newMatch(); }));
+    tools.appendChild(toolButton("x", "退出", () => ctx.close()));
     head.appendChild(tools);
     root.appendChild(head);
 
@@ -314,8 +328,6 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
 
     const center = el("section", "mg-center");
     center.appendChild(el("div", "mg-round", "東一局"));
-    center.appendChild(el("div", "mg-wall-count", `余 ${game.wall.length}`));
-    center.appendChild(el("div", "mg-sticks", game.sticks ? `立直棒 × ${game.sticks}` : "供托 0"));
     const doraNames = Array.from(new Set(game.doraIndicators.map(doraFromIndicator))).map(tileShort).join(" · ");
     center.appendChild(el("div", "mg-dora-text", `宝牌 ${doraNames}`));
     table.appendChild(center);

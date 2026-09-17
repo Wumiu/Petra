@@ -64,6 +64,7 @@ await evaluate(`window.__TAURI_INTERNALS__.invoke('set_window_size',{width:${Mat
 await wait(5500);
 
 async function openFromMenu() {
+  if (await evaluate(`!!document.querySelector('.mg-riichi')`)) return true;
   await send("Input.dispatchMouseEvent", { type: "mousePressed", x: 350, y: 350, button: "right", clickCount: 1 });
   await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 350, y: 350, button: "right", clickCount: 1 });
   await wait(100);
@@ -80,8 +81,8 @@ async function openFromMenu() {
 
 if (!await openFromMenu()) throw new Error("could not open riichi from the real context-menu entry");
 for (const prefix of ["互动", "动效"]) {
-  const label = await evaluate(`[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes(${JSON.stringify(prefix)}))?.textContent||''`);
-  if (label.includes("关")) await clickSelector(".mg-head-btns button", label);
+  const state = await evaluate(`(()=>{const b=[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes(${JSON.stringify(prefix)}));return {label:b?.textContent||'',pressed:b?.getAttribute('aria-pressed')}})()`);
+  if (state.pressed === "false") await clickSelector(".mg-head-btns button", state.label);
 }
 await evaluate(`window.__riichiEmotionAudit=[];document.addEventListener('petra-emotion-reacted',e=>window.__riichiEmotionAudit.push(e.detail))`);
 
@@ -135,6 +136,7 @@ if (restarted.riverMe !== 0 || restarted.handMe !== 14 || restarted.liveImages !
 // Deterministic independent ankan position, but execute the actual public GUI button and run-loop path.
 await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;g.players[0].hand=[0,0,0,0,1,2,3,4,5,9,10,11,18,19];if(!g.pending?.options.includes('ankan'))g.pending.options.push('ankan');g.onUpdate();return true})()`);
 const kanBefore = await metrics();
+files.kanAction = await screenshot("04-ankan-actions.png");
 if (!await clickSelector(".mg-actions button", "暗杠")) throw new Error("ankan fixture did not expose GUI button");
 await wait(850);
 const kanAfter = await metrics();
@@ -192,7 +194,8 @@ if (!emotionAudit.some(x=>x.tag==='surprised'&&x.action==='surprised')) throw ne
 
 // Interaction off: event updates must not create speech/reminder UI.
 const interactionLabel = await evaluate(`[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes('互动'))?.textContent||''`);
-if (interactionLabel.includes("开")) await clickSelector(".mg-head-btns button", interactionLabel);
+const interactionPressed = await evaluate(`[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes('互动'))?.getAttribute('aria-pressed')`);
+if (interactionPressed === "true") await clickSelector(".mg-head-btns button", interactionLabel);
 const auditBeforeOff = await evaluate(`window.__riichiEmotionAudit.length`);
 await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;g.lastEvent={seq:(g.lastEvent?.seq||0)+1,type:'riichi',seat:1,tile:3};g.onUpdate();return true})()`);
 await wait(150);
@@ -202,7 +205,8 @@ if (interactionOff.speech || auditAfterOff !== auditBeforeOff) throw new Error(`
 
 // Motion off survives another action and removes animation class.
 const motionLabel = await evaluate(`[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes('动效'))?.textContent||''`);
-if (motionLabel.includes("开")) await clickSelector(".mg-head-btns button", motionLabel);
+const motionPressed = await evaluate(`[...document.querySelectorAll('.mg-head-btns button')].find(b=>b.textContent.includes('动效'))?.getAttribute('aria-pressed')`);
+if (motionPressed === "true") await clickSelector(".mg-head-btns button", motionLabel);
 const motionOff = await metrics();
 if (motionOff.motion) throw new Error("motion toggle did not disable animation class");
 
