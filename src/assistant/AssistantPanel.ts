@@ -45,6 +45,11 @@ export function clearApiKeyCache() {
   apiKeyCache = "";
 }
 
+/** 小助手是否正在对话中（麻将 AI 点评用：正忙就跳过，避免抢话） */
+export function isAssistantBusy(): boolean {
+  return busy;
+}
+
 export function setLifecycle(onOpen: () => void, onClose: () => void) {
   lifecycleOnOpen = onOpen;
   lifecycleOnClose = onClose;

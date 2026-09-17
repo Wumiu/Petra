@@ -1086,16 +1086,32 @@ fn url_encode(s: &str) -> String {
 /// 注意：脚本本身保持 ASCII，路径占位符可能含非 ASCII（用户名），写盘时带 UTF-8 BOM 供 PS 5.1 正确解析。
 const LYRICS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-$UA = 'Petra/0.2.3 (+https://github.com/Wumiu/Petra)'
+$UA = 'Petra/0.2.4 (+https://github.com/Wumiu/Petra)'
 $BR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 $OUT = '@OUT@'
 $ART = [System.Uri]::UnescapeDataString('@ARTIST_ENC@')
 $items = New-Object System.Collections.Generic.List[object]
 $err = ''
+# 直连优先：开着 VPN（系统代理，例如 127.0.0.1:7890）时，网易云会按异地出口返回**加密**的 eapi
+# 结果（result 变成一串密文、songs 解析为空），QQ/酷狗也可能被风控，整条链就全军覆没。
+# 所以先绕过系统代理直连；Rust 侧发现一条都没取到时，会用 @DIRECT@=0 走系统代理再试一遍。
+if ('@DIRECT@' -eq '1') { [System.Net.WebRequest]::DefaultWebProxy = $null }
+$neEnc = 0
+$errs = 0
+$neHits = 0
+$qqHits = 0
+$kgHits = 0
 # 最佳艺人匹配档位：0=完全相同 1=包含 2=不匹配。为 2 时继续问下一个来源（例如网易云只有翻唱）
 $bestRank = 9
-# 最佳艺人匹配档位：0=完全相同 1=包含 2=不匹配。为 2 时继续问下一个来源（例如网易云只有翻唱）
-$bestRank = 9
+
+# 安全取"第一个艺人名"：返回的畸形结果里可能没有 artists/singer 字段，
+# 直接写 $_.artists[0].name 会抛"无法索引到空数组"，把整个来源整段 catch 掉。
+function FirstName($arr) {
+  if ($null -eq $arr) { return '' }
+  $f = @($arr)
+  if ($f.Count -eq 0 -or $null -eq $f[0]) { return '' }
+  return [string]$f[0].name
+}
 
 function Get-Rank([string]$singer) {
   if ([string]::IsNullOrEmpty($ART) -or [string]::IsNullOrEmpty($singer)) { return 1 }
@@ -1109,8 +1125,10 @@ if ($items.Count -eq 0) {
   try {
     $h = @{ Referer = 'https://music.163.com/'; 'User-Agent' = $BR }
     $r = Invoke-WebRequest -Uri '@NE_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
-    $songs = @(($r.Content | ConvertFrom-Json).result.songs)
-    $songs = @($songs | Sort-Object { Get-Rank ([string]$_.artists[0].name) })
+    $j = $r.Content | ConvertFrom-Json
+    if ($j.result -is [string]) { $neEnc = 1 }
+    $songs = @(@($j.result.songs) | Where-Object { $_ -and $_.id })
+    $songs = @($songs | Sort-Object { Get-Rank (FirstName $_.artists) })
     $n = [Math]::Min(3, $songs.Count)
     $i = 0
     while ($i -lt $n -and $items.Count -lt 3) {
@@ -1120,12 +1138,13 @@ if ($items.Count -eq 0) {
         $lj = $lr.Content | ConvertFrom-Json
         $ly = [string]$lj.lrc.lyric
         if ($ly.Length -gt 20) {
-          $items.Add([ordered]@{ source = 'netease'; trackName = [string]$sg.name; artistName = [string]$sg.artists[0].name; duration = [int]($sg.duration / 1000); instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.tlyric.lyric })
-          $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$sg.artists[0].name)))
+          $items.Add([ordered]@{ source = 'netease'; trackName = [string]$sg.name; artistName = (FirstName $sg.artists); duration = [int]($sg.duration / 1000); instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.tlyric.lyric })
+          $bestRank = [Math]::Min($bestRank, (Get-Rank (FirstName $sg.artists)))
+          $neHits++
         }
       } catch { Start-Sleep -Milliseconds 250 }
     }
-  } catch { $err = $_.Exception.Message }
+  } catch { $err = $_.Exception.Message; $errs++ }
 }
 
 # ---------- 2) QQ 音乐 ----------
@@ -1133,8 +1152,8 @@ if ($items.Count -eq 0 -or $bestRank -ge 2) {
   try {
     $h = @{ Referer = 'https://y.qq.com/'; 'User-Agent' = $BR }
     $r = Invoke-WebRequest -Uri '@QQ_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
-    $songs = @(($r.Content | ConvertFrom-Json).data.song.list)
-    $songs = @($songs | Sort-Object { Get-Rank ([string]$_.singer[0].name) })
+    $songs = @(@(($r.Content | ConvertFrom-Json).data.song.list) | Where-Object { $_ -and $_.songmid })
+    $songs = @($songs | Sort-Object { Get-Rank (FirstName $_.singer) })
     $n = [Math]::Min(3, $songs.Count)
     $i = 0
     while ($i -lt $n -and $items.Count -lt 3) {
@@ -1144,12 +1163,13 @@ if ($items.Count -eq 0 -or $bestRank -ge 2) {
         $lj = $lr.Content | ConvertFrom-Json
         $ly = [string]$lj.lyric
         if ($ly.Length -gt 20) {
-          $items.Add([ordered]@{ source = 'qq'; trackName = [string]$sg.songname; artistName = [string]$sg.singer[0].name; duration = [int]$sg.interval; instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.trans })
-          $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$sg.singer[0].name)))
+          $items.Add([ordered]@{ source = 'qq'; trackName = [string]$sg.songname; artistName = (FirstName $sg.singer); duration = [int]$sg.interval; instrumental = $false; syncedLyrics = $ly; translatedLyrics = [string]$lj.trans })
+          $bestRank = [Math]::Min($bestRank, (Get-Rank (FirstName $sg.singer)))
+          $qqHits++
         }
       } catch { Start-Sleep -Milliseconds 250 }
     }
-  } catch { $err = $_.Exception.Message }
+  } catch { $err = $_.Exception.Message; $errs++ }
 }
 
 # ---------- 3) 酷狗音乐 ----------
@@ -1161,7 +1181,7 @@ if ($items.Count -eq 0 -or $bestRank -ge 2) {
     for ($attempt = 1; $attempt -le 3; $attempt++) {
       try {
         $r = Invoke-WebRequest -Uri '@KG_SEARCH@' -Headers $h -TimeoutSec 8 -UseBasicParsing
-        $cands = @(($r.Content | ConvertFrom-Json).candidates)
+        $cands = @(@(($r.Content | ConvertFrom-Json).candidates) | Where-Object { $_ -and $_.id -and $_.accesskey })
       } catch { $err = $_.Exception.Message }
       if ($cands.Count -gt 0) { break }
       Start-Sleep -Milliseconds 900
@@ -1184,17 +1204,20 @@ if ($items.Count -eq 0 -or $bestRank -ge 2) {
           if ($ly.Length -gt 20) {
             $items.Add([ordered]@{ source = 'kugou'; trackName = [string]$c.song; artistName = [string]$c.singer; duration = [int]($c.duration / 1000); instrumental = $false; syncedLyrics = $ly; translatedLyrics = '' })
             $bestRank = [Math]::Min($bestRank, (Get-Rank ([string]$c.singer)))
+            $kgHits++
           }
         }
       } catch { Start-Sleep -Milliseconds 250 }
     }
-  } catch { $err = $_.Exception.Message }
+  } catch { $err = $_.Exception.Message; $errs++ }
 }
 
 # ---------- 4) LRCLIB 兜底 ----------
+# 诊断行供 Rust 侧判断"这一遍到底查到没有"（决定要不要换代理再跑一遍）并写进日志
+$diag = 'items=' + $items.Count + ' ne=' + $neHits + ' qq=' + $qqHits + ' kg=' + $kgHits + ' enc=' + $neEnc + ' errs=' + $errs
 if ($items.Count -gt 0) {
   [System.IO.File]::WriteAllText($OUT, ($items | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
-  Write-Output 'OK'
+  Write-Output ('OK ' + $diag)
   exit 0
 }
 $ok = $false
@@ -1205,8 +1228,40 @@ foreach ($u in @('@LR_GET@', '@LR_SEARCH@')) {
     $ok = $true
   } catch { $err = $_.Exception.Message; Start-Sleep -Milliseconds 1200 }
 }
-if ($ok) { Write-Output 'OK_LRCLIB' } else { Write-Output ('ERR ' + $err); exit 1 }
+if ($ok) { Write-Output ('OK_LRCLIB ' + $diag) } else { Write-Output ('ERR ' + $diag + ' ' + $err); exit 1 }
 "#;
+
+/// 解析取词脚本 stdout 里的诊断行（形如 `OK items=1 ne=1 qq=0 kg=0 enc=0 errs=0`）。
+/// items=这一遍真正查到几条歌词，enc=网易云是否返回了加密结果，errs=抛异常的来源数。
+fn parse_lyric_diag(stdout: &str) -> (usize, bool, usize) {
+    let mut items = 0usize;
+    let mut enc = false;
+    let mut errs = 0usize;
+    for tok in stdout.split_whitespace() {
+        if let Some(v) = tok.strip_prefix("items=") {
+            items = v.parse().unwrap_or(0);
+        } else if let Some(v) = tok.strip_prefix("enc=") {
+            enc = v.trim() == "1";
+        } else if let Some(v) = tok.strip_prefix("errs=") {
+            errs = v.parse().unwrap_or(0);
+        }
+    }
+    (items, enc, errs)
+}
+
+/// 取词脚本单遍执行的结果
+struct LyricsPass {
+    /// 脚本写出的 JSON（可能是 LRCLIB 的单条对象或搜索结果数组；全失败时为空）
+    body: String,
+    /// 这一遍真正查到的歌词条数（0 表示三个中文来源都没命中）
+    items: usize,
+    /// 网易云是否返回了加密的 eapi 结果（走系统代理/异地出口时的典型症状）
+    enc: bool,
+    /// 抛异常的来源数（网络不通 / 超时的信号）
+    errs: usize,
+    /// 给日志和用户看的失败详情
+    detail: String,
+}
 
 /// 在线获取歌词：多来源链（网易云 → QQ音乐 → 酷狗 → LRCLIB），均返回带时间戳的 LRC。
 #[tauri::command]
@@ -1241,67 +1296,140 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
         );
         let lr_search = format!("https://lrclib.net/api/search?q={}", url_encode(&q));
 
-        // 临时文件名带时间戳，避免并发/重入时互相覆盖
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let tmp = std::env::temp_dir().join(format!("petra_lyrics_{}_{}.json", std::process::id(), stamp));
-        let tmp_s = tmp.to_string_lossy().to_string();
-        let tmp_ps1 = std::env::temp_dir().join(format!("petra_lyrics_{}_{}.ps1", std::process::id(), stamp));
-        let ps1_s = tmp_ps1.to_string_lossy().to_string();
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&tmp_ps1);
+        // 单遍执行（direct=true 时脚本会绕过系统代理直连）
+        let run_pass = |direct: &str| -> LyricsPass {
+            // 临时文件名带时间戳 + 模式，避免并发/重入时互相覆盖
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let tag = if direct == "1" { "direct" } else { "proxy" };
+            let tmp = std::env::temp_dir().join(format!(
+                "petra_lyrics_{}_{}_{}.json",
+                std::process::id(),
+                stamp,
+                tag
+            ));
+            let tmp_s = tmp.to_string_lossy().to_string();
+            let tmp_ps1 = std::env::temp_dir().join(format!(
+                "petra_lyrics_{}_{}_{}.ps1",
+                std::process::id(),
+                stamp,
+                tag
+            ));
+            let ps1_s = tmp_ps1.to_string_lossy().to_string();
+            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(&tmp_ps1);
 
-        let script = LYRICS_SCRIPT
-            .replace("@OUT@", &tmp_s)
-            .replace("@ARTIST_ENC@", &url_encode(&a))
-            .replace("@NE_SEARCH@", &ne_search)
-            .replace("@QQ_SEARCH@", &qq_search)
-            .replace("@KG_SEARCH@", &kg_search)
-            .replace("@LR_GET@", &lr_get)
-            .replace("@LR_SEARCH@", &lr_search);
-        // 带 UTF-8 BOM 写盘：脚本本身是 ASCII，但临时路径可能含非 ASCII（用户名），
-        // PowerShell 5.1 只有见到 BOM 才会按 UTF-8 解析。
-        std::fs::write(&tmp_ps1, format!("\u{feff}{}", script))
-            .map_err(|e| format!("写入取词脚本失败: {e}"))?;
+            let script = LYRICS_SCRIPT
+                .replace("@OUT@", &tmp_s)
+                .replace("@DIRECT@", direct)
+                .replace("@ARTIST_ENC@", &url_encode(&a))
+                .replace("@NE_SEARCH@", &ne_search)
+                .replace("@QQ_SEARCH@", &qq_search)
+                .replace("@KG_SEARCH@", &kg_search)
+                .replace("@LR_GET@", &lr_get)
+                .replace("@LR_SEARCH@", &lr_search);
+            // 带 UTF-8 BOM 写盘：脚本本身是 ASCII，但临时路径可能含非 ASCII（用户名），
+            // PowerShell 5.1 只有见到 BOM 才会按 UTF-8 解析。
+            if let Err(e) = std::fs::write(&tmp_ps1, format!("\u{feff}{}", script)) {
+                return LyricsPass {
+                    body: String::new(),
+                    items: 0,
+                    enc: false,
+                    errs: 0,
+                    detail: format!("写入取词脚本失败: {e}"),
+                };
+            }
 
-        let out = hidden_command("powershell")
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &ps1_s])
-            .output()
-            .map_err(|e| format!("启动失败: {e}"))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let _ = std::fs::remove_file(&tmp_ps1);
+            let out = match hidden_command("powershell")
+                .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", &ps1_s])
+                .output()
+            {
+                Ok(o) => o,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp_ps1);
+                    return LyricsPass {
+                        body: String::new(),
+                        items: 0,
+                        enc: false,
+                        errs: 0,
+                        detail: format!("启动失败: {e}"),
+                    };
+                }
+            };
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let _ = std::fs::remove_file(&tmp_ps1);
 
-        let body = std::fs::read_to_string(&tmp).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp);
-        let body = body.trim_start_matches('\u{feff}').trim().to_string();
+            let body = std::fs::read_to_string(&tmp).unwrap_or_default();
+            let _ = std::fs::remove_file(&tmp);
+            let body = body.trim_start_matches('\u{feff}').trim().to_string();
 
-        if body.is_empty() {
-            // PowerShell 的语法/网络错误走 stderr，带上它才能定位问题
+            let (items, enc, errs) = parse_lyric_diag(&stdout);
+            // PowerShell 的语法/网络错误走 stderr；诊断行里还带着 enc/errs，一起留作详情
             let detail = if !stderr.is_empty() { stderr } else { stdout };
-            let detail: String = detail.chars().take(200).collect();
-            crate::log_line(&format!("[lyrics] 取歌词失败 {t} - {a}：{detail}"));
+            LyricsPass {
+                body,
+                items,
+                enc,
+                errs,
+                detail: detail.chars().take(200).collect(),
+            }
+        };
+
+        // 第一遍：绕过系统代理直连。
+        // 开着 VPN（系统代理）时网易云会按异地出口返回加密的 eapi 结果，直连能绕开这个问题；
+        // 反过来"只能通过代理上网"的用户，直连会失败，再由第二遍走系统代理兜底。
+        let mut pass = run_pass("1");
+        let mut mode = "直连";
+        if pass.items == 0 {
+            let proxy = crate::proxy::get_system_proxy();
+            // 只在"确实像网络路径出了问题"时才多跑一遍代理：有代理配置，且要么连 LRCLIB 都空手而归，
+            // 要么网易云返回了加密结果、要么有来源直接抛错。纯粹"曲库里没有这首歌"不重试。
+            let retry = proxy.is_some() && (pass.body.is_empty() || pass.enc || pass.errs > 0);
+            if retry {
+                crate::log_line(&format!(
+                    "[lyrics] 直连未取到（enc={} errs={}），改用系统代理重试：{t} - {a}",
+                    pass.enc as u8, pass.errs
+                ));
+                let second = run_pass("0");
+                if second.items > 0 {
+                    pass = second;
+                    mode = "系统代理";
+                } else if !second.detail.is_empty() {
+                    pass.detail = second.detail;
+                }
+            }
+        }
+
+        if pass.body.is_empty() {
+            let detail = if pass.detail.is_empty() {
+                "脚本无响应".to_string()
+            } else {
+                pass.detail.clone()
+            };
+            crate::log_line(&format!("[lyrics] 取歌词失败 {t} - {a}（{mode}）：{detail}"));
             return Err(format!("歌词接口无响应（{detail}）"));
         }
         // 成功也记一行：便于区分"接口没查到"与"接口坏了"
-        let src = if body.contains("netease") {
+        let src = if pass.body.contains("netease") {
             "网易云"
-        } else if body.contains("kugou") {
+        } else if pass.body.contains("kugou") {
             "酷狗"
-        } else if body.contains("qq") {
+        } else if pass.body.contains("qq") {
             "QQ音乐"
         } else {
             "LRCLIB"
         };
         crate::log_line(&format!(
-            "[lyrics] {t} - {a} → {} 字节，{}，来源{}",
-            body.len(),
-            if body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
-            src
+            "[lyrics] {t} - {a} → {} 字节，{}，来源{}（{mode}，命中 {} 条）",
+            pass.body.len(),
+            if pass.body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
+            src,
+            pass.items
         ));
-        Ok(body)
+        Ok(pass.body)
     })
     .await
     .map_err(|e| format!("歌词任务异常: {e}"))?

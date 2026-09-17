@@ -7,6 +7,8 @@ import { doraFromIndicator, tileName, tileShort } from "./tiles";
 import { createTileBackImage, createTileImage } from "./tileAssets";
 import { createRiichiIcon, type RiichiIconName } from "./icons";
 import { boostMood, reactNow } from "../../assistant/EmotionEngine";
+import { isAssistantBusy } from "../../assistant/AssistantPanel";
+import { petTalkAvailable, petTalkWanted, requestPetTalk, resetPetTalk } from "./petTalk";
 import type { Meld } from "./rules";
 import type { MiniGameContext, MiniGameInstance } from "../types";
 
@@ -66,7 +68,9 @@ function tileEl(tile: number, options: TileOptions = {}): HTMLElement {
 }
 
 function renderRiver(river: RiverTile[], seat: Seat, animateLast = false): HTMLElement {
-  const grid = el("div", `mg-river mg-river-${seat === 0 ? "me" : "pet"}`);
+  // 牌河越长越紧凑，避免对家与自己的牌河在后半局撞在一起。
+  const density = river.length > 24 ? " mg-river-dense" : river.length > 12 ? " mg-river-compact" : "";
+  const grid = el("div", `mg-river mg-river-${seat === 0 ? "me" : "pet"}${density}`);
   river.forEach((entry, index) => {
     const slot = el("div", "mg-river-slot");
     if (entry.called) {
@@ -160,6 +164,10 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   let disposed = false;
   let motion = boolSetting(MOTION_KEY, !matchMedia("(prefers-reduced-motion: reduce)").matches);
   let petInteraction = boolSetting(PET_KEY, true);
+  /** AI 实时牌况点评是否可用（需助手开启 + API Key；异步探测一次） */
+  let aiTalkOn = false;
+  /** 探测是否已完成（未完成前先用 petTalkWanted() 同步判断，避免开局第一句落到固定台词池） */
+  let aiProbeDone = false;
   let petLine = "";
   let petLineTimer = 0;
   let idleTimer = 0;
@@ -172,6 +180,13 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
 
   const root = el("div", "mg-riichi");
   ctx.root.appendChild(root);
+
+  resetPetTalk();
+  void petTalkAvailable().then((ok) => {
+    aiTalkOn = ok;
+    aiProbeDone = true;
+    if (!disposed) render();
+  });
 
   const clearTimers = () => {
     window.clearTimeout(petLineTimer);
@@ -197,31 +212,99 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     }, priority >= 3 ? 5200 : 4200);
   };
 
+  /**
+   * 事件反应：
+   * - AI 互动可用时**不使用固定台词池**，只让 AI 看牌况自己说（表情/动作仍即时本地触发，零 token）；
+   * - 没配 API（或关掉 AI 互动）时才回落到本地台词。
+   * 节奏：只在关键事件（开局/立直/鸣牌/和了/流局）或"有值得说的事"（听牌、牌墙将尽）时才开口；
+   * 频率由 petTalk 控制（最小间隔 18s / 每局 3 次 / 每场 20 次），被节流时这一句就不说；
+   * AI 也可以回「沉默」表示没什么可说，此时不显示任何气泡。
+   */
+  const react = (
+    reason: string,
+    fallback: string,
+    emotion: "happy" | "surprised" | "tired" | undefined,
+    priority: number,
+  ) => {
+    const useAI = aiTalkOn || (petTalkWanted() && !aiProbeDone);
+    if (!useAI) {
+      say(fallback, emotion, priority);
+      return;
+    }
+    // 只有关键事件才驱动表情/动作（本地、零 token），台词等 AI 回来再显示；普通事件不打扰
+    if (emotion && priority >= 3) reactNow(emotion, true);
+    void requestPetTalk(game, reason, isAssistantBusy()).then((line) => {
+      if (!line || disposed) return;
+      say(line, emotion, priority);
+    });
+  };
+
+  /** 本局是否已就"听牌"提醒过一次，避免反复说同一件事 */
+  let noticedTenpai = false;
+
+  /** 本地判断有没有值得点评的事（零 token）；没有就干脆不说 */
+  const notableReason = (): string | null => {
+    if (game.wall.length <= 22) return "牌墙快摸完了";
+    if (!noticedTenpai) {
+      const waits = game.waitsHint(0);
+      if (waits.length > 0) {
+        noticedTenpai = true;
+        return `主人已经听牌了（等 ${waits.map((t) => tileName(t)).join("、")}）`;
+      }
+    }
+    return null;
+  };
+
   const reactToEvent = () => {
     const event = game.lastEvent;
     if (!event || event.seq === seenEvent) return;
     seenEvent = event.seq;
-    if (event.type === "hand-start") say("开局啦，请多指教！", "happy", 2);
-    else if (event.type === "turn" && event.seat === 0) {
-      playerTurns++;
-      if (playerTurns === 1 || playerTurns % 5 === 0) say("轮到你了，慢慢想～", undefined, 1);
+    const who = event.seat === 0 ? "主人" : "你自己";
+    const tileLabel = event.tile !== undefined ? tileName(event.tile) : "一张牌";
+    if (event.type === "hand-start") {
+      noticedTenpai = false;
+      react("这一局刚开始", "开局啦，请多指教！", "happy", 2);
+    } else if (event.type === "turn") {
+      // 只在"有值得说的事"时才说话：听牌 / 牌墙将尽（避免每次摸牌都点评）
+      if (event.seat === 0) {
+        playerTurns++;
+        if (playerTurns % 4 === 0) {
+          const notable = notableReason();
+          if (notable) react(notable, "嗯…这手牌有点意思。", undefined, 2);
+        }
+      }
     } else if (event.type === "riichi") {
-      say(event.seat === 0 ? "立直！气势很足嘛！" : "我立直啦，要小心哦。", "surprised", 3);
+      react(
+        `${who}刚刚宣言立直`,
+        event.seat === 0 ? "立直！气势很足嘛！" : "我立直啦，要小心哦。",
+        "surprised",
+        3,
+      );
     } else if (event.type === "call") {
       const word = event.call === "kan" ? "杠" : "碰";
-      say(event.seat === 0 ? `${word}得漂亮！` : `这张我要${word}！`, "surprised", 3);
+      react(
+        `${who}刚刚${word}了 ${tileLabel}`,
+        event.seat === 0 ? `${word}得漂亮！` : `这张我要${word}！`,
+        "surprised",
+        3,
+      );
     } else if (event.type === "kan") {
-      say(event.seat === 0 ? "暗杠！新宝牌要翻开了。" : "嘿嘿，暗杠！", "surprised", 3);
+      react(
+        `${who}刚刚暗杠 ${tileLabel}`,
+        event.seat === 0 ? "暗杠！新宝牌要翻开了。" : "嘿嘿，暗杠！",
+        "surprised",
+        3,
+      );
     } else if (event.type === "win") {
       if (event.seat === 0) {
-        say("恭喜和牌！这局是你赢啦！", "happy", 4);
+        react("主人和牌赢了这一局", "恭喜和牌！这局是你赢啦！", "happy", 4);
         boostMood("happy");
       } else {
-        say("我和啦！下一局也要加油哦。", "happy", 4);
+        react("你自己和牌赢了这一局", "我和啦！下一局也要加油哦。", "happy", 4);
         boostMood("chat");
       }
     } else if (event.type === "draw-end") {
-      say("流局了，休息一下再继续吧。", "tired", 4);
+      react("这一局流局了", "流局了，休息一下再继续吧。", "tired", 4);
     }
   };
 
@@ -231,7 +314,12 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     if (!petInteraction || !pending || (pending.kind !== "turn" && pending.kind !== "call")) return;
     idleTimer = window.setTimeout(() => {
       if (disposed || game.pending !== pending) return;
-      say(pending.kind === "call" ? "要鸣牌吗？不急，想好再决定。" : "还在思考吗？可以看看听牌提示哦。", "tired", 1);
+      react(
+        pending.kind === "call" ? "主人正在犹豫要不要鸣牌" : "主人出牌想了挺久",
+        pending.kind === "call" ? "要鸣牌吗？不急，想好再决定。" : "还在思考吗？可以看看听牌提示哦。",
+        "tired",
+        1,
+      );
       render();
     }, 14_000);
   };
@@ -282,7 +370,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       localStorage.setItem(MOTION_KEY, motion ? "1" : "0");
       render();
     }, motion));
-    tools.appendChild(toolButton("message-circle", "互动", () => {
+    tools.appendChild(toolButton("message-circle", aiTalkOn ? "互动·AI" : "互动", () => {
       petInteraction = !petInteraction;
       localStorage.setItem(PET_KEY, petInteraction ? "1" : "0");
       if (!petInteraction) {
@@ -294,7 +382,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       }
       render();
     }, petInteraction));
-    tools.appendChild(toolButton("rotate-ccw", "重开", () => { clearTimers(); playerTurns = 0; game.newMatch(); }));
+    tools.appendChild(toolButton("rotate-ccw", "重开", () => { clearTimers(); playerTurns = 0; resetPetTalk(); game.newMatch(); }));
     tools.appendChild(toolButton("x", "退出", () => ctx.close()));
     head.appendChild(tools);
     root.appendChild(head);

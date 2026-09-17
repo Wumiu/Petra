@@ -66,6 +66,8 @@ export interface Settings {
   musicLyrics: boolean;
   /** 歌词翻译：在原文下方显示中文翻译（来源提供译文时才显示） */
   lyricsTranslate: boolean;
+  /** 麻将桌上的 AI 实时互动（需要配置 API Key；有节流与每局/每场上限） */
+  gameTalk: boolean;
 }
 
 const DEFAULTS: Settings = {
@@ -99,6 +101,7 @@ const DEFAULTS: Settings = {
   modelAuto: {},
   musicLyrics: true,
   lyricsTranslate: true,
+  gameTalk: true,
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */

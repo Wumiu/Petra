@@ -1550,7 +1550,19 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 
 .mg-seat-me { bottom: 5px; height: 72px; }
 .mg-me-meta { position: absolute; left: 4px; right: 4px; top: -17px; display: flex; align-items: center; gap: 10px; }
-.mg-waits { margin-left: auto; color: #ead18a; font-size: 9px; font-weight: 650; }
+.mg-waits {
+  order: -1;
+  position: relative;
+  z-index: 9;
+  margin-left: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(8, 22, 16, .82);
+  color: #f0d894;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
 .mg-hand { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); justify-content: center; gap: 1px; flex-wrap: nowrap; }
 
 .mg-tile-row { display: flex; align-items: flex-end; }
@@ -1603,11 +1615,23 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-river-slot { position: relative; display: grid; place-items: center; width: 23px; height: 32px; }
 .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.92); margin: 0; }
 .mg-river-called { border: 1px dashed rgba(233, 219, 181, .2); border-radius: 3px; }
+
+/* 后半局牌河压缩：仍是同样的牌，只是排得更密，避免两张牌河堆叠 */
+.mg-river-compact { grid-template-columns: repeat(8, 19px); grid-auto-rows: 24px; gap: 1px 3px; }
+.mg-river-compact .mg-river-slot { width: 19px; height: 24px; }
+.mg-river-compact .mg-river-slot .mg-tile { width: 17px; height: 23px; }
+.mg-river-dense { grid-template-columns: repeat(10, 15px); grid-auto-rows: 19px; gap: 1px 2px; }
+.mg-river-dense .mg-river-slot { width: 15px; height: 19px; }
+.mg-river-dense .mg-river-slot .mg-tile { width: 13px; height: 18px; }
+/* 横置的立直牌在压缩后要再缩一点，否则会盖到相邻格子 */
+.mg-river-compact .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.78); }
+.mg-river-dense .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.62); }
+.mg-river-dense .mg-called-mark { font-size: 10px; }
 .mg-called-mark { color: rgba(239, 222, 179, .52); font-size: 13px; transform: rotate(-25deg); }
 
 .mg-center {
   position: absolute;
-  z-index: 3;
+  z-index: 5;
   left: 25px;
   top: 50%;
   transform: translateY(-50%);
@@ -1737,6 +1761,8 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-river-zone-pet { top: 124px; }
   .mg-river-zone-me { bottom: 82px; }
   .mg-river { grid-auto-rows: 29px; gap: 1px 4px; }
+  .mg-river-compact { grid-auto-rows: 24px; gap: 1px 3px; }
+  .mg-river-dense { grid-auto-rows: 19px; gap: 1px 2px; }
   .mg-center { left: 18px; max-width: 108px; }
   .mg-log { left: 18px; width: 108px; }
   .mg-dead-wall { right: 29px; }

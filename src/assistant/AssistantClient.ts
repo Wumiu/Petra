@@ -316,7 +316,13 @@ function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): 
 
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
  *  截断时不切断 tool_calls 序列（不删除紧跟 tool 消息的 assistant 消息）。 */
-function buildMessages(history: ChatMessage[], persona: string, memory: MemoryStore, extraContext = ""): ChatMessage[] {
+function buildMessages(
+  history: ChatMessage[],
+  persona: string,
+  memory: MemoryStore,
+  extraContext = "",
+  systemOverride = "",
+): ChatMessage[] {
   const MAX_MSGS = 20;
   const MAX_CHARS = 6000;
   let msgs = history.slice(-MAX_MSGS);
@@ -327,7 +333,9 @@ function buildMessages(history: ChatMessage[], persona: string, memory: MemorySt
     total -= msgs[0].content?.length ?? 0;
     msgs = msgs.slice(1);
   }
-  return [{ role: "system", content: systemPrompt(persona, memory, extraContext) }, ...msgs];
+  // systemOverride：轻量调用（如麻将实时点评）用它替代完整系统提示，省掉 BASE_PROMPT 与记忆
+  const system = systemOverride || systemPrompt(persona, memory, extraContext);
+  return [{ role: "system", content: system }, ...msgs];
 }
 
 /** OpenAI 兼容流式 chat；返回完整文本 + 工具调用。enableTools=false 时不带 tools（纯文本生成，如日记/抽卡文案） */
@@ -341,11 +349,12 @@ export async function chatStream(
   onDelta: (t: string) => void,
   enableTools = true,
   extraContext = "",
+  systemOverride = "",
 ): Promise<{ text: string; toolCalls: ToolCall[] }> {
   const base = resolveBase(provider, customBaseUrl);
   const m = model || PROVIDERS[provider].defaultModel;
   if (!m) throw new Error("未设置模型名");
-  const messages = buildMessages(history, persona, memory, extraContext);
+  const messages = buildMessages(history, persona, memory, extraContext, systemOverride);
   // 输入 token 估算（消息 + 工具定义），用于本地用量统计兜底
   const inputTokens = estimateTokens(JSON.stringify(messages)) + (enableTools ? estimateToolsTokens() : 0) + 4;
   // 支持流式 usage 回传的提供商白名单（其余端点可能拒绝未知字段）

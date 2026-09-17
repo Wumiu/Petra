@@ -992,6 +992,10 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     }
     const p = document.createElement("div");
     p.style.cssText = "font-size:12.5px;color:#5a4a65;line-height:1.7;padding:2px 0;";
+    // 分节标题（【新增】/【优化】/【未来计划】/【作者的话】）加粗并上色，方便一眼扫过
+    if (/^【.+】$/.test(line)) {
+      p.style.cssText = "font-size:12.5px;font-weight:700;color:#b0658f;line-height:1.7;padding:4px 0 1px;";
+    }
     p.textContent = line;
     panel.appendChild(p);
   }
@@ -1003,7 +1007,7 @@ function showAnnouncement(title: string, lines: string[], version: string) {
   okBtn.className = "as-btn as-btn-primary";
   okBtn.textContent = "知道了";
   okBtn.addEventListener("click", () => {
-    markAnnounced(version);
+    markAnnounced(version, lines);
     panel.remove();
   });
   btns.appendChild(okBtn);
@@ -1744,6 +1748,20 @@ function buildMenu(engine: BehaviorEngine) {
             if (openMiniGame(g.id)) toast("开局！和桌宠来一把～");
           },
         })),
+        {
+          id: "mg-talk",
+          label: "麻将 AI 互动",
+          state: settings.gameTalk ? "开" : "关",
+          onPick: () => {
+            settings.gameTalk = !settings.gameTalk;
+            saveSettings(settings);
+            toast(
+              settings.gameTalk
+                ? "麻将桌上的桌宠会实时点评牌况（需要 API Key）"
+                : "麻将桌改为只用固定台词（零 token）",
+            );
+          },
+        },
         { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },
       ],
     },
