@@ -14,6 +14,7 @@ import type { MiniGameContext, MiniGameInstance } from "../types";
 
 const MOTION_KEY = "petra.riichi.motion";
 const PET_KEY = "petra.riichi.petInteraction";
+const THEME_BASE = "/mahjong/theme/";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -40,6 +41,16 @@ function toolButton(icon: RiichiIconName, label: string, onClick: () => void, pr
   if (pressed !== undefined) b.setAttribute("aria-pressed", String(pressed));
   b.append(createRiichiIcon(icon), el("span", "mg-tool-label", label));
   return b;
+}
+
+function decorativeImage(file: string, cls: string): HTMLImageElement {
+  const image = document.createElement("img");
+  image.className = cls;
+  image.src = THEME_BASE + file;
+  image.alt = "";
+  image.draggable = false;
+  image.setAttribute("aria-hidden", "true");
+  return image;
 }
 
 interface TileOptions {
@@ -226,6 +237,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     emotion: "happy" | "surprised" | "tired" | undefined,
     priority: number,
   ) => {
+    if (!petInteraction || disposed) return;
     const useAI = aiTalkOn || (petTalkWanted() && !aiProbeDone);
     if (!useAI) {
       say(fallback, emotion, priority);
@@ -354,7 +366,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     head.title = "按住空白处拖动窗口";
     head.setAttribute("data-tauri-drag-region", "");
     const brand = el("div", "mg-title");
-    brand.append(el("span", "mg-title-mark", "立"), el("span", "mg-title-text", "双人立直麻将"));
+    brand.append(decorativeImage("moon-emblem.png", "mg-title-emblem"), el("span", "mg-title-text", "双人立直麻将"));
     head.appendChild(brand);
     const overview = el("div", "mg-overview");
     const score = el("div", "mg-score");
@@ -468,15 +480,15 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     const pending = game.pending;
     if (pending?.kind === "turn") {
       if (pending.options.includes("tsumo")) actions.appendChild(button("自摸和了", "mg-btn mg-btn-win", () => game.tsumo()));
-      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(button("立直", "mg-btn", () => game.declareRiichi()));
-      if (game.riichiPending) actions.appendChild(button("取消立直", "mg-btn", () => game.cancelRiichi()));
-      if (pending.options.includes("ankan")) actions.appendChild(button("暗杠", "mg-btn", () => game.ankan()));
+      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(button("立直", "mg-btn mg-btn-accent", () => game.declareRiichi()));
+      if (game.riichiPending) actions.appendChild(button("取消立直", "mg-btn mg-btn-subtle", () => game.cancelRiichi()));
+      if (pending.options.includes("ankan")) actions.appendChild(button("暗杠", "mg-btn mg-btn-call", () => game.ankan()));
       actions.appendChild(el("span", "mg-hint", game.riichiPending ? "选择一张牌横置宣言立直" : "点击手牌出牌"));
     } else if (pending?.kind === "call") {
       if (pending.options.includes("ron")) actions.appendChild(button("荣和", "mg-btn mg-btn-win", () => game.call("ron")));
-      if (pending.options.includes("pon")) actions.appendChild(button("碰", "mg-btn", () => game.call("pon")));
-      if (pending.options.includes("kan")) actions.appendChild(button("明杠", "mg-btn", () => game.call("kan")));
-      actions.appendChild(button("过", "mg-btn", () => game.call("pass")));
+      if (pending.options.includes("pon")) actions.appendChild(button("碰", "mg-btn mg-btn-call", () => game.call("pon")));
+      if (pending.options.includes("kan")) actions.appendChild(button("明杠", "mg-btn mg-btn-call", () => game.call("kan")));
+      actions.appendChild(button("过", "mg-btn mg-btn-subtle", () => game.call("pass")));
       actions.appendChild(el("span", "mg-hint", `桌宠打出${pending.tile === undefined ? "牌" : tileName(pending.tile)}`));
     } else if (game.phase === "handend") {
       actions.appendChild(button("下一局", "mg-btn mg-btn-primary", () => { clearTimers(); game.nextHand(); }));
@@ -491,7 +503,15 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
 
     if (game.handResult && game.phase !== "playing") {
       const banner = el("div", "mg-banner");
-      banner.appendChild(el("div", "mg-banner-text", game.handResult));
+      banner.setAttribute("role", "status");
+      banner.setAttribute("aria-live", "polite");
+      const resultLines = game.handResult.split("\n");
+      banner.append(
+        el("div", "mg-banner-kicker", "本局结果"),
+        el("div", "mg-banner-title", resultLines.shift() ?? "本局结束"),
+        el("div", "mg-banner-text", resultLines.join("\n")),
+        decorativeImage("result-ornament.png", "mg-result-ornament"),
+      );
       root.appendChild(banner);
     }
     syncPetAnchor();

@@ -74,6 +74,14 @@ async function openFromMenu() {
     await wait(100);
   }
   found = await evaluate(`(()=>{const p=[...document.querySelectorAll('#menu>.mi')].find(x=>x.textContent.includes('小游戏'));p?.click();const g=[...document.querySelectorAll('#menu .mi')].find(x=>x.textContent.includes('立直麻将'));g?.click();return !!g})()`);
+  // CDP mouse events do not move the native Windows cursor. The production
+  // cursor watcher can therefore close the context menu before automation
+  // reaches its nested item. Keep the real-menu attempt above, then use the
+  // Vite-only module entry as a deterministic test fallback. All following
+  // actions still go through the rendered Tauri GUI.
+  if (!found) {
+    found = await evaluate(`import('/src/games/host.ts').then(m=>m.openMiniGame('riichi'))`);
+  }
   if (!found) return false;
   await wait(500);
   return evaluate(`!!document.querySelector('.mg-riichi')`);

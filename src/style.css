@@ -1386,15 +1386,25 @@ body {
 
 /* ========== 立直麻将：深靛蓝 2.5D 全窗口牌桌 ========== */
 .mg-view {
+  --mg-bg: #111522;
+  --mg-felt: #25384b;
+  --mg-panel: #1b2434;
+  --mg-text: #f3ebdd;
+  --mg-muted: #aab5c6;
+  --mg-violet: #a99ce3;
+  --mg-gold: #d5b67c;
+  --mg-line: rgba(213, 182, 124, .28);
+  --mg-radius: 14px;
   position: fixed;
   inset: 0;
   z-index: 260;
-  color: #f7f4eb;
+  color: var(--mg-text);
   user-select: none;
   overflow: hidden;
   background:
-    radial-gradient(circle at 50% -10%, rgba(89, 94, 184, .28), transparent 48%),
-    linear-gradient(145deg, #111833, #080d20 72%);
+    linear-gradient(rgba(10, 14, 30, .42), rgba(8, 11, 24, .72)),
+    url("/mahjong/theme/room-background.png") 58% center / cover no-repeat,
+    var(--mg-bg);
 }
 
 /* 游戏期间把真实桌宠画布缩到对家座位；关闭时由 class 移除自动复原。 */
@@ -1427,25 +1437,16 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   align-items: center;
   gap: 10px;
   padding: 5px 6px 5px 7px;
-  border: 1px solid rgba(222, 201, 145, .24);
-  border-radius: 13px;
-  background: rgba(13, 21, 52, .88);
-  box-shadow: 0 5px 18px rgba(0, 0, 0, .2);
+  border: 1px solid var(--mg-line);
+  border-radius: var(--mg-radius);
+  background: rgba(27, 36, 52, .94);
+  box-shadow: 0 6px 20px rgba(5, 8, 18, .24);
   cursor: move;
 }
 .mg-head button { cursor: pointer; }
 .mg-title, .mg-overview { pointer-events: none; }
 .mg-title { display: flex; align-items: center; gap: 8px; min-width: 152px; font-size: 13px; font-weight: 720; letter-spacing: .4px; }
-.mg-title-mark {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  color: #151a37;
-  background: linear-gradient(145deg, #f3dfaa, #c6a963);
-  font: 800 16px/1 KaiTi, STKaiti, serif;
-}
+.mg-title-emblem { width: 31px; height: 31px; object-fit: contain; flex: none; filter: drop-shadow(0 2px 4px rgba(4, 6, 16, .25)); }
 .mg-overview { display: flex; align-items: center; gap: 9px; margin-left: auto; }
 .mg-score,
 .mg-status {
@@ -1455,18 +1456,19 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   min-height: 26px;
   box-sizing: border-box;
   padding: 4px 9px;
-  border: 1px solid rgba(255, 255, 255, .09);
+  border: 1px solid rgba(213, 220, 235, .1);
   border-radius: 9px;
-  background: rgba(4, 9, 28, .46);
+  background: rgba(11, 17, 31, .58);
   font-size: 10px;
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.mg-score-me { color: #f1d88f; font-weight: 750; }
-.mg-score-pet { color: #a9cadf; font-weight: 750; }
+.mg-score-me { color: #ead39d; font-weight: 750; }
+.mg-score-pet { color: #c8c4ed; font-weight: 750; }
 .mg-score-sep, .mg-status-sep { opacity: .35; }
-.mg-status { color: rgba(242, 240, 232, .76); }
-.mg-wall-count { color: #f0d68d; font-weight: 700; }
-.mg-sticks { color: #c8b5ec; }
+.mg-status { color: var(--mg-muted); }
+.mg-wall-count { color: var(--mg-gold); font-weight: 700; }
+.mg-sticks { color: var(--mg-violet); }
 .mg-head-btns { display: flex; gap: 4px; }
 .mg-icon { width: 15px; height: 15px; flex: none; }
 .mg-tool {
@@ -1485,35 +1487,44 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 }
 .mg-tool:hover,
 .mg-tool:focus-visible { color: #fff; background: rgba(255, 255, 255, .11); border-color: rgba(240, 216, 148, .38); outline: none; }
-.mg-tool[aria-pressed="true"] { color: #f0d78f; background: rgba(207, 181, 112, .12); border-color: rgba(231, 205, 137, .28); }
+.mg-tool[aria-pressed="true"] { color: #e8d2a3; background: rgba(169, 156, 227, .13); border-color: rgba(169, 156, 227, .38); }
 .mg-tool-label { font-size: 9px; white-space: nowrap; }
 
 .mg-table {
   position: absolute;
   z-index: 1;
-  left: 10px;
-  right: 10px;
-  top: 58px;
-  bottom: 52px;
-  border: 1px solid rgba(218, 198, 145, .36);
-  border-radius: 22px;
-  background:
-    linear-gradient(115deg, transparent 48%, rgba(255,255,255,.018) 50%, transparent 52%),
-    radial-gradient(ellipse at 50% 30%, #1d2f67 0%, #152554 52%, #0d1738 100%);
-  box-shadow: inset 0 0 38px rgba(3, 7, 22, .38), 0 10px 28px rgba(0, 0, 0, .28);
+  left: 14px;
+  right: 14px;
+  top: 60px;
+  bottom: 54px;
+  isolation: isolate;
+  border: 1px solid rgba(213, 182, 124, .36);
+  border-radius: 20px;
+  background: var(--mg-felt);
+  box-shadow: inset 0 0 32px rgba(8, 16, 28, .22), 0 9px 26px rgba(5, 8, 18, .28);
   overflow: hidden;
 }
 .mg-table::before {
   content: "";
   position: absolute;
   inset: 8px;
-  border: 1px solid rgba(231, 217, 177, .08);
-  border-radius: 15px;
+  z-index: 1;
+  border: 1px solid rgba(235, 222, 194, .1);
+  border-radius: 13px;
+  pointer-events: none;
+}
+.mg-table::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background: url("/mahjong/theme/table-felt.png") center / cover no-repeat;
+  opacity: .25;
   pointer-events: none;
 }
 
 .mg-seat { position: absolute; z-index: 4; left: 20px; right: 20px; }
-.mg-seat-name { color: rgba(242, 235, 215, .74); font-size: 9px; font-weight: 700; letter-spacing: .5px; text-shadow: 0 1px 2px #07102c; }
+.mg-seat-name { color: rgba(243, 235, 221, .76); font-size: 9px; font-weight: 700; letter-spacing: .5px; text-shadow: 0 1px 2px #111522; }
 .mg-seat-pet { top: 6px; height: 132px; text-align: center; }
 .mg-seat-pet > .mg-seat-name { position: absolute; left: 50%; top: 0; transform: translateX(-50%); }
 .mg-pet-hit {
@@ -1539,8 +1550,8 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   padding: 7px 10px;
   border: 1px solid rgba(109, 91, 60, .22);
   border-radius: 11px 11px 11px 3px;
-  color: #27304b;
-  background: rgba(255, 252, 241, .95);
+  color: #293147;
+  background: rgba(251, 247, 237, .96);
   box-shadow: 0 6px 16px rgba(2, 6, 20, .22);
   font-size: 10px;
   line-height: 1.35;
@@ -1557,8 +1568,8 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   margin-left: 0;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(8, 22, 16, .82);
-  color: #f0d894;
+  background: rgba(27, 36, 52, .9);
+  color: var(--mg-gold);
   font-size: 9px;
   font-weight: 650;
   white-space: nowrap;
@@ -1573,10 +1584,10 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   height: 47px;
   box-sizing: border-box;
   padding: 1px;
-  border: 1px solid rgba(98, 88, 68, .28);
+  border: 1px solid rgba(104, 96, 79, .24);
   border-radius: 5px;
-  background: linear-gradient(180deg, #fffefa, #f1eee5);
-  box-shadow: 0 2px 0 #c4bca8, 0 3px 5px rgba(2, 6, 20, .26);
+  background: linear-gradient(180deg, #fffefa, #f2eee4);
+  box-shadow: 0 2px 0 #c7bfae, 0 3px 5px rgba(7, 10, 20, .23);
   transition: transform .13s ease, filter .13s ease, border-color .13s ease;
 }
 .mg-tile::after {
@@ -1590,8 +1601,9 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   border-radius: 0 0 4px 4px;
   background: #b8ae98;
 }
-.mg-tile-back { padding: 0; border-color: rgba(181, 216, 226, .34); background: #253c72; }
+.mg-tile-back { padding: 0; border-color: transparent; background: #243a59; overflow: hidden; }
 .mg-tile-art { display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.mg-tile-back .mg-tile-art { object-fit: contain; filter: brightness(.84) saturate(.84); }
 .mg-tile-sm { width: 28px; height: 38px; }
 .mg-tile-xs { width: 22px; height: 30px; padding: .5px; }
 .mg-tile-click { cursor: pointer; }
@@ -1650,7 +1662,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-round { color: #ecd18a; font: 800 12px/1 KaiTi, STKaiti, serif; white-space: nowrap; }
 .mg-dora-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.mg-live-wall { position: absolute; z-index: 2; inset: 0; pointer-events: none; opacity: .84; }
+.mg-live-wall { position: absolute; z-index: 2; inset: 0; pointer-events: none; opacity: .72; }
 .mg-wall-edge { position: absolute; display: flex; gap: 1px; }
 .mg-wall-top,.mg-wall-bottom { left: 50%; transform: translateX(-50%); }
 .mg-wall-top { top: 130px; }
@@ -1679,18 +1691,18 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-actions {
   position: absolute;
   z-index: 9;
-  left: 10px;
-  right: 10px;
+  left: 14px;
+  right: 14px;
   bottom: 7px;
   height: 37px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid rgba(220, 201, 148, .18);
+  border: 1px solid rgba(213, 182, 124, .2);
   border-radius: 12px;
-  background: rgba(13, 21, 52, .9);
-  box-shadow: 0 5px 18px rgba(0, 0, 0, .2);
+  background: rgba(27, 36, 52, .94);
+  box-shadow: 0 5px 18px rgba(4, 7, 16, .22);
 }
 .mg-btn {
   min-width: 60px;
@@ -1705,7 +1717,10 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 }
 .mg-btn:hover, .mg-btn:focus-visible { background: rgba(255, 255, 255, .13); border-color: rgba(236, 212, 149, .55); outline: none; }
 .mg-btn-win { color: #1b1d33; border-color: #ead698; background: linear-gradient(#f2dea3, #c9aa5e); }
-.mg-btn-primary { color: #171d39; border-color: #c7d1ec; background: linear-gradient(#e1e7f7, #a8b8e3); }
+.mg-btn-primary { color: #171d39; border-color: #d2ceef; background: linear-gradient(#e8e5f7, #afa6df); }
+.mg-btn-accent { color: #f5f0ff; border-color: rgba(190, 179, 237, .62); background: rgba(169, 156, 227, .28); }
+.mg-btn-call { border-color: rgba(213, 182, 124, .42); color: #f1dfb7; background: rgba(213, 182, 124, .1); }
+.mg-btn-subtle { color: var(--mg-muted); border-color: rgba(170, 181, 198, .2); background: transparent; }
 .mg-hint { color: rgba(235, 234, 229, .58); font-size: 10px; }
 
 .mg-banner {
@@ -1714,15 +1729,23 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   left: 50%;
   top: 49%;
   transform: translate(-50%, -50%);
-  max-width: 76%;
-  padding: 14px 22px;
-  border: 1px solid rgba(232, 209, 147, .42);
-  border-radius: 12px;
-  color: #f8f3e5;
-  background: rgba(12, 19, 46, .95);
-  box-shadow: 0 15px 38px rgba(0, 0, 0, .4);
+  width: min(332px, calc(100% - 48px));
+  min-height: 158px;
+  max-height: min(54%, 250px);
+  box-sizing: border-box;
+  padding: 20px 126px 20px 24px;
+  overflow: hidden;
+  border: 1px solid rgba(213, 182, 124, .45);
+  border-radius: 16px;
+  color: var(--mg-text);
+  background: linear-gradient(145deg, rgba(27, 36, 52, .98), rgba(17, 21, 34, .98));
+  box-shadow: 0 18px 42px rgba(4, 7, 16, .46);
 }
-.mg-banner-text { white-space: pre-line; text-align: center; font-size: 12px; line-height: 1.6; }
+.mg-banner-kicker, .mg-banner-title, .mg-banner-text { position: relative; z-index: 2; }
+.mg-banner-kicker { color: var(--mg-gold); font-size: 9px; font-weight: 700; letter-spacing: 1.8px; }
+.mg-banner-title { margin-top: 5px; color: #fffaf1; font-size: 16px; font-weight: 780; line-height: 1.25; }
+.mg-banner-text { margin-top: 9px; max-height: 104px; overflow: auto; white-space: pre-line; color: var(--mg-muted); text-align: left; font-size: 11px; line-height: 1.55; }
+.mg-result-ornament { position: absolute; z-index: 1; right: -7px; bottom: -8px; width: 139px; height: auto; pointer-events: none; opacity: .94; }
 
 .mg-motion .mg-anim-draw { animation: mg-draw-in .22s ease-out; }
 .mg-motion .mg-anim-discard { animation: mg-discard-in .22s cubic-bezier(.2,.85,.25,1.12); }
@@ -1746,7 +1769,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-overview { gap: 4px; }
   .mg-score, .mg-status { padding-inline: 6px; gap: 4px; }
   .mg-tool { width: 29px; min-width: 29px; padding: 0; }
-  .mg-table { top: 57px; }
+  .mg-table { left: 10px; right: 10px; top: 57px; bottom: 54px; }
   .mg-seat-pet { height: 112px; }
   .mg-pet-hit { width: 126px; height: 82px; }
   .mg-pet-speech { top: 15px; left: calc(50% + 55px); max-width: 126px; }
@@ -1767,6 +1790,9 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-log { left: 18px; width: 108px; }
   .mg-dead-wall { right: 29px; }
   .mg-seat-me { height: 62px; }
+  .mg-actions { left: 10px; right: 10px; }
+  .mg-banner { width: min(310px, calc(100% - 34px)); min-height: 148px; padding: 18px 110px 18px 20px; }
+  .mg-result-ornament { width: 124px; }
 }
 /* ========== 歌词气泡（正在播放 / 当前歌词行） ========== */
 .lyric-bubbles {
