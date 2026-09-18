@@ -350,7 +350,8 @@ export async function chatStream(
   enableTools = true,
   extraContext = "",
   systemOverride = "",
-): Promise<{ text: string; toolCalls: ToolCall[] }> {
+  requestOptions: ChatRequestOptions = {},
+): Promise<{ text: string; toolCalls: ToolCall[]; usage: ChatUsage }> {
   const base = resolveBase(provider, customBaseUrl);
   const m = model || PROVIDERS[provider].defaultModel;
   if (!m) throw new Error("未设置模型名");
@@ -372,8 +373,10 @@ export async function chatStream(
       // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
       ...(enableTools ? { tools: TOOLS } : {}),
       ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
+      ...(requestOptions.maxOutputTokens ? { max_tokens: requestOptions.maxOutputTokens } : {}),
       stream: true,
     }),
+    signal: requestOptions.signal,
   });
   if (!res.ok || !res.body) {
     const errText = await res.text().catch(() => "");
@@ -438,12 +441,12 @@ export async function chatStream(
     .filter((tc) => tc.name && tc.args);
   const outputTokens = estimateTokens(text) + estimateTokens(toolCalls.map((t) => t.args).join(" "));
   // 服务端有真实 usage 时优先用真实值
-  recordUsage(
-    serverUsage ? serverUsage.input : inputTokens,
-    serverUsage ? serverUsage.output : outputTokens,
-    serverUsage ? serverUsage.cached : 0,
-  );
-  return { text, toolCalls: parsed };
+  const usage: ChatUsage = serverUsage
+    ? { ...serverUsage, source: "server" }
+    : { input: inputTokens, output: outputTokens, cached: 0, source: "estimated" };
+  recordUsage(usage.input, usage.output, usage.cached);
+  requestOptions.onUsage?.(usage);
+  return { text, toolCalls: parsed, usage };
 }
 
 // ==================== 本地 token 估算与用量统计 ====================
@@ -588,4 +591,17 @@ export function extractCommand(text: string): string | null {
 
 export function stripCommand(text: string): string {
   return text.replace(/(?:^|\n)\s*CMD:\s*[^\n]+/g, "").trim();
+}
+
+export interface ChatUsage {
+  input: number;
+  output: number;
+  cached: number;
+  source: "server" | "estimated";
+}
+
+export interface ChatRequestOptions {
+  signal?: AbortSignal;
+  maxOutputTokens?: number;
+  onUsage?: (usage: ChatUsage) => void;
 }

@@ -29,6 +29,7 @@ import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emot
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
+import { clearPetTalkKeyCache } from "./games/riichi/petTalk";
 import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
@@ -2723,6 +2724,18 @@ async function toggleAssistantSettings() {
     greetRow.append(greetLabel, greetInput, greetUnit);
     host.appendChild(greetRow);
 
+    const gameTalk = document.createElement("input");
+    gameTalk.type = "checkbox";
+    gameTalk.checked = settings.gameTalk === true;
+    gameTalk.setAttribute("aria-describedby", "game-talk-help");
+    const gameTalkRow = mkRow("AI 对局互动", gameTalk);
+    gameTalkRow.title = "开启后仅在麻将关键事件发送精简公开牌况，并消耗已配置服务的 API 额度";
+    const gameTalkHelp = document.createElement("div");
+    gameTalkHelp.id = "game-talk-help";
+    gameTalkHelp.className = "as-privacy";
+    gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
+    host.appendChild(gameTalkHelp);
+
     const fetchBtn = document.createElement("button");
     fetchBtn.className = "as-btn";
     fetchBtn.textContent = "自动获取模型";
@@ -2830,6 +2843,7 @@ async function toggleAssistantSettings() {
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
+      settings.gameTalk = gameTalk.checked;
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       settings.assistant.greetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
@@ -2838,6 +2852,7 @@ async function toggleAssistantSettings() {
       try {
         await invoke("set_api_key", { apiKey: key.value.trim() });
         clearApiKeyCache();
+        clearPetTalkKeyCache();
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }

@@ -2,13 +2,20 @@
  * 双人立直麻将 2.5D 桌面。
  * 所有视觉都从 RiichiGame 的公开状态派生；动画只表现事件，不持有第二份牌状态。
  */
-import { RiichiGame, type RiverTile, type Seat } from "./engine";
+import { RiichiGame, type DiscardWaitPreview, type RiverTile, type Seat } from "./engine";
 import { doraFromIndicator, tileName, tileShort } from "./tiles";
 import { createTileBackImage, createTileImage } from "./tileAssets";
 import { createRiichiIcon, type RiichiIconName } from "./icons";
 import { boostMood, reactNow } from "../../assistant/EmotionEngine";
 import { isAssistantBusy } from "../../assistant/AssistantPanel";
-import { petTalkAvailable, petTalkWanted, requestPetTalk, resetPetTalk } from "./petTalk";
+import {
+  cancelPetTalk,
+  petTalkAvailable,
+  petTalkWanted,
+  requestManualPetTalk,
+  requestPetTalk,
+  resetPetTalk,
+} from "./petTalk";
 import type { Meld } from "./rules";
 import type { MiniGameContext, MiniGameInstance } from "../types";
 
@@ -40,6 +47,15 @@ function toolButton(icon: RiichiIconName, label: string, onClick: () => void, pr
   b.setAttribute("aria-label", actionLabel);
   if (pressed !== undefined) b.setAttribute("aria-pressed", String(pressed));
   b.append(createRiichiIcon(icon), el("span", "mg-tool-label", label));
+  return b;
+}
+
+function actionButton(label: string, cls: string, onClick: () => void, title?: string): HTMLButtonElement {
+  const b = button(label, cls, () => {
+    if (b.disabled) return;
+    b.closest(".mg-actions")?.querySelectorAll<HTMLButtonElement>("button").forEach((item) => { item.disabled = true; });
+    onClick();
+  }, title);
   return b;
 }
 
@@ -165,6 +181,21 @@ function renderDeadWall(game: RiichiGame): HTMLElement {
   return wrap;
 }
 
+function renderWaitPreview(preview: DiscardWaitPreview, edge: "left" | "right" | "center"): HTMLElement {
+  const panel = el("div", `mg-wait-preview mg-wait-preview-${edge}`);
+  panel.setAttribute("role", "status");
+  panel.appendChild(el("div", "mg-wait-preview-title", "打出后听牌"));
+  const tiles = el("div", "mg-wait-preview-tiles");
+  for (const tile of preview.waits) {
+    const cell = tileEl(tile, { tiny: true });
+    cell.classList.toggle("mg-wait-no-ron", !preview.ronWaits.includes(tile));
+    cell.title = preview.ronWaits.includes(tile) ? `${tileName(tile)}：可荣和` : `${tileName(tile)}：当前荣和受限`;
+    tiles.appendChild(cell);
+  }
+  panel.append(tiles, el("div", "mg-wait-preview-note", preview.note));
+  return panel;
+}
+
 function boolSetting(key: string, fallback: boolean): boolean {
   const raw = localStorage.getItem(key);
   return raw === null ? fallback : raw === "1";
@@ -188,6 +219,11 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   let speechUntil = 0;
   let lastCasualSpeech = 0;
   let renderedEventSeq = 0;
+  let previewStateKey = "";
+  const previewCache = new Map<number, DiscardWaitPreview | null>();
+  let talkEpoch = 0;
+  let chatOpen = false;
+  let manualTalkBusy = false;
 
   const root = el("div", "mg-riichi");
   ctx.root.appendChild(root);
@@ -202,6 +238,18 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   const clearTimers = () => {
     window.clearTimeout(petLineTimer);
     window.clearTimeout(idleTimer);
+  };
+
+  const clearRoundInteraction = () => {
+    talkEpoch++;
+    cancelPetTalk();
+    clearTimers();
+    petLine = "";
+    speechPriority = 0;
+    speechUntil = 0;
+    manualTalkBusy = false;
+    chatOpen = false;
+    previewCache.clear();
   };
 
   const say = (line: string, emotion?: "happy" | "surprised" | "tired", priority = 1) => {
@@ -228,7 +276,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
    * - AI 互动可用时**不使用固定台词池**，只让 AI 看牌况自己说（表情/动作仍即时本地触发，零 token）；
    * - 没配 API（或关掉 AI 互动）时才回落到本地台词。
    * 节奏：只在关键事件（开局/立直/鸣牌/和了/流局）或"有值得说的事"（听牌、牌墙将尽）时才开口；
-   * 频率由 petTalk 控制（最小间隔 18s / 每局 3 次 / 每场 20 次），被节流时这一句就不说；
+   * 频率由 petTalk 控制（最小间隔 30s / 每局 6 次 / 每场 20 次），被节流时这一句就不说；
    * AI 也可以回「沉默」表示没什么可说，此时不显示任何气泡。
    */
   const react = (
@@ -245,9 +293,10 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     }
     // 只有关键事件才驱动表情/动作（本地、零 token），台词等 AI 回来再显示；普通事件不打扰
     if (emotion && priority >= 3) reactNow(emotion, true);
-    void requestPetTalk(game, reason, isAssistantBusy()).then((line) => {
-      if (!line || disposed) return;
-      say(line, emotion, priority);
+    const epoch = talkEpoch;
+    void requestPetTalk(game, reason, isAssistantBusy(), () => !disposed && petInteraction && epoch === talkEpoch).then((line) => {
+      if (disposed || !petInteraction || epoch !== talkEpoch) return;
+      say(line || fallback, emotion, priority);
     });
   };
 
@@ -386,6 +435,10 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       petInteraction = !petInteraction;
       localStorage.setItem(PET_KEY, petInteraction ? "1" : "0");
       if (!petInteraction) {
+        talkEpoch++;
+        cancelPetTalk();
+        chatOpen = false;
+        manualTalkBusy = false;
         petLine = "";
         speechPriority = 0;
         speechUntil = 0;
@@ -394,7 +447,12 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       }
       render();
     }, petInteraction));
-    tools.appendChild(toolButton("rotate-ccw", "重开", () => { clearTimers(); playerTurns = 0; resetPetTalk(); game.newMatch(); }));
+    tools.appendChild(toolButton("rotate-ccw", "重开", () => {
+      clearRoundInteraction();
+      playerTurns = 0;
+      resetPetTalk();
+      game.newMatch();
+    }));
     tools.appendChild(toolButton("x", "退出", () => ctx.close()));
     head.appendChild(tools);
     root.appendChild(head);
@@ -450,6 +508,19 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     meSeat.appendChild(renderMelds(game.players[0].melds, 0, animateEvent && (event?.type === "call" || event?.type === "kan") && event.seat === 0));
     const hand = el("div", "mg-tile-row mg-hand");
     const canDiscard = game.pending?.kind === "turn";
+    const nextPreviewStateKey = JSON.stringify({
+      hand: game.players[0].hand,
+      melds: game.players.map((p) => p.melds),
+      rivers: game.players.map((p) => p.river),
+      dora: game.doraIndicators,
+      pending: game.pending,
+      riichi: game.players[0].riichi,
+      riichiPending: game.riichiPending,
+    });
+    if (previewStateKey !== nextPreviewStateKey) {
+      previewStateKey = nextPreviewStateKey;
+      previewCache.clear();
+    }
     const handEntries = game.players[0].hand.map((tile, index) => ({ tile, index, drawn: false }));
     if (game.lastDrawSeat === 0 && game.lastDraw !== null) {
       const drawnIndex = handEntries.map((entry) => entry.tile).lastIndexOf(game.lastDraw);
@@ -459,17 +530,43 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
         handEntries.push(drawn);
       }
     }
-    handEntries.forEach(({ tile, index, drawn }) => {
+    handEntries.forEach(({ tile, index, drawn }, position) => {
       const te = tileEl(tile, {
         clickable: canDiscard,
         drawn,
         animate: animateEvent && event?.type === "draw" && event.seat === 0 && drawn,
       });
       if (game.riichiPending) te.classList.add("mg-tile-riichi-candidate");
-      if (canDiscard) te.addEventListener("click", (event) => {
-        event.stopPropagation();
-        game.playTile(index);
-      });
+      if (canDiscard) {
+        te.tabIndex = 0;
+        te.setAttribute("role", "button");
+        te.setAttribute("aria-label", `打出${tileName(tile)}`);
+        const showPreview = () => {
+          hand.querySelector(".mg-wait-preview")?.remove();
+          let preview = previewCache.get(tile);
+          if (preview === undefined) {
+            preview = game.discardWaitPreview(index);
+            previewCache.set(tile, preview);
+          }
+          if (!preview) return;
+          const edge = position < 3 ? "left" : position > handEntries.length - 4 ? "right" : "center";
+          te.appendChild(renderWaitPreview(preview, edge));
+        };
+        const hidePreview = () => te.querySelector(".mg-wait-preview")?.remove();
+        te.addEventListener("mouseenter", showPreview);
+        te.addEventListener("mouseleave", hidePreview);
+        te.addEventListener("focus", showPreview);
+        te.addEventListener("blur", hidePreview);
+        te.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          game.playTile(index);
+        });
+        te.addEventListener("click", (event) => {
+          event.stopPropagation();
+          game.playTile(index);
+        });
+      }
       hand.appendChild(te);
     });
     meSeat.appendChild(hand);
@@ -479,27 +576,88 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     const actions = el("footer", "mg-actions");
     const pending = game.pending;
     if (pending?.kind === "turn") {
-      if (pending.options.includes("tsumo")) actions.appendChild(button("自摸和了", "mg-btn mg-btn-win", () => game.tsumo()));
-      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(button("立直", "mg-btn mg-btn-accent", () => game.declareRiichi()));
-      if (game.riichiPending) actions.appendChild(button("取消立直", "mg-btn mg-btn-subtle", () => game.cancelRiichi()));
-      if (pending.options.includes("ankan")) actions.appendChild(button("暗杠", "mg-btn mg-btn-call", () => game.ankan()));
+      if (pending.options.includes("tsumo")) actions.appendChild(actionButton("自摸和了", "mg-btn mg-btn-win", () => game.tsumo()));
+      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(actionButton("立直", "mg-btn mg-btn-accent", () => game.declareRiichi()));
+      if (game.riichiPending) actions.appendChild(actionButton("取消立直", "mg-btn mg-btn-subtle", () => game.cancelRiichi()));
+      if (pending.options.includes("ankan")) {
+        const candidates = game.ankanCandidates(0);
+        for (const tile of candidates) {
+          const label = candidates.length === 1 ? "暗杠" : `暗杠 ${tileShort(tile)}`;
+          actions.appendChild(actionButton(label, "mg-btn mg-btn-call", () => game.ankan(tile), `选择暗杠${tileName(tile)}`));
+        }
+      }
       actions.appendChild(el("span", "mg-hint", game.riichiPending ? "选择一张牌横置宣言立直" : "点击手牌出牌"));
     } else if (pending?.kind === "call") {
-      if (pending.options.includes("ron")) actions.appendChild(button("荣和", "mg-btn mg-btn-win", () => game.call("ron")));
-      if (pending.options.includes("pon")) actions.appendChild(button("碰", "mg-btn mg-btn-call", () => game.call("pon")));
-      if (pending.options.includes("kan")) actions.appendChild(button("明杠", "mg-btn mg-btn-call", () => game.call("kan")));
-      actions.appendChild(button("过", "mg-btn mg-btn-subtle", () => game.call("pass")));
+      if (pending.options.includes("ron")) actions.appendChild(actionButton("荣和", "mg-btn mg-btn-win", () => game.call("ron")));
+      if (pending.options.includes("pon")) actions.appendChild(actionButton("碰", "mg-btn mg-btn-call", () => game.call("pon")));
+      if (pending.options.includes("kan")) actions.appendChild(actionButton("明杠", "mg-btn mg-btn-call", () => game.call("kan")));
+      actions.appendChild(actionButton("过", "mg-btn mg-btn-subtle", () => game.call("pass")));
       actions.appendChild(el("span", "mg-hint", `桌宠打出${pending.tile === undefined ? "牌" : tileName(pending.tile)}`));
     } else if (game.phase === "handend") {
-      actions.appendChild(button("下一局", "mg-btn mg-btn-primary", () => { clearTimers(); game.nextHand(); }));
+      actions.appendChild(actionButton("下一局", "mg-btn mg-btn-primary", () => {
+        clearRoundInteraction();
+        game.nextHand();
+      }));
       actions.appendChild(el("span", "mg-hint", "本局结束"));
     } else if (game.phase === "ended") {
-      actions.appendChild(button("再来一场", "mg-btn mg-btn-primary", () => { clearTimers(); playerTurns = 0; game.newMatch(); }));
+      actions.appendChild(actionButton("再来一场", "mg-btn mg-btn-primary", () => {
+        clearRoundInteraction();
+        playerTurns = 0;
+        resetPetTalk();
+        game.newMatch();
+      }));
       actions.appendChild(el("span", "mg-hint", "对局结束"));
     } else {
       actions.appendChild(el("span", "mg-hint", "桌宠正在思考…"));
     }
-    root.appendChild(actions);
+    table.appendChild(actions);
+
+    if (petInteraction) {
+      const chat = el("div", `mg-game-chat${chatOpen ? " is-open" : ""}`);
+      if (!chatOpen) {
+        const openChat = button("对局聊天", "mg-chat-toggle", () => {
+          chatOpen = true;
+          render();
+          queueMicrotask(() => root.querySelector<HTMLInputElement>(".mg-chat-input")?.focus());
+        }, aiTalkOn ? "向桌宠发送一条带当前公开牌况的消息" : "打开对局聊天；未启用 AI 时仍保留本地互动");
+        chat.appendChild(openChat);
+      } else {
+        const form = el("form", "mg-chat-form");
+        const input = el("input", "mg-chat-input") as HTMLInputElement;
+        input.type = "text";
+        input.maxLength = 240;
+        input.placeholder = aiTalkOn ? "和桌宠说一句…" : "AI对局互动未开启";
+        input.disabled = manualTalkBusy;
+        input.setAttribute("aria-label", "对局聊天内容");
+        const send = button(manualTalkBusy ? "回复中" : "发送", "mg-chat-send", () => {}, "发送对局聊天");
+        send.type = "submit";
+        send.disabled = manualTalkBusy;
+        const close = button("×", "mg-chat-close", () => { chatOpen = false; render(); }, "关闭对局聊天");
+        form.append(input, send, close);
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (manualTalkBusy) return;
+          const text = input.value;
+          const epoch = talkEpoch;
+          manualTalkBusy = true;
+          render();
+          void requestManualPetTalk(
+            game,
+            text,
+            isAssistantBusy(),
+            () => !disposed && petInteraction && epoch === talkEpoch,
+          ).then((result) => {
+            if (disposed || !petInteraction || epoch !== talkEpoch) return;
+            manualTalkBusy = false;
+            say(result.line || result.notice || "本次没有回复", result.line ? "happy" : undefined, result.line ? 4 : 2);
+            render();
+          });
+        });
+        chat.appendChild(form);
+      }
+      table.appendChild(chat);
+    }
 
     if (game.handResult && game.phase !== "playing") {
       const banner = el("div", "mg-banner");
@@ -527,6 +685,8 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   return {
     unmount() {
       disposed = true;
+      talkEpoch++;
+      cancelPetTalk();
       clearTimers();
       window.removeEventListener("resize", syncPetAnchor);
       const stage = document.getElementById("stage");

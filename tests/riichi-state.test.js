@@ -31,6 +31,29 @@ privacyGame.players[1].hand = [16,16,16,16];
 privacyGame.doraIndicators = [];
 ok("wait hint never reads opponent concealed tiles", privacyGame.waitsHint(0).includes(16), privacyGame.waitsHint(0));
 
+const previewGame = new RiichiGame();
+previewGame.phase = "playing";
+previewGame.pending = { kind: "turn", options: ["discard"] };
+previewGame.players[0].hand = [1,2,3, 4,5,6, 11,12,13, 23,24,25, 16, 27];
+previewGame.players[1].hand = [16,16,16,16];
+previewGame.doraIndicators = [];
+const preview = previewGame.discardWaitPreview(13);
+ok("discard preview uses the post-discard hand", preview && preview.discard === 27 && preview.waits.length === 1 && preview.waits[0] === 16, preview);
+ok("discard preview ignores opponent concealed copies", preview && preview.waits.includes(16), preview);
+
+const noYakuPreview = new RiichiGame();
+noYakuPreview.phase = "playing";
+noYakuPreview.pending = { kind: "turn", options: ["discard"] };
+noYakuPreview.players[0].hand = [1,2,3, 11,12,13, 23,24,25, 16, 27];
+noYakuPreview.players[0].melds = [{ kind: "triplet", tiles: [0,0,0], open: true, from: 1 }];
+noYakuPreview.doraIndicators = [];
+const noYaku = noYakuPreview.discardWaitPreview(10);
+ok("discard preview distinguishes shape-only no-yaku waits", noYaku && noYaku.waits[0] === 16 && noYaku.ronWaits.length === 0 && noYaku.tsumoWaits.length === 0 && /无役/.test(noYaku.note), noYaku);
+
+const multiKan = new RiichiGame();
+multiKan.players[0].hand = [0,0,0,0, 9,9,9,9, 1,2,3,18,19,20];
+ok("multiple concealed-kan candidates remain explicit", JSON.stringify(multiKan.ankanCandidates(0)) === JSON.stringify([0,9]), multiKan.ankanCandidates(0));
+
 // Private engine operations still exist at runtime; call them directly to make a deterministic state fixture.
 const riverGame = new RiichiGame();
 riverGame.players[0].hand = [4, 6, 7];

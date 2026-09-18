@@ -71,6 +71,14 @@ export interface PendingState {
   tile?: number;
 }
 
+export interface DiscardWaitPreview {
+  discard: number;
+  waits: number[];
+  ronWaits: number[];
+  tsumoWaits: number[];
+  note: string;
+}
+
 export const SEAT_NAME = ["你", "桌宠"];
 
 export class RiichiGame {
@@ -172,9 +180,12 @@ export class RiichiGame {
     this.resolveWaiter({ type: "tsumo" });
   }
 
-  ankan() {
+  ankan(tile?: number) {
     if (!this.pending || !this.pending.options.includes("ankan")) return;
-    this.resolveWaiter({ type: "ankan" });
+    const candidates = this.ankanCandidates(0);
+    const choice = tile ?? (candidates.length === 1 ? candidates[0] : undefined);
+    if (choice === undefined || !candidates.includes(choice)) return;
+    this.resolveWaiter({ type: "ankan", tile: choice });
   }
 
   call(type: ActionType) {
@@ -251,19 +262,7 @@ export class RiichiGame {
   }
 
   private canAnkan(seat: Seat): boolean {
-    const p = this.players[seat];
-    if (p.riichi) return false;
-    if (p.hand.length !== 14 - 3 * p.melds.length) return false;
-    const counts = countsOf(p.hand);
-    for (let t = 0; t < counts.length; t++) if (counts[t] === 4) return true;
-    return false;
-  }
-
-  private ankanTile(seat: Seat): number | null {
-    const p = this.players[seat];
-    const counts = countsOf(p.hand);
-    for (let t = 0; t < counts.length; t++) if (counts[t] === 4) return t;
-    return null;
+    return this.ankanCandidates(seat).length > 0;
   }
 
   private bestRiichiDiscard(seat: Seat): number | null {
@@ -308,6 +307,50 @@ export class RiichiGame {
   /** 玩家本局是否已立直（UI 高亮用） */
   isRiichi(seat: Seat): boolean {
     return this.players[seat].riichi;
+  }
+
+  /** 当前可选择的暗杠牌种；多候选时由界面明确让玩家选择。 */
+  ankanCandidates(seat: Seat = 0): number[] {
+    const p = this.players[seat];
+    if (p.riichi || p.hand.length !== 14 - 3 * p.melds.length) return [];
+    const counts = countsOf(p.hand);
+    return counts.flatMap((count, tile) => count === 4 ? [tile] : []);
+  }
+
+  /**
+   * 仅用玩家手牌与公开信息计算打出指定牌后的听牌结果。
+   * 和牌可用性继续交给 evaluateWin，避免 UI 维护第二套规则。
+   */
+  discardWaitPreview(index: number): DiscardWaitPreview | null {
+    if (this.phase !== "playing" || this.pending?.kind !== "turn") return null;
+    const p = this.players[0];
+    const discard = p.hand[index];
+    if (discard === undefined) return null;
+    const rest = p.hand.filter((_, i) => i !== index);
+    const waits = tenpaiWaits(rest, p.melds.length, (t) => this.visibleCountFor(0, t) >= 4);
+    if (waits.length === 0) return null;
+    const riichiAfterDiscard = p.riichi || this.riichiPending;
+    const ronWaits: number[] = [];
+    const tsumoWaits: number[] = [];
+    for (const tile of waits) {
+      const closed = sortTiles([...rest, tile]);
+      const base = {
+        closed,
+        melds: p.melds,
+        riichi: riichiAfterDiscard,
+        seatWind: this.seatWind(0),
+        roundWind: WIND_E,
+        doraIndicators: this.doraIndicators,
+        winningTile: tile,
+      };
+      if (evaluateWin({ ...base, tsumo: false })) ronWaits.push(tile);
+      if (evaluateWin({ ...base, tsumo: true })) tsumoWaits.push(tile);
+    }
+    let note = "按当前房规，所示牌均可荣和";
+    if (ronWaits.length === 0 && tsumoWaits.length > 0) note = "当前无荣和役，仅自摸时成立";
+    else if (ronWaits.length === 0) note = "牌形听牌，但当前无役，不能和牌";
+    else if (ronWaits.length < waits.length) note = "部分待牌当前无役，荣和受限";
+    return { discard, waits, ronWaits, tsumoWaits, note };
   }
 
   // ---------- 对局流程 ----------
@@ -403,7 +446,7 @@ export class RiichiGame {
       }
 
       if (action.type === "ankan") {
-        this.applyAnkan(current);
+        this.applyAnkan(current, action.tile);
         this.drawFromDead = true;
         needDraw = true;
         continue;
@@ -515,8 +558,9 @@ export class RiichiGame {
     if (type === "kan") this.flipKanDora();
   }
 
-  private applyAnkan(seat: Seat) {
-    const tile = this.ankanTile(seat);
+  private applyAnkan(seat: Seat, requested?: number) {
+    const candidates = this.ankanCandidates(seat);
+    const tile = requested !== undefined && candidates.includes(requested) ? requested : candidates[0] ?? null;
     if (tile === null) return;
     const p = this.players[seat];
     for (let i = 0; i < 4; i++) {
@@ -545,7 +589,7 @@ export class RiichiGame {
     if (needDraw) {
       const win = this.evalWin(seat, [...p.hand], this.lastDraw as number, true);
       if (win) return { type: "tsumo" };
-      if (this.canAnkan(seat) && Math.random() < 0.85) return { type: "ankan" };
+      if (this.canAnkan(seat) && Math.random() < 0.85) return { type: "ankan", tile: this.ankanCandidates(seat)[0] };
       if (this.canRiichi(seat)) {
         const choice = this.bestRiichiDiscard(seat);
         if (choice !== null && Math.random() < 0.9) return { type: "discard", tile: choice, riichi: true };

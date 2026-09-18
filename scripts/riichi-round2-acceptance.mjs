@@ -59,7 +59,9 @@ await send("Page.reload", { ignoreCache: true });
 await wait(1500);
 const dpiScale = await evaluate(`devicePixelRatio||1`);
 const originalPrefs = await evaluate(`({motion:localStorage.getItem('petra.riichi.motion'),pet:localStorage.getItem('petra.riichi.petInteraction')})`);
+const originalGameSettings = await evaluate(`localStorage.getItem('live2d-pet-settings')`);
 await evaluate(`localStorage.setItem('petra.riichi.motion','1');localStorage.setItem('petra.riichi.petInteraction','1')`);
+await evaluate(`(()=>{const k='live2d-pet-settings';const s=JSON.parse(localStorage.getItem(k)||'{}');s.gameTalk=false;localStorage.setItem(k,JSON.stringify(s))})()`);
 await evaluate(`window.__TAURI_INTERNALS__.invoke('set_window_size',{width:${Math.round(700)}*devicePixelRatio,height:${Math.round(700)}*devicePixelRatio})`);
 await wait(5500);
 
@@ -228,6 +230,7 @@ const reentered = await evaluate(`(()=>({overlays:document.querySelectorAll('.mg
 if (reentered.overlays !== 1 || reentered.hand !== 14 || reentered.speech) throw new Error(`re-entry leaked old state: ${JSON.stringify(reentered)}`);
 
 await evaluate(`(${JSON.stringify(originalPrefs)}.motion===null?localStorage.removeItem('petra.riichi.motion'):localStorage.setItem('petra.riichi.motion',${JSON.stringify(originalPrefs.motion)}));(${JSON.stringify(originalPrefs)}.pet===null?localStorage.removeItem('petra.riichi.petInteraction'):localStorage.setItem('petra.riichi.petInteraction',${JSON.stringify(originalPrefs.pet)}))`);
+await evaluate(originalGameSettings === null ? `localStorage.removeItem('live2d-pet-settings')` : `localStorage.setItem('live2d-pet-settings',${JSON.stringify(originalGameSettings)})`);
 
 console.log(JSON.stringify({ pass: true, dpiScale, steps, naturalRiichi, naturalCall, naturalKan, naturalKanChecks, opening, narrow, afterDiscard, restarted, kanBefore, kanAfter, completed, emotionAudit, interactionOff, motionOff, exited, reentered, files }, null, 2));
 ws.close();

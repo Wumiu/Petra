@@ -101,7 +101,7 @@ const DEFAULTS: Settings = {
   modelAuto: {},
   musicLyrics: true,
   lyricsTranslate: true,
-  gameTalk: true,
+  gameTalk: false,
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */
