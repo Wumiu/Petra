@@ -58,7 +58,7 @@ await wait(500);
 await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;g.runId++;g.phase='playing';g.players[0].hand=[0,1,2,3,4,9,10,11,18,19,20,27,27,30];g.players[0].melds=[];g.players[0].river=[];g.players[0].discards=[];g.players[1].river=[];g.players[1].discards=[];g.pending={kind:'turn',options:['discard','tsumo','riichi']};g.lastDraw=30;g.lastDrawSeat=0;g.handResult=null;g.onUpdate();return true})()`);
 await hover(".mg-hand .mg-tile:last-child");
 const waitPreview = await evaluate(`(()=>{const p=document.querySelector('.mg-wait-preview');const r=p?.getBoundingClientRect();const table=document.querySelector('.mg-table')?.getBoundingClientRect();return {title:p?.querySelector('.mg-wait-preview-title')?.textContent,images:p?.querySelectorAll('img').length,text:p?.textContent,bounds:r&&{left:r.left,right:r.right,top:r.top,bottom:r.bottom},table:table&&{left:table.left,right:table.right,top:table.top,bottom:table.bottom},actions:document.querySelector('.mg-actions')?.getBoundingClientRect().toJSON()}})()`);
-if (waitPreview.title !== "打出后听牌" || waitPreview.images !== 2) throw new Error(`wait preview mismatch: ${JSON.stringify(waitPreview)}`);
+if (waitPreview.title !== "打出后听牌" || waitPreview.images !== 2 || !/余\d/.test(waitPreview.text) || !waitPreview.text.includes("可见牌推算")) throw new Error(`wait preview mismatch: ${JSON.stringify(waitPreview)}`);
 if (waitPreview.bounds.left < waitPreview.table.left || waitPreview.bounds.right > waitPreview.table.right) throw new Error(`wait preview escaped table: ${JSON.stringify(waitPreview)}`);
 if (waitPreview.bounds.bottom > waitPreview.actions.top) throw new Error(`wait preview overlaps actions: ${JSON.stringify(waitPreview)}`);
 const files = { preview700: await screenshot("01-wait-preview-actions-700.png") };
@@ -81,12 +81,20 @@ await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;
 const multiKanButtons = await evaluate(`[...document.querySelectorAll('.mg-actions button')].map(b=>b.textContent.trim()).filter(t=>t.startsWith('暗杠'))`);
 if (multiKanButtons.length !== 2 || new Set(multiKanButtons).size !== 2) throw new Error(`multiple kan choices collapsed: ${JSON.stringify(multiKanButtons)}`);
 // Explicit long-river/call fixture: in-table Ron/Pon/Kan/Pass area plus public melds.
-await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;const river=[0,9,18,27,1,10,19,28,2,11,20,29,3,12,21,30,4,13].map((tile,i)=>({tile,riichi:i===8,called:i===4}));g.players[0].river=river;g.players[0].discards=river.filter(x=>!x.called).map(x=>x.tile);g.players[1].river=river.map((x,i)=>({...x,tile:(x.tile+5)%34,riichi:i===10,called:i===14}));g.players[1].discards=g.players[1].river.filter(x=>!x.called).map(x=>x.tile);g.players[0].melds=[{kind:'triplet',tiles:[8,8,8],open:true,from:1},{kind:'kan',tiles:[31,31,31,31],open:false,from:null}];g.pending={kind:'call',options:['ron','pon','kan','pass'],tile:8};g.lastDrawSeat=null;g.onUpdate();return true})()`);
-const actionAudit = await evaluate(`(()=>{const a=document.querySelector('.mg-actions')?.getBoundingClientRect();const t=document.querySelector('.mg-table')?.getBoundingClientRect();const labels=[...document.querySelectorAll('.mg-actions button')].map(b=>b.textContent.trim());const rivers=[...document.querySelectorAll('.mg-river-zone')].map(e=>e.getBoundingClientRect().toJSON());return {labels,a:a&&a.toJSON(),t:t&&t.toJSON(),rivers}})()`);
+await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;const river=Array.from({length:36},(_,i)=>({tile:i%34,riichi:i===8,called:i===4}));g.players[0].river=river;g.players[0].discards=river.filter(x=>!x.called).map(x=>x.tile);g.players[1].river=river.map((x,i)=>({...x,tile:(x.tile+5)%34,riichi:i===10,called:i===14}));g.players[1].discards=g.players[1].river.filter(x=>!x.called).map(x=>x.tile);g.players[0].melds=[{kind:'triplet',tiles:[8,8,8],open:true,from:1},{kind:'kan',tiles:[31,31,31,31],open:false,from:null}];g.pending={kind:'call',options:['ron','pon','kan','pass'],tile:8};g.lastDrawSeat=null;g.onUpdate();return true})()`);
+const actionAudit = await evaluate(`(()=>{const a=document.querySelector('.mg-actions')?.getBoundingClientRect();const t=document.querySelector('.mg-table')?.getBoundingClientRect();const labels=[...document.querySelectorAll('.mg-actions button')].map(b=>b.textContent.trim());const rivers=[...document.querySelectorAll('.mg-river-zone')].map(e=>e.getBoundingClientRect().toJSON());const tileWidths=[...document.querySelectorAll('.mg-river .mg-tile')].map(e=>e.getBoundingClientRect().width);return {labels,a:a&&a.toJSON(),t:t&&t.toJSON(),rivers,minTileWidth:Math.min(...tileWidths)}})()`);
 if (JSON.stringify(actionAudit.labels) !== JSON.stringify(["荣和","碰","明杠","过"])) throw new Error(`action labels mismatch: ${JSON.stringify(actionAudit)}`);
 if (actionAudit.a.left < actionAudit.t.left || actionAudit.a.right > actionAudit.t.right) throw new Error(`actions outside table: ${JSON.stringify(actionAudit)}`);
 if (actionAudit.rivers.some((r) => !(actionAudit.a.right <= r.left || actionAudit.a.left >= r.right || actionAudit.a.bottom <= r.top || actionAudit.a.top >= r.bottom))) throw new Error(`actions overlap river: ${JSON.stringify(actionAudit)}`);
+if (actionAudit.minTileWidth < 27.5) throw new Error(`700 river tile too small: ${JSON.stringify(actionAudit)}`);
 files.callActions = await screenshot("03-call-actions-long-rivers.png");
+await evaluate(`window.__TAURI_INTERNALS__.invoke('set_window_size',{width:560*devicePixelRatio,height:560*devicePixelRatio})`);
+await wait(300);
+const narrowRiver = await evaluate(`(()=>{const widths=[...document.querySelectorAll('.mg-river .mg-tile')].map(e=>e.getBoundingClientRect().width);const zones=[...document.querySelectorAll('.mg-river-zone')].map(e=>e.getBoundingClientRect().toJSON());return {minTileWidth:Math.min(...widths),zones}})()`);
+if (narrowRiver.minTileWidth < 23.5) throw new Error(`560 river tile too small: ${JSON.stringify(narrowRiver)}`);
+files.callActions560 = await screenshot("03b-call-actions-long-rivers-560.png");
+await evaluate(`window.__TAURI_INTERNALS__.invoke('set_window_size',{width:700*devicePixelRatio,height:700*devicePixelRatio})`);
+await wait(300);
 await evaluate(`document.querySelector('.mg-chat-toggle')?.click()`);
 const chatAudit = await evaluate(`({input:!!document.querySelector('.mg-chat-input'),max:Number(document.querySelector('.mg-chat-input')?.maxLength),buttons:[...document.querySelectorAll('.mg-chat-form button')].map(b=>b.textContent)})`);
 if (!chatAudit.input || chatAudit.max !== 240) throw new Error(`game chat UI mismatch: ${JSON.stringify(chatAudit)}`);
@@ -110,10 +118,17 @@ if (aiAudit.defaultGameTalk !== false || !aiAudit.line || aiAudit.maxTokens !== 
 if (!aiAudit.ctx.pet?.hand || Object.hasOwn(aiAudit.ctx.opponentPublic,'hand') || Object.hasOwn(aiAudit.ctx.opponentPublic,'waits')) throw new Error(`AI whitelist mismatch: ${JSON.stringify(aiAudit.ctx)}`);
 if (aiAudit.cooldownCalls !== aiAudit.afterFirst || !aiAudit.unavailable.notice.includes('未开启') || aiAudit.rateCalls !== aiAudit.afterFirst + 1 || !aiAudit.limited.notice.includes('限流') || aiAudit.timeoutElapsed < 14500 || !aiAudit.timeoutResult.notice || !aiAudit.aborted) throw new Error(`AI stability mismatch: ${JSON.stringify(aiAudit)}`);
 
+// Explicit scoring fixture: real rules result rendered by the production settlement component.
+await evaluate(`(()=>{const g=document.querySelector('.mg-riichi').__riichiGame;g.runId++;g.phase='playing';g.players[0].score=25000;g.players[1].score=25000;g.players[0].hand=[1,2,3,4,5,6,11,12,13,23,24,25,16,16];g.players[0].melds=[];g.players[0].riichi=false;g.doraIndicators=[];g.lastDraw=25;g.lastDrawSeat=0;g.sticks=1;const win=g.evalWin(0,[...g.players[0].hand],25,true);g.finishWin(0,win,true);return true})()`);
+await wait(500);
+const settlementAudit = await evaluate(`(()=>({tiles:document.querySelectorAll('.mg-result-hand .mg-tile').length,yaku:[...document.querySelectorAll('.mg-result-yaku-item')].map(e=>e.textContent),total:document.querySelector('.mg-result-total')?.textContent,fu:document.querySelector('.mg-fu-details')?.textContent,payment:document.querySelector('.mg-result-payment')?.textContent,score:document.querySelector('.mg-result-scoreflow')?.textContent}))()`);
+if (settlementAudit.tiles !== 14 || !settlementAudit.total?.includes('20符') || !settlementAudit.fu?.includes('底符') || !settlementAudit.payment?.includes('双人房规') || !settlementAudit.score?.includes('→')) throw new Error(`detailed settlement mismatch: ${JSON.stringify(settlementAudit)}`);
+files.settlement = await screenshot("05-detailed-settlement.png");
+
 await evaluate(`document.querySelector('.mg-head-btns button:last-child')?.click()`);
 const cleaned = await evaluate(`!document.querySelector('.mg-view') && !document.querySelector('.mg-wait-preview') && !document.querySelector('.mg-actions')`);
 if (!cleaned) throw new Error("exit did not clean interaction UI");
 await evaluate(originalSettings === null ? `localStorage.removeItem('live2d-pet-settings')` : `localStorage.setItem('live2d-pet-settings',${JSON.stringify(originalSettings)})`);
 await evaluate(originalInteraction === null ? `localStorage.removeItem('petra.riichi.petInteraction')` : `localStorage.setItem('petra.riichi.petInteraction',${JSON.stringify(originalInteraction)})`);
-console.log(JSON.stringify({ pass: true, waitPreview, narrowBounds, multiKanButtons, actionAudit, chatAudit, aiAudit, files }, null, 2));
+console.log(JSON.stringify({ pass: true, waitPreview, narrowBounds, multiKanButtons, actionAudit, narrowRiver, chatAudit, aiAudit, settlementAudit, files }, null, 2));
 ws.close();

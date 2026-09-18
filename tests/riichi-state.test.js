@@ -1,6 +1,8 @@
 /** 牌山、王牌区、立直河牌与鸣牌状态回归。 */
 const { RiichiGame } = require("./build/engine.js");
 const A = require("./build/tileAssets.js");
+const R = require("./build/rules.js");
+const T = require("./build/tiles.js");
 
 let pass = 0;
 let fail = 0;
@@ -40,6 +42,29 @@ previewGame.doraIndicators = [];
 const preview = previewGame.discardWaitPreview(13);
 ok("discard preview uses the post-discard hand", preview && preview.discard === 27 && preview.waits.length === 1 && preview.waits[0] === 16, preview);
 ok("discard preview ignores opponent concealed copies", preview && preview.waits.includes(16), preview);
+ok("discard preview reports unseen count from visible information", preview && preview.unseen[0].tile === 16 && preview.unseen[0].count === 3, preview && preview.unseen);
+
+previewGame.wall = [16,16,16,16];
+previewGame.players[1].hand = [0,0,0,0];
+const hiddenChanged = previewGame.discardWaitPreview(13);
+ok("changing hidden wall and opponent hand does not change waits or unseen count", hiddenChanged && JSON.stringify(hiddenChanged.waits) === JSON.stringify(preview.waits) && JSON.stringify(hiddenChanged.unseen) === JSON.stringify(preview.unseen), hiddenChanged);
+
+const sameTileDiscard = new RiichiGame();
+sameTileDiscard.phase = "playing";
+sameTileDiscard.pending = { kind: "turn", options: ["discard"] };
+sameTileDiscard.players[0].hand = [1,2,3, 4,5,6, 11,12,13, 23,24,25, 16,16];
+sameTileDiscard.doraIndicators = [];
+const sameTilePreview = sameTileDiscard.discardWaitPreview(13);
+ok("hypothetical discard remains counted as visible", sameTilePreview && sameTilePreview.waits.includes(16) && sameTilePreview.unseen.find(function (x) { return x.tile === 16; }).count === 2, sameTilePreview);
+
+const zeroRemain = new RiichiGame();
+zeroRemain.phase = "playing";
+zeroRemain.pending = { kind: "turn", options: ["discard"] };
+zeroRemain.players[0].hand = [1,2,3, 4,5,6, 11,12,13, 23,24,25, 16,27];
+zeroRemain.players[1].melds = [{ kind: "triplet", tiles: [16,16,16], open: true, from: 0 }];
+zeroRemain.doraIndicators = [];
+const zeroPreview = zeroRemain.discardWaitPreview(13);
+ok("shape wait is retained at unseen zero and called tiles count once", zeroPreview && zeroPreview.waits.includes(16) && zeroPreview.unseen.find(function (x) { return x.tile === 16; }).count === 0, zeroPreview);
 
 const noYakuPreview = new RiichiGame();
 noYakuPreview.phase = "playing";
@@ -67,6 +92,14 @@ ok("called discard keeps ordered river slot", riverGame.players[0].river[0].call
 ok("called tile moves out of visible discard list into meld", riverGame.players[0].discards.length === 0 && riverGame.players[1].melds[0].tiles.length === 3, {
   discards: riverGame.players[0].discards, melds: riverGame.players[1].melds,
 });
+
+const payGame = new RiichiGame();
+payGame.players[0].hand = T.sortTiles([1,2,3, 4,5,6, 11,12,13, 23,24,25, 16,16]);
+payGame.lastDraw = 25;
+payGame.sticks = 1;
+const payWin = R.evaluateWin({ closed: payGame.players[0].hand, melds: [], tsumo: true, riichi: false, seatWind: 27, roundWind: 27, doraIndicators: [], winningTile: 25 });
+payGame.finishWin(0, payWin, true);
+ok("two-player tsumo uses dealer full value and awards riichi sticks", payGame.lastSettlement && payGame.lastSettlement.handPoints === 3900 && payGame.players[0].score === 29900 && payGame.players[1].score === 21100, payGame.lastSettlement);
 
 console.log("");
 console.log("state: pass=" + pass + " fail=" + fail);

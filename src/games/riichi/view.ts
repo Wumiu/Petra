@@ -2,7 +2,7 @@
  * 双人立直麻将 2.5D 桌面。
  * 所有视觉都从 RiichiGame 的公开状态派生；动画只表现事件，不持有第二份牌状态。
  */
-import { RiichiGame, type DiscardWaitPreview, type RiverTile, type Seat } from "./engine";
+import { RiichiGame, type DiscardWaitPreview, type HandSettlement, type RiverTile, type Seat } from "./engine";
 import { doraFromIndicator, tileName, tileShort } from "./tiles";
 import { createTileBackImage, createTileImage } from "./tileAssets";
 import { createRiichiIcon, type RiichiIconName } from "./icons";
@@ -95,9 +95,8 @@ function tileEl(tile: number, options: TileOptions = {}): HTMLElement {
 }
 
 function renderRiver(river: RiverTile[], seat: Seat, animateLast = false): HTMLElement {
-  // 牌河越长越紧凑，避免对家与自己的牌河在后半局撞在一起。
-  const density = river.length > 24 ? " mg-river-dense" : river.length > 12 ? " mg-river-compact" : "";
-  const grid = el("div", `mg-river mg-river-${seat === 0 ? "me" : "pet"}${density}`);
+  // 统一保持可直接辨认的牌面尺寸；长牌河用更多列而不是把旧牌压到 13px。
+  const grid = el("div", `mg-river mg-river-${seat === 0 ? "me" : "pet"}`);
   river.forEach((entry, index) => {
     const slot = el("div", "mg-river-slot");
     if (entry.called) {
@@ -187,13 +186,69 @@ function renderWaitPreview(preview: DiscardWaitPreview, edge: "left" | "right" |
   panel.appendChild(el("div", "mg-wait-preview-title", "打出后听牌"));
   const tiles = el("div", "mg-wait-preview-tiles");
   for (const tile of preview.waits) {
-    const cell = tileEl(tile, { tiny: true });
-    cell.classList.toggle("mg-wait-no-ron", !preview.ronWaits.includes(tile));
-    cell.title = preview.ronWaits.includes(tile) ? `${tileName(tile)}：可荣和` : `${tileName(tile)}：当前荣和受限`;
+    const remaining = preview.unseen.find((entry) => entry.tile === tile)?.count ?? 0;
+    const cell = el("div", `mg-wait-cell${remaining === 0 ? " is-empty" : ""}`);
+    const image = tileEl(tile, { tiny: true });
+    image.classList.toggle("mg-wait-no-ron", !preview.ronWaits.includes(tile));
+    cell.append(image, el("span", "mg-wait-count", `余${remaining}`));
+    cell.title = `${tileName(tile)}：余${remaining}（按可见信息）${preview.ronWaits.includes(tile) ? "，可荣和" : "，当前荣和受限"}`;
     tiles.appendChild(cell);
   }
-  panel.append(tiles, el("div", "mg-wait-preview-note", preview.note));
+  panel.append(
+    tiles,
+    el("div", "mg-wait-preview-note", preview.note),
+    el("div", "mg-wait-preview-source", "余数按可见牌推算，包含其他玩家暗牌及未公开区域，不代表牌山实际剩余。"),
+  );
   return panel;
+}
+
+function renderSettlement(result: HandSettlement): HTMLElement {
+  const banner = el("div", "mg-banner mg-banner-detail");
+  banner.setAttribute("role", "status");
+  banner.setAttribute("aria-live", "polite");
+  const win = result.win;
+  banner.append(
+    el("div", "mg-banner-kicker", `${result.winner === 0 ? "你" : "桌宠"} · ${result.method}`),
+    el("div", "mg-banner-title mg-event-title", result.method === "自摸" ? "自摸" : "荣和"),
+  );
+  const hand = el("div", "mg-result-hand");
+  const winningIndex = result.closed.lastIndexOf(result.winningTile);
+  result.closed.forEach((tile, index) => {
+    const image = tileEl(tile, { tiny: true });
+    if (index === winningIndex) image.classList.add("mg-result-winning");
+    hand.appendChild(image);
+  });
+  for (const meld of result.melds) {
+    const group = el("span", "mg-result-meld");
+    meld.tiles.forEach((tile, index) => group.appendChild(tileEl(tile, { tiny: true, back: !meld.open && meld.kind === "kan" && (index === 0 || index === 3) })));
+    hand.appendChild(group);
+  }
+  banner.appendChild(hand);
+
+  const yaku = el("div", "mg-result-yaku");
+  for (const item of win.yaku) yaku.appendChild(el("span", "mg-result-yaku-item", item.yakuman ? `${item.name} · 役满` : `${item.name} · ${item.han}番`));
+  if (win.doraCount > 0) yaku.appendChild(el("span", "mg-result-yaku-item mg-result-dora", `宝牌 · ${win.doraCount}番`));
+  banner.appendChild(yaku);
+
+  const grade = win.limitName ?? (win.yakuman ? "役满" : `${win.han}番 ${win.fu}符`);
+  banner.appendChild(el("div", "mg-result-total", `${grade} · ${result.handPoints}点`));
+  if (win.yakuman === 0) {
+    const details = el("details", "mg-fu-details");
+    const summary = el("summary", "", `符数明细：${win.fuRaw}符 → ${win.fu}符`);
+    details.appendChild(summary);
+    const items = el("div", "mg-fu-items");
+    win.fuItems.forEach((item) => items.appendChild(el("span", "", `${item.name} +${item.fu}`)));
+    details.appendChild(items);
+    banner.appendChild(details);
+  }
+  const payment = `${result.method}${result.method === "自摸" ? "（双人房规）" : ""}：${result.payer === 0 ? "你" : "桌宠"}支付 ${result.handPoints}` +
+    `${result.stickPoints ? `，供托 +${result.stickPoints}` : ""}；本场 ${result.honba}`;
+  banner.append(
+    el("div", "mg-result-payment", payment),
+    el("div", "mg-result-scoreflow", `你 ${result.before[0]} → ${result.after[0]}　桌宠 ${result.before[1]} → ${result.after[1]}`),
+    decorativeImage("result-ornament.png", "mg-result-ornament"),
+  );
+  return banner;
 }
 
 function boolSetting(key: string, fallback: boolean): boolean {
@@ -576,8 +631,8 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     const actions = el("footer", "mg-actions");
     const pending = game.pending;
     if (pending?.kind === "turn") {
-      if (pending.options.includes("tsumo")) actions.appendChild(actionButton("自摸和了", "mg-btn mg-btn-win", () => game.tsumo()));
-      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(actionButton("立直", "mg-btn mg-btn-accent", () => game.declareRiichi()));
+      if (pending.options.includes("tsumo")) actions.appendChild(actionButton("自摸", "mg-btn mg-btn-win mg-event-label", () => game.tsumo()));
+      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(actionButton("立直", "mg-btn mg-btn-accent mg-event-label", () => game.declareRiichi()));
       if (game.riichiPending) actions.appendChild(actionButton("取消立直", "mg-btn mg-btn-subtle", () => game.cancelRiichi()));
       if (pending.options.includes("ankan")) {
         const candidates = game.ankanCandidates(0);
@@ -588,7 +643,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       }
       actions.appendChild(el("span", "mg-hint", game.riichiPending ? "选择一张牌横置宣言立直" : "点击手牌出牌"));
     } else if (pending?.kind === "call") {
-      if (pending.options.includes("ron")) actions.appendChild(actionButton("荣和", "mg-btn mg-btn-win", () => game.call("ron")));
+      if (pending.options.includes("ron")) actions.appendChild(actionButton("荣和", "mg-btn mg-btn-win mg-event-label", () => game.call("ron")));
       if (pending.options.includes("pon")) actions.appendChild(actionButton("碰", "mg-btn mg-btn-call", () => game.call("pon")));
       if (pending.options.includes("kan")) actions.appendChild(actionButton("明杠", "mg-btn mg-btn-call", () => game.call("kan")));
       actions.appendChild(actionButton("过", "mg-btn mg-btn-subtle", () => game.call("pass")));
@@ -660,17 +715,20 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     }
 
     if (game.handResult && game.phase !== "playing") {
-      const banner = el("div", "mg-banner");
-      banner.setAttribute("role", "status");
-      banner.setAttribute("aria-live", "polite");
-      const resultLines = game.handResult.split("\n");
-      banner.append(
-        el("div", "mg-banner-kicker", "本局结果"),
-        el("div", "mg-banner-title", resultLines.shift() ?? "本局结束"),
-        el("div", "mg-banner-text", resultLines.join("\n")),
-        decorativeImage("result-ornament.png", "mg-result-ornament"),
-      );
-      root.appendChild(banner);
+      if (game.lastSettlement) root.appendChild(renderSettlement(game.lastSettlement));
+      else {
+        const banner = el("div", "mg-banner");
+        banner.setAttribute("role", "status");
+        banner.setAttribute("aria-live", "polite");
+        const resultLines = game.handResult.split("\n");
+        banner.append(
+          el("div", "mg-banner-kicker", "本局结果"),
+          el("div", "mg-banner-title", resultLines.shift() ?? "本局结束"),
+          el("div", "mg-banner-text", resultLines.join("\n")),
+          decorativeImage("result-ornament.png", "mg-result-ornament"),
+        );
+        root.appendChild(banner);
+      }
     }
     syncPetAnchor();
     scheduleIdleReminder();

@@ -171,7 +171,7 @@ while (steps++ < 260) {
   }))()`);
   if (state.settled) break;
   let acted = false;
-  for (const label of ["自摸和了", "荣和", "暗杠", "明杠", "碰", "立直", "过"]) {
+  for (const label of ["自摸", "荣和", "暗杠", "明杠", "碰", "立直", "过"]) {
     if (!state.buttons.includes(label)) continue;
     const beforeKan = label.includes("杠") ? await metrics() : null;
     acted = await clickSelector(".mg-actions button", label);

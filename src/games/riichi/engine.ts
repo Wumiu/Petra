@@ -2,9 +2,9 @@
  * 双人立直麻将引擎（桌宠版房规）
  * - 座位：玩家＝东家，桌宠＝南家；场风固定东
  * - 无吃（二人局），碰/明杠/暗杠可用；立直需门清听牌且点数≥1000
- * - 无符算点：番数表，放铳方/对手全额支付；立直棒归和牌者
+ * - 标准番符与庄闲倍率；双人房规由唯一对手支付整笔价值，立直棒归和牌者
  * - 流局：听牌方收未听牌方 3000 点，立直棒留场
- * - 无役不可和（宝牌不算役）；本版未实现一发/里宝牌/加杠/九种九牌等
+ * - 无役不可和（宝牌不算役）；未实现振听/一发/里宝牌/赤牌/加杠/九种九牌等
  */
 import {
   buildWall,
@@ -76,7 +76,24 @@ export interface DiscardWaitPreview {
   waits: number[];
   ronWaits: number[];
   tsumoWaits: number[];
+  unseen: Array<{ tile: number; count: number }>;
   note: string;
+}
+
+export interface HandSettlement {
+  winner: Seat;
+  method: "自摸" | "荣和";
+  closed: number[];
+  melds: Meld[];
+  winningTile: number;
+  win: WinResult;
+  handPoints: number;
+  honba: number;
+  stickPoints: number;
+  totalGain: number;
+  payer: Seat;
+  before: [number, number];
+  after: [number, number];
 }
 
 export const SEAT_NAME = ["你", "桌宠"];
@@ -98,6 +115,7 @@ export class RiichiGame {
   lastEvent: GameEvent | null = null;
   riichiPending = false;
   handResult: string | null = null;
+  lastSettlement: HandSettlement | null = null;
   matchWinner: Seat | null = null;
   lastHandWinner: Seat | null = null;
   onUpdate: (() => void) | null = null;
@@ -108,6 +126,7 @@ export class RiichiGame {
   private eventSeq = 0;
   private rinshanDraws = 0;
   private drawFromDead = false;
+  private lastDrawWasRinshan = false;
 
   constructor() {
     this.players = [this.blankPlayer(), this.blankPlayer()];
@@ -239,6 +258,24 @@ export class RiichiGame {
     return n;
   }
 
+  /**
+   * 模拟打牌后的“未见张数”：自己的剩余手牌 + 模拟河牌 + 公开副露/未被鸣走河牌
+   * + 明示指示牌。被鸣牌已从 discards 移出，因此只会在副露中扣一次。
+   */
+  private unseenAfterDiscard(index: number, tile: number): number {
+    let seen = 0;
+    this.players[0].hand.forEach((known, handIndex) => {
+      if (handIndex !== index && known === tile) seen++;
+    });
+    if (this.players[0].hand[index] === tile) seen++; // 待打牌转入模拟牌河，仍是已知牌。
+    for (const player of this.players) {
+      for (const meld of player.melds) for (const known of meld.tiles) if (known === tile) seen++;
+      for (const known of player.discards) if (known === tile) seen++;
+    }
+    for (const indicator of this.doraIndicators) if (indicator === tile) seen++;
+    return Math.max(0, 4 - seen);
+  }
+
   private seatWind(seat: Seat): number {
     return seat === 0 ? WIND_E : WIND_S;
   }
@@ -258,6 +295,9 @@ export class RiichiGame {
       roundWind: WIND_E,
       doraIndicators: this.doraIndicators,
       winningTile,
+      rinshan: tsumo && this.lastDrawWasRinshan,
+      haitei: tsumo && !this.lastDrawWasRinshan && this.wall.length === 0,
+      houtei: !tsumo && this.wall.length === 0,
     });
   }
 
@@ -327,7 +367,8 @@ export class RiichiGame {
     const discard = p.hand[index];
     if (discard === undefined) return null;
     const rest = p.hand.filter((_, i) => i !== index);
-    const waits = tenpaiWaits(rest, p.melds.length, (t) => this.visibleCountFor(0, t) >= 4);
+    // 牌形听牌与未见张数分开：余0仍是牌形听牌，必须保留并置灰。
+    const waits = tenpaiWaits(rest, p.melds.length, () => false);
     if (waits.length === 0) return null;
     const riichiAfterDiscard = p.riichi || this.riichiPending;
     const ronWaits: number[] = [];
@@ -350,7 +391,8 @@ export class RiichiGame {
     if (ronWaits.length === 0 && tsumoWaits.length > 0) note = "当前无荣和役，仅自摸时成立";
     else if (ronWaits.length === 0) note = "牌形听牌，但当前无役，不能和牌";
     else if (ronWaits.length < waits.length) note = "部分待牌当前无役，荣和受限";
-    return { discard, waits, ronWaits, tsumoWaits, note };
+    const unseen = waits.map((tile) => ({ tile, count: this.unseenAfterDiscard(index, tile) }));
+    return { discard, waits, ronWaits, tsumoWaits, unseen, note };
   }
 
   // ---------- 对局流程 ----------
@@ -358,6 +400,7 @@ export class RiichiGame {
   private startHand() {
     this.phase = "playing";
     this.handResult = null;
+    this.lastSettlement = null;
     this.pending = null;
     this.waiter = null;
     this.riichiPending = false;
@@ -375,6 +418,7 @@ export class RiichiGame {
     this.wall = shuffled;
     this.rinshanDraws = 0;
     this.drawFromDead = false;
+    this.lastDrawWasRinshan = false;
     this.doraIndicators = [this.deadWall[4]];
     for (const p of this.players) {
       p.hand = [];
@@ -406,6 +450,7 @@ export class RiichiGame {
           return;
         }
         let tile: number;
+        let rinshan = false;
         if (this.drawFromDead && this.rinshanDraws < 4) {
           const slot = this.rinshanDraws++;
           tile = this.deadWall[slot] as number;
@@ -414,9 +459,11 @@ export class RiichiGame {
           const replacement = this.wall.pop();
           if (replacement !== undefined) this.deadWall[slot] = replacement;
           this.drawFromDead = false;
+          rinshan = true;
         } else {
           tile = this.wall.shift() as number;
         }
+        this.lastDrawWasRinshan = rinshan;
         p_pushHand(this.players[current], tile);
         this.players[current].hand = sortTiles(this.players[current].hand);
         this.lastDraw = tile;
@@ -647,20 +694,41 @@ export class RiichiGame {
     this.lastHandWinner = winner;
     const loser: Seat = winner === 0 ? 1 : 0;
     const pts = win.points;
-    this.players[loser].score -= pts;
-    this.players[winner].score += pts + this.sticks * 1000;
+    const before: [number, number] = [this.players[0].score, this.players[1].score];
     const stickGet = this.sticks * 1000;
+    const winningTile = tsumo ? this.lastDraw as number : this.lastDiscard?.tile as number;
+    const closed = tsumo
+      ? [...this.players[winner].hand]
+      : sortTiles([...this.players[winner].hand, winningTile]);
+    this.players[loser].score -= pts;
+    this.players[winner].score += pts + stickGet;
     this.sticks = 0;
-    const detail = win.yaku.map((y) => y.name + y.han + "番").join("、") +
+    const detail = win.yaku.map((y) => y.yakuman ? `${y.name}役满` : y.name + y.han + "番").join("、") +
       (win.doraCount > 0 ? "、宝牌" + win.doraCount : "");
+    const grade = win.limitName ?? (win.yakuman > 0 ? "役满" : `${win.han}番${win.fu}符`);
+    this.lastSettlement = {
+      winner,
+      method: tsumo ? "自摸" : "荣和",
+      closed,
+      melds: this.players[winner].melds.map((meld) => ({ ...meld, tiles: [...meld.tiles] })),
+      winningTile,
+      win,
+      handPoints: pts,
+      honba: 0,
+      stickPoints: stickGet,
+      totalGain: pts + stickGet,
+      payer: loser,
+      before,
+      after: [this.players[0].score, this.players[1].score],
+    };
     this.log.push(
       SEAT_NAME[winner] + (tsumo ? " 自摸" : " 荣和") + "：" + detail +
-      "，共 " + win.han + " 番 " + pts + " 点" + (stickGet > 0 ? "（含立直棒 " + stickGet + "）" : ""),
+      "，" + grade + " " + pts + " 点" + (stickGet > 0 ? "（另收供托 " + stickGet + "）" : ""),
     );
     this.handResult =
       (winner === 0 ? "🎉 你和了！" : "😿 桌宠和了") +
-      "\n" + detail + " ｜ " + win.han + " 番 " + pts + " 点" +
-      "\n" + (tsumo ? "自摸" : "荣和") + "，由" + SEAT_NAME[loser] + "支付";
+      "\n" + detail + " ｜ " + grade + " ｜ " + pts + " 点" +
+      "\n" + (tsumo ? "自摸（双人房规）" : "荣和") + "，由" + SEAT_NAME[loser] + "全额支付";
     this.note("win", winner);
     this.endHand();
   }

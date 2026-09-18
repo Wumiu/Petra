@@ -1445,7 +1445,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 }
 .mg-head button { cursor: pointer; }
 .mg-title, .mg-overview { pointer-events: none; }
-.mg-title { display: flex; align-items: center; gap: 8px; min-width: 152px; font-size: 13px; font-weight: 720; letter-spacing: .4px; }
+.mg-title { display: flex; align-items: center; gap: 8px; min-width: 152px; font: 700 14px/1 "Yu Mincho", "Noto Serif CJK SC", SimSun, serif; letter-spacing: 1px; color: #f4eddd; }
 .mg-title-emblem { width: 31px; height: 31px; object-fit: contain; flex: none; filter: drop-shadow(0 2px 4px rgba(4, 6, 16, .25)); }
 .mg-overview { display: flex; align-items: center; gap: 9px; margin-left: auto; }
 .mg-score,
@@ -1645,38 +1645,32 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-wait-preview-right::after { right: 17px; left: auto; }
 .mg-wait-preview-title { margin-bottom: 5px; color: var(--mg-gold); font-size: 10px; font-weight: 750; letter-spacing: .4px; }
 .mg-wait-preview-tiles { display: flex; flex-wrap: wrap; gap: 4px; max-width: 208px; }
-.mg-wait-preview-tiles .mg-tile { width: 24px; height: 33px; }
+.mg-wait-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.mg-wait-preview-tiles .mg-tile { width: 25px; height: 34px; }
 .mg-wait-preview-tiles .mg-wait-no-ron { opacity: .62; }
+.mg-wait-cell.is-empty .mg-tile { filter: grayscale(.75) brightness(.72); opacity: .6; }
+.mg-wait-count { color: #ede6d8; font-size: 8px; font-variant-numeric: tabular-nums; }
+.mg-wait-cell.is-empty .mg-wait-count { color: #8d96a7; }
 .mg-wait-preview-note { margin-top: 5px; max-width: 208px; color: var(--mg-muted); font-size: 8px; line-height: 1.35; white-space: normal; }
+.mg-wait-preview-source { margin-top: 3px; max-width: 208px; color: rgba(170,181,198,.62); font-size: 7px; line-height: 1.35; white-space: normal; }
 .mg-tile-drawn { margin-left: 7px; }
 .mg-tile-riichi-candidate { border-color: rgba(222, 192, 115, .72); }
 .mg-tile-sideways { transform: rotate(90deg); margin: 2px 5px; z-index: 2; }
 
 .mg-melds { position: absolute; z-index: 5; display: flex; align-items: flex-end; gap: 8px; }
 .mg-melds-pet { left: 9px; top: 20px; transform: rotate(180deg); }
-.mg-melds-me { right: 4px; bottom: 112px; }
+.mg-melds-me { right: 4px; bottom: 116px; }
 .mg-meld { position: relative; display: flex; align-items: flex-end; gap: 0; padding-top: 10px; }
 .mg-meld::before { content: attr(data-kind); position: absolute; top: -1px; left: 2px; font-size: 8px; color: rgba(236, 230, 213, .62); }
 
-.mg-river-zone { position: absolute; z-index: 3; left: 50%; width: 190px; min-height: 104px; transform: translateX(-50%); }
-.mg-river-zone-pet { top: 145px; transform: translateX(-50%) rotate(180deg); }
-.mg-river-zone-me { bottom: 210px; }
-.mg-river { display: grid; grid-template-columns: repeat(6, 23px); grid-auto-rows: 32px; gap: 2px 5px; justify-content: center; }
-.mg-river-slot { position: relative; display: grid; place-items: center; width: 23px; height: 32px; }
-.mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.92); margin: 0; }
+.mg-river-zone { position: absolute; z-index: 3; left: 50%; width: 390px; min-height: 164px; transform: translateX(-50%); }
+.mg-river-zone-pet { top: 126px; transform: translateX(-50%) rotate(180deg); }
+.mg-river-zone-me { bottom: 150px; }
+.mg-river { display: grid; grid-template-columns: repeat(12, 30px); grid-auto-rows: 40px; gap: 1px 2px; justify-content: center; }
+.mg-river-slot { position: relative; display: grid; place-items: center; width: 30px; height: 40px; }
+.mg-river-slot .mg-tile { width: 28px; height: 38px; }
+.mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.76); margin: 0; }
 .mg-river-called { border: 1px dashed rgba(233, 219, 181, .2); border-radius: 3px; }
-
-/* 后半局牌河压缩：仍是同样的牌，只是排得更密，避免两张牌河堆叠 */
-.mg-river-compact { grid-template-columns: repeat(8, 19px); grid-auto-rows: 24px; gap: 1px 3px; }
-.mg-river-compact .mg-river-slot { width: 19px; height: 24px; }
-.mg-river-compact .mg-river-slot .mg-tile { width: 17px; height: 23px; }
-.mg-river-dense { grid-template-columns: repeat(10, 15px); grid-auto-rows: 19px; gap: 1px 2px; }
-.mg-river-dense .mg-river-slot { width: 15px; height: 19px; }
-.mg-river-dense .mg-river-slot .mg-tile { width: 13px; height: 18px; }
-/* 横置的立直牌在压缩后要再缩一点，否则会盖到相邻格子 */
-.mg-river-compact .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.78); }
-.mg-river-dense .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.62); }
-.mg-river-dense .mg-called-mark { font-size: 10px; }
 .mg-called-mark { color: rgba(239, 222, 179, .52); font-size: 13px; transform: rotate(-25deg); }
 
 .mg-center {
@@ -1765,6 +1759,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-btn-call { border-color: rgba(213, 182, 124, .42); color: #f1dfb7; background: rgba(213, 182, 124, .1); }
 .mg-btn-subtle { color: var(--mg-muted); border-color: rgba(170, 181, 198, .2); background: transparent; }
 .mg-hint { color: rgba(235, 234, 229, .58); font-size: 10px; }
+.mg-event-label { font-family: "Yu Mincho", "Noto Serif CJK SC", SimSun, serif; font-weight: 800; letter-spacing: .08em; }
 
 .mg-game-chat { position: absolute; z-index: 12; left: 14px; top: 12px; }
 .mg-chat-toggle,
@@ -1806,8 +1801,23 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-banner-kicker, .mg-banner-title, .mg-banner-text { position: relative; z-index: 2; }
 .mg-banner-kicker { color: var(--mg-gold); font-size: 9px; font-weight: 700; letter-spacing: 1.8px; }
 .mg-banner-title { margin-top: 5px; color: #fffaf1; font-size: 16px; font-weight: 780; line-height: 1.25; }
+.mg-banner-title, .mg-event-title { font-family: "Yu Mincho", "Noto Serif CJK SC", SimSun, serif; letter-spacing: .1em; }
 .mg-banner-text { margin-top: 9px; max-height: 104px; overflow: auto; white-space: pre-line; color: var(--mg-muted); text-align: left; font-size: 11px; line-height: 1.55; }
 .mg-result-ornament { position: absolute; z-index: 1; right: -7px; bottom: -8px; width: 139px; height: auto; pointer-events: none; opacity: .94; }
+.mg-banner-detail { width: min(486px, calc(100% - 38px)); max-height: min(76%, 480px); min-height: 248px; padding: 17px 112px 18px 22px; overflow-x: hidden; overflow-y: auto; background: linear-gradient(145deg, rgba(27, 36, 52, .995), rgba(17, 21, 34, .995)); scrollbar-width: thin; }
+.mg-result-hand { position: relative; z-index: 2; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 2px 1px; margin-top: 10px; min-height: 34px; }
+.mg-result-hand .mg-tile { width: 23px; height: 31px; }
+.mg-result-meld { display: flex; align-items: flex-end; margin-left: 5px; }
+.mg-result-winning { margin-left: 4px; border-color: rgba(213,182,124,.8); box-shadow: 0 0 0 1px rgba(213,182,124,.28), 0 2px 0 #c7bfae; }
+.mg-result-yaku { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 9px; font-size: 10px; }
+.mg-result-yaku-item { color: #ece7dc; }
+.mg-result-dora { color: var(--mg-gold); }
+.mg-result-total { position: relative; z-index: 2; margin-top: 8px; color: #f1d58e; font-size: 14px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.mg-fu-details { position: relative; z-index: 2; margin-top: 7px; color: var(--mg-muted); font-size: 9px; }
+.mg-fu-details summary { cursor: pointer; color: #d4cfeb; }
+.mg-fu-items { display: flex; flex-wrap: wrap; gap: 3px 8px; margin-top: 4px; }
+.mg-result-payment, .mg-result-scoreflow { position: relative; z-index: 2; margin-top: 6px; color: var(--mg-muted); font-size: 9px; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.mg-banner-detail .mg-result-ornament { right: 0; bottom: 0; width: 112px; opacity: .8; }
 
 .mg-motion .mg-anim-draw { animation: mg-draw-in .22s ease-out; }
 .mg-motion .mg-anim-discard { animation: mg-discard-in .22s cubic-bezier(.2,.85,.25,1.12); }
@@ -1838,17 +1848,18 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-tile { width: 29.5px; height: 39.5px; }
   .mg-tile-xs { width: 20px; height: 27px; }
   .mg-hand { gap: 0; }
-  .mg-melds-me { bottom: 102px; }
+  .mg-melds-me { bottom: 112px; }
   .mg-wall-top { top: 111px; }
   .mg-wall-bottom { bottom: 67px; }
   .mg-wall-left { left: 15px; }
   .mg-wall-right { right: 15px; }
-  .mg-river-zone-pet { top: 124px; }
-  .mg-river-zone { min-height: 84px; }
-  .mg-river-zone-me { bottom: 170px; }
-  .mg-river { grid-auto-rows: 29px; gap: 1px 4px; }
-  .mg-river-compact { grid-auto-rows: 24px; gap: 1px 3px; }
-  .mg-river-dense { grid-auto-rows: 19px; gap: 1px 2px; }
+  .mg-river-zone { width: 340px; min-height: 132px; }
+  .mg-river-zone-pet { top: 105px; }
+  .mg-river-zone-me { bottom: 120px; }
+  .mg-river { grid-template-columns: repeat(12, 26px); grid-auto-rows: 33px; gap: 0 2px; }
+  .mg-river-slot { width: 26px; height: 33px; }
+  .mg-river-slot .mg-tile { width: 26px; height: 34px; }
+  .mg-river-slot .mg-tile-sideways { transform: rotate(90deg) scale(.75); }
   .mg-center { left: 18px; max-width: 108px; }
   .mg-log { left: 18px; width: 108px; }
   .mg-dead-wall { right: 29px; }
@@ -1860,6 +1871,9 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-wait-preview { max-width: 190px; }
   .mg-wait-preview-tiles { max-width: 174px; }
   .mg-banner { width: min(310px, calc(100% - 34px)); min-height: 148px; padding: 18px 110px 18px 20px; }
+  .mg-banner-detail { width: min(455px, calc(100% - 24px)); min-height: 230px; max-height: 78%; padding: 15px 94px 16px 16px; }
+  .mg-result-hand .mg-tile { width: 20px; height: 27px; }
+  .mg-result-yaku { gap: 3px 6px; font-size: 9px; }
   .mg-result-ornament { width: 124px; }
 }
 /* ========== 歌词气泡（正在播放 / 当前歌词行） ========== */
