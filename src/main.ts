@@ -30,6 +30,7 @@ import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, setMiniGame
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
 import { clearPetTalkKeyCache } from "./games/riichi/petTalk";
+import { RIICHI_SOUND_SETTINGS_EVENT } from "./games/riichi/sound";
 import { getUnreadAnnouncement, markAnnounced } from "./features/Announcement";
 import { checkForUpdate, performUpdate, UpdateCheckErrorExt } from "./updater/UpdateManager";
 import { setupReminder, getReminders, removeReminder, openReminderModal, fmtReminderTime } from "./ui/ReminderPanel";
@@ -212,6 +213,11 @@ class PIXIApp {
 const app = new PIXIApp();
 let view!: PetView;
 let settings: Settings = loadSettings();
+window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
+  const saved = loadSettings();
+  settings.gameSound = saved.gameSound;
+  settings.gameSoundVolume = saved.gameSoundVolume;
+});
 let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
 let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
@@ -1761,6 +1767,17 @@ function buildMenu(engine: BehaviorEngine) {
                 ? "麻将桌上的桌宠会实时点评牌况（需要 API Key）"
                 : "麻将桌改为只用固定台词（零 token）",
             );
+          },
+        },
+        {
+          id: "mg-sound",
+          label: "麻将游戏音效",
+          state: settings.gameSound ? `${Math.round(settings.gameSoundVolume * 100)}%` : "关",
+          onPick: () => {
+            settings.gameSound = !settings.gameSound;
+            saveSettings(settings);
+            window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+            toast(settings.gameSound ? `麻将音效已开启（${Math.round(settings.gameSoundVolume * 100)}%）` : "麻将音效已关闭");
           },
         },
         { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },

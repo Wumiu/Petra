@@ -1489,6 +1489,29 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-tool:focus-visible { color: #fff; background: rgba(255, 255, 255, .11); border-color: rgba(240, 216, 148, .38); outline: none; }
 .mg-tool[aria-pressed="true"] { color: #e8d2a3; background: rgba(169, 156, 227, .13); border-color: rgba(169, 156, 227, .38); }
 .mg-tool-label { font-size: 9px; white-space: nowrap; }
+.mg-sound-panel {
+  position: absolute;
+  z-index: 30;
+  top: 49px;
+  right: 14px;
+  width: 220px;
+  box-sizing: border-box;
+  padding: 10px 11px 9px;
+  border: 1px solid rgba(213, 182, 124, .32);
+  border-radius: 11px;
+  color: var(--mg-text);
+  background: rgba(17, 21, 34, .98);
+  box-shadow: 0 9px 24px rgba(3, 6, 15, .42);
+  font-size: 10px;
+}
+.mg-sound-toggle,
+.mg-sound-volume { display: flex; align-items: center; gap: 8px; min-height: 25px; }
+.mg-sound-toggle { font-weight: 700; }
+.mg-sound-toggle input { accent-color: var(--mg-violet); }
+.mg-sound-volume > span:first-child { width: 28px; color: var(--mg-muted); }
+.mg-sound-volume input { min-width: 0; flex: 1; accent-color: var(--mg-violet); }
+.mg-sound-value { width: 30px; color: var(--mg-gold); text-align: right; font-variant-numeric: tabular-nums; }
+.mg-sound-help { margin: 5px 0 0; color: rgba(170,181,198,.68); font-size: 8px; line-height: 1.4; }
 
 .mg-table {
   position: absolute;
@@ -1841,6 +1864,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-overview { gap: 4px; }
   .mg-score, .mg-status { padding-inline: 6px; gap: 4px; }
   .mg-tool { width: 29px; min-width: 29px; padding: 0; }
+  .mg-sound-panel { top: 47px; right: 10px; width: 205px; }
   .mg-table { left: 10px; right: 10px; top: 57px; bottom: 8px; }
   .mg-seat-pet { height: 112px; }
   .mg-pet-hit { width: 126px; height: 82px; }

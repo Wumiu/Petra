@@ -6,8 +6,10 @@ import { RiichiGame, type DiscardWaitPreview, type HandSettlement, type RiverTil
 import { doraFromIndicator, tileName, tileShort } from "./tiles";
 import { createTileBackImage, createTileImage } from "./tileAssets";
 import { createRiichiIcon, type RiichiIconName } from "./icons";
+import { RiichiSoundController, RIICHI_SOUND_SETTINGS_EVENT } from "./sound";
 import { boostMood, reactNow } from "../../assistant/EmotionEngine";
 import { isAssistantBusy } from "../../assistant/AssistantPanel";
+import { loadSettings, saveSettings } from "../../utils/settings";
 import {
   cancelPetTalk,
   petTalkAvailable,
@@ -50,12 +52,13 @@ function toolButton(icon: RiichiIconName, label: string, onClick: () => void, pr
   return b;
 }
 
-function actionButton(label: string, cls: string, onClick: () => void, title?: string): HTMLButtonElement {
+function actionButton(label: string, cls: string, onClick: () => void, title?: string, eventDrivenSound = false): HTMLButtonElement {
   const b = button(label, cls, () => {
     if (b.disabled) return;
     b.closest(".mg-actions")?.querySelectorAll<HTMLButtonElement>("button").forEach((item) => { item.disabled = true; });
     onClick();
   }, title);
+  if (eventDrivenSound) b.dataset.sfxEvent = "true";
   return b;
 }
 
@@ -258,6 +261,7 @@ function boolSetting(key: string, fallback: boolean): boolean {
 
 export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   const game = new RiichiGame();
+  const sound = new RiichiSoundController();
   let disposed = false;
   let motion = boolSetting(MOTION_KEY, !matchMedia("(prefers-reduced-motion: reduce)").matches);
   let petInteraction = boolSetting(PET_KEY, true);
@@ -279,9 +283,14 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   let talkEpoch = 0;
   let chatOpen = false;
   let manualTalkBusy = false;
+  let soundPanelOpen = false;
 
   const root = el("div", "mg-riichi");
   ctx.root.appendChild(root);
+  root.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
+    if (target && !target.disabled && target.dataset.sfxEvent !== "true") sound.playButton();
+  });
 
   resetPetTalk();
   void petTalkAvailable().then((ok) => {
@@ -305,6 +314,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     manualTalkBusy = false;
     chatOpen = false;
     previewCache.clear();
+    sound.stopAll();
   };
 
   const say = (line: string, emotion?: "happy" | "surprised" | "tired", priority = 1) => {
@@ -461,6 +471,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     reactToEvent();
     const event = game.lastEvent;
     const animateEvent = Boolean(motion && event && event.seq !== renderedEventSeq);
+    if (event && event.seq !== renderedEventSeq) sound.handleEvent(event);
     if (event) renderedEventSeq = event.seq;
     root.textContent = "";
     root.classList.toggle("mg-motion", motion);
@@ -502,6 +513,13 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       }
       render();
     }, petInteraction));
+    const soundTool = toolButton("volume-2", "音效", () => {
+      soundPanelOpen = !soundPanelOpen;
+      render();
+    });
+    soundTool.setAttribute("aria-expanded", String(soundPanelOpen));
+    soundTool.title = `游戏音效：${sound.settings.enabled ? "开" : "关"}，音量 ${Math.round(sound.settings.volume * 100)}%`;
+    tools.appendChild(soundTool);
     tools.appendChild(toolButton("rotate-ccw", "重开", () => {
       clearRoundInteraction();
       playerTurns = 0;
@@ -511,6 +529,50 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     tools.appendChild(toolButton("x", "退出", () => ctx.close()));
     head.appendChild(tools);
     root.appendChild(head);
+
+    if (soundPanelOpen) {
+      const soundPanel = el("section", "mg-sound-panel");
+      soundPanel.setAttribute("aria-label", "游戏音效设置");
+      const enabledLabel = el("label", "mg-sound-toggle");
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = sound.settings.enabled;
+      enabled.addEventListener("change", () => {
+        const settings = loadSettings();
+        settings.gameSound = enabled.checked;
+        saveSettings(settings);
+        window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+        sound.setEnabled(enabled.checked);
+        if (enabled.checked) sound.playButton();
+        render();
+      });
+      enabledLabel.append(enabled, el("span", "", "游戏音效"));
+      const volumeLabel = el("label", "mg-sound-volume");
+      const value = el("span", "mg-sound-value", `${Math.round(sound.settings.volume * 100)}%`);
+      const range = document.createElement("input");
+      range.type = "range";
+      range.min = "0";
+      range.max = "100";
+      range.step = "1";
+      range.value = String(Math.round(sound.settings.volume * 100));
+      range.disabled = !sound.settings.enabled;
+      range.setAttribute("aria-label", "游戏音效音量");
+      range.addEventListener("input", () => {
+        const volume = Number(range.value) / 100;
+        value.textContent = `${range.value}%`;
+        sound.setVolume(volume);
+      });
+      range.addEventListener("change", () => {
+        const settings = loadSettings();
+        settings.gameSoundVolume = Number(range.value) / 100;
+        saveSettings(settings);
+        window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+        sound.preview();
+      });
+      volumeLabel.append(el("span", "", "音量"), range, value);
+      soundPanel.append(enabledLabel, volumeLabel, el("p", "mg-sound-help", "松开滑块试听；失焦或最小化时不播放对局音效。"));
+      root.appendChild(soundPanel);
+    }
 
     const table = el("main", "mg-table");
     table.appendChild(renderLiveWall(game.wall.length));
@@ -631,21 +693,21 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
     const actions = el("footer", "mg-actions");
     const pending = game.pending;
     if (pending?.kind === "turn") {
-      if (pending.options.includes("tsumo")) actions.appendChild(actionButton("自摸", "mg-btn mg-btn-win mg-event-label", () => game.tsumo()));
-      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(actionButton("立直", "mg-btn mg-btn-accent mg-event-label", () => game.declareRiichi()));
+      if (pending.options.includes("tsumo")) actions.appendChild(actionButton("自摸", "mg-btn mg-btn-win mg-event-label", () => game.tsumo(), undefined, true));
+      if (pending.options.includes("riichi") && !game.riichiPending) actions.appendChild(actionButton("立直", "mg-btn mg-btn-accent mg-event-label", () => game.declareRiichi(), undefined, true));
       if (game.riichiPending) actions.appendChild(actionButton("取消立直", "mg-btn mg-btn-subtle", () => game.cancelRiichi()));
       if (pending.options.includes("ankan")) {
         const candidates = game.ankanCandidates(0);
         for (const tile of candidates) {
           const label = candidates.length === 1 ? "暗杠" : `暗杠 ${tileShort(tile)}`;
-          actions.appendChild(actionButton(label, "mg-btn mg-btn-call", () => game.ankan(tile), `选择暗杠${tileName(tile)}`));
+          actions.appendChild(actionButton(label, "mg-btn mg-btn-call", () => game.ankan(tile), `选择暗杠${tileName(tile)}`, true));
         }
       }
       actions.appendChild(el("span", "mg-hint", game.riichiPending ? "选择一张牌横置宣言立直" : "点击手牌出牌"));
     } else if (pending?.kind === "call") {
-      if (pending.options.includes("ron")) actions.appendChild(actionButton("荣和", "mg-btn mg-btn-win mg-event-label", () => game.call("ron")));
-      if (pending.options.includes("pon")) actions.appendChild(actionButton("碰", "mg-btn mg-btn-call", () => game.call("pon")));
-      if (pending.options.includes("kan")) actions.appendChild(actionButton("明杠", "mg-btn mg-btn-call", () => game.call("kan")));
+      if (pending.options.includes("ron")) actions.appendChild(actionButton("荣和", "mg-btn mg-btn-win mg-event-label", () => game.call("ron"), undefined, true));
+      if (pending.options.includes("pon")) actions.appendChild(actionButton("碰", "mg-btn mg-btn-call", () => game.call("pon"), undefined, true));
+      if (pending.options.includes("kan")) actions.appendChild(actionButton("明杠", "mg-btn mg-btn-call", () => game.call("kan"), undefined, true));
       actions.appendChild(actionButton("过", "mg-btn mg-btn-subtle", () => game.call("pass")));
       actions.appendChild(el("span", "mg-hint", `桌宠打出${pending.tile === undefined ? "牌" : tileName(pending.tile)}`));
     } else if (game.phase === "handend") {
@@ -747,6 +809,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       cancelPetTalk();
       clearTimers();
       window.removeEventListener("resize", syncPetAnchor);
+      sound.dispose();
       const stage = document.getElementById("stage");
       stage?.style.removeProperty("--mg-pet-x");
       stage?.style.removeProperty("--mg-pet-y");

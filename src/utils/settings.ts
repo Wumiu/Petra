@@ -43,6 +43,10 @@ export interface DailyCardSettings {
 
 export interface Settings {
   audioEnabled: boolean;
+  /** 麻将等小游戏的事件音效；与跟随音乐、动画和桌宠互动相互独立。 */
+  gameSound: boolean;
+  /** 游戏音效音量，范围 0～1。 */
+  gameSoundVolume: number;
   activity: ActivityLevel;
   mouseTrack: boolean;
   idleMode: boolean;
@@ -72,6 +76,8 @@ export interface Settings {
 
 const DEFAULTS: Settings = {
   audioEnabled: true,
+  gameSound: true,
+  gameSoundVolume: 0.3,
   activity: "low",
   mouseTrack: false,
   idleMode: false,
@@ -126,6 +132,8 @@ export function loadSettings(): Settings {
       diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
       dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
     };
+    s.gameSound = s.gameSound !== false;
+    s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
     currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
     currentLevel = s.activity ?? DEFAULTS.activity;
     return s;
