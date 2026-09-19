@@ -1,4 +1,5 @@
 import type { AssistantProvider } from "../utils/settings";
+import { parseArgsSafe } from "./toolRuntime";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -31,6 +32,8 @@ export interface ToolCall {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  /** 模型给的参数不是合法 JSON 时的原因（调用仍会回一条 tool 消息，让模型自我纠正） */
+  argsError?: string;
 }
 
 export interface ProviderInfo {
@@ -414,7 +417,13 @@ export async function chatStream(
             const idx = tc.index ?? 0;
             toolCalls[idx] ??= { id: tc.id ?? "", name: "", args: "" };
             if (tc.id) toolCalls[idx].id = tc.id;
-            if (tc.function?.name) toolCalls[idx].name += tc.function.name;
+            if (tc.function?.name) {
+              // 分片拼接：有的兼容端点第一帧只给名字，有的每帧都重发**完整**名字，
+              // 直接 += 会拼出 "run_shellrun_shell"，这里按前缀判断一下
+              const cur = toolCalls[idx].name;
+              const frag = tc.function.name;
+              toolCalls[idx].name = !cur ? frag : frag.startsWith(cur) ? frag : cur.endsWith(frag) ? cur : cur + frag;
+            }
             if (tc.function?.arguments) toolCalls[idx].args += tc.function.arguments;
           }
         }
@@ -432,13 +441,19 @@ export async function chatStream(
     }
   }
 
-  const parsed = toolCalls
-    .map((tc) => ({
-      id: tc.id || `local_${Math.random().toString(36).slice(2)}`,
-      name: tc.name,
-      args: parseArgs(tc.args),
-    }))
-    .filter((tc) => tc.name && tc.args);
+  const parsed: ToolCall[] = toolCalls
+    .map((tc) => {
+      // 参数解析失败也**保留**这次调用：回一条"参数不合法"的 tool 结果让模型重发，
+      // 静默丢掉会让模型以为自己调过了，然后一遍遍重复同一个调用。
+      const safe = parseArgsSafe(tc.args);
+      return {
+        id: tc.id || `local_${Math.random().toString(36).slice(2)}`,
+        name: tc.name,
+        args: safe.args,
+        argsError: safe.error,
+      };
+    })
+    .filter((tc) => tc.name);
   const outputTokens = estimateTokens(text) + estimateTokens(toolCalls.map((t) => t.args).join(" "));
   // 服务端有真实 usage 时优先用真实值
   const usage: ChatUsage = serverUsage
@@ -531,15 +546,6 @@ function recordUsage(input: number, output: number, cached = 0): void {
     localStorage.setItem(USAGE_KEY, JSON.stringify(s));
   } catch {
     /* 忽略 */
-  }
-}
-
-function parseArgs(args: string): Record<string, unknown> {
-  try {
-    const o = JSON.parse(args || "{}");
-    return typeof o === "object" && o !== null ? o : {};
-  } catch {
-    return {};
   }
 }
 

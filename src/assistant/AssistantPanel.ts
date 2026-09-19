@@ -6,6 +6,7 @@ import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
+import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
 import { getVisibleRect } from "../ui/visible";
 import { toast } from "../ui/Toast";
 
@@ -483,11 +484,14 @@ async function send(text: string) {
   const colorHook = makeStreamColorHook(loading);
   let streamed = false;
   try {
-    // 循环处理：每轮 chatStream → 若有工具调用则执行并继续，否则结束（最多 4 轮）
-    const MAX_ROUNDS = 4;
+    // 循环处理：每轮 chatStream → 若有工具调用则执行并继续，否则结束。
+    // 轮数与调用次数双上限（见 ToolLoopBudget）：模型偶尔会在同一件事上反复试探，
+    // 没有预算就会一直循环烧 token；预算用尽会给用户一句明确交代。
+    const budget = new ToolLoopBudget({ maxRounds: 6, maxCalls: 12 });
+    let finished = false;
     let streamEmo: EmotionTag = "neutral";
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      if (round > 0) loading.textContent = "";
+    while (budget.nextRound()) {
+      if (budget.rounds > 1) loading.textContent = "";
       // token 优化：记忆按场景/话题召回（≤6 条），而非全量注入 system prompt
       const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text }).slice(0, 6);
       const res = await chatStream(
@@ -509,8 +513,8 @@ async function send(text: string) {
 
       if (res.toolCalls.length) {
         // 工具调用：执行后进入下一轮
-        if (round === 0 && !streamed) loading.textContent = "";
-        await handleToolCalls(res.toolCalls, loading);
+        if (budget.rounds === 1 && !streamed) loading.textContent = "";
+        await handleToolCalls(res.toolCalls, loading, budget);
         continue;
       }
 
@@ -536,10 +540,17 @@ async function send(text: string) {
         await handleToolCalls(
           [{ id: `cmd_${Date.now()}`, name: "run_shell", args: { command: cmd } }],
           loading,
+          budget,
         );
         continue;
       }
+      finished = true;
       break;
+    }
+    if (!finished) {
+      // 工具循环被预算刹住了：明确告诉用户，而不是留一个空气泡
+      const note = addBubble("sys", "工具调用到达上限先停住了，可以直接说「继续」。");
+      scheduleFade(note, 6000);
     }
     saveHistory();
 
@@ -561,8 +572,13 @@ async function send(text: string) {
   }
 }
 
+/** 把提示合并到工具结果前面（一个 tool_call 只能对应一条 tool 消息，不能多发一条） */
+function withHint(text: string, hint: string): string {
+  return hint ? `${hint}\n${text}` : text;
+}
+
 /** 处理工具调用：先 push assistant tool_calls 消息，再逐个执行并 push tool 消息 */
-async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
+async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: ToolLoopBudget) {
   // assistant 消息带 tool_calls（content 为 null 规范格式；DeepSeek 要求 tool 消息紧跟它）
   history.push({
     role: "assistant",
@@ -587,6 +603,44 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
   };
 
   for (const tc of calls) {
+    const before = history.length;
+    // 次数预算用尽：不再执行，但**仍然**回一条明确结果 ——
+    // 留下一条悬空的 tool_calls 会让下一轮请求直接 400。
+    if (!budget.canCall()) {
+      history.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: formatToolError(
+          tc.name,
+          `本轮工具调用已达上限 ${budget.maxCalls} 次`,
+          "请直接根据已有信息回答用户，不要再调用工具。",
+        ),
+      });
+      continue;
+    }
+    const repeatHint = budget.noteCall(tc.name, tc.argsError ? { __raw: tc.args } : tc.args);
+    // 参数不是合法 JSON：让模型知道要重发（静默丢弃会让它以为调过了）
+    if (tc.argsError) {
+      history.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: withHint(
+          formatToolError(tc.name, tc.argsError, "请重新发起一次调用，arguments 必须是合法的 JSON 对象。"),
+          repeatHint,
+        ),
+      });
+      continue;
+    }
+    // 未知工具 / 缺必填参数：不开 IPC，直接回可执行的提示
+    const check = validateToolArgs(tc.name, tc.args);
+    if (!check.ok) {
+      history.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: withHint(formatToolError(tc.name, check.message), repeatHint),
+      });
+      continue;
+    }
     if (tc.name === "remember") {
       const content = String(tc.args.content ?? "").trim();
       const category = String(tc.args.category ?? "other") as MemoryEntry["category"];
@@ -774,6 +828,33 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement) {
           const summary = diaries.map(d => `📖 ${d.date}: ${d.content.slice(0, 30)}...`).join("\n");
           history.push({ role: "tool", tool_call_id: tc.id, content: `最近的日记：\n${summary}` });
         }
+      }
+    }
+
+    // 兜底：所有分支都没命中（例如工具表里加了名字但忘了接处理）也必须回一条结果
+    if (history.length === before) {
+      history.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: formatToolError(
+          tc.name,
+          "没有对应的处理分支（工具可能还没接上）",
+          `可用工具：${toolNames().join("、")}`,
+        ),
+      });
+    } else if (repeatHint) {
+      // 重复调用提示合并进同一条 tool 结果（不能多发一条同 id 的消息）
+      const last = history[history.length - 1];
+      if (last?.role === "tool" && typeof last.content === "string") {
+        last.content = withHint(last.content, repeatHint);
+      }
+    }
+
+    // 统一截断这次调用产生的结果，避免一次 run_shell 把上下文吃掉
+    for (let i = before; i < history.length; i++) {
+      const msg = history[i];
+      if (msg.role === "tool" && typeof msg.content === "string") {
+        msg.content = truncateToolResult(tc.name, msg.content);
       }
     }
   }

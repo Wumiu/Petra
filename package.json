@@ -10,7 +10,10 @@
     "tauri": "tauri",
     "test:riichi": "tsc src/games/riichi/tiles.ts src/games/riichi/tileAssets.ts src/games/riichi/rules.ts src/games/riichi/engine.ts --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/riichi-rules.test.js && node tests/riichi-state.test.js && node tests/riichi-sim.test.js",
     "test:riichi-sound": "tsc src/utils/settings.ts src/games/riichi/sound.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/riichi-sound.test.js",
-    "test:music": "tsc src/music/LrcParser.ts src/music/LyricClock.ts src/assistant/EmotionEngine.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/lrc.test.js"
+    "test:music": "tsc src/music/LrcParser.ts src/music/LyricClock.ts src/assistant/EmotionEngine.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/lrc.test.js",
+    "test:diary": "tsc src/features/diary/DiaryManager.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/diary.test.js",
+    "test:assistant": "tsc src/assistant/toolRuntime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/assistant-tools.test.js",
+    "test:weather": "tsc src/features/weather/WeatherFormat.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/weather.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

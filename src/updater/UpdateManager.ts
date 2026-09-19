@@ -59,15 +59,17 @@ function classifyError(e: unknown): UpdateCheckErrorExt {
   if (m.includes("signature") || m.includes("verify")) {
     return new UpdateCheckErrorExt("signature", msg);
   }
-  if (m.includes("404") || m.includes("json") || m.includes("parse")) {
-    return new UpdateCheckErrorExt("metadata", msg);
-  }
+  // 先判网络：请求地址里就带 "latest.json"，先判 metadata 会把网络错误误报成"更新信息获取失败"
   if (
-    m.includes("timeout") || m.includes("dns") || m.includes("connect") ||
-    m.includes("proxy") || m.includes("tls") || m.includes("network") ||
-    m.includes("request") || m.includes("send")
+    m.includes("error sending request") || m.includes("timeout") || m.includes("dns") ||
+    m.includes("connect") || m.includes("proxy") || m.includes("tls") ||
+    m.includes("network") || m.includes("send") || m.includes("unreachable") ||
+    m.includes("refused") || m.includes("reset")
   ) {
     return new UpdateCheckErrorExt("network", msg);
+  }
+  if (m.includes("404") || m.includes("json") || m.includes("parse") || m.includes("decode")) {
+    return new UpdateCheckErrorExt("metadata", msg);
   }
   return new UpdateCheckErrorExt("unknown", msg);
 }

@@ -109,21 +109,129 @@ pub struct TrashResult {
 /// 诊断日志目录（app_data_dir/logs），setup 时初始化。
 static LOG_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 
-/// 诊断通道：stdout（tauri dev 可见）+ 日志文件（打包后兜底）。
-fn log_line(s: &str) {
-    println!("[pet-debug] {s}");
+/// 「详细日志」开关：拖动/交互/菜单这类高频埋点是否落盘。
+/// 默认 debug 构建开、release 关；用户可在右键菜单「诊断日志」里切换，选择存到 logs/verbose。
+static VERBOSE_LOG: AtomicBool = AtomicBool::new(false);
+
+/// 日志文件上限：超过就在启动时轮转成 pet.log.1（只留一份备份）。
+/// 之前只增不减，实测一个月就 500KB+，且 74% 是交互噪声。
+const LOG_MAX_BYTES: u64 = 1_000_000;
+/// 反馈邮件/导出里附带的日志上限（超长只保留开头 + 结尾）
+const LOG_ATTACH_MAX_CHARS: usize = 120_000;
+
+/// 本地时间戳：日志是给人看的，用可读时间而不是 unix 秒。
+fn stamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 写一行日志：`[时间] [级别] 内容`。verbose 行只在「详细日志」开启时落盘。
+fn log_write(level: &str, verbose: bool, s: &str) {
+    if verbose && !VERBOSE_LOG.load(Ordering::Relaxed) {
+        return;
+    }
+    println!("[pet-debug][{level}] {s}");
     if let Some(dir) = LOG_DIR.get() {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(dir.join("pet.log"))
         {
-            let _ = writeln!(f, "[{ts}] {s}");
+            let _ = writeln!(f, "[{}] [{level}] {s}", stamp());
         }
+    }
+}
+
+/// 常规日志（启动信息、状态变化、用户操作）
+fn log_line(s: &str) {
+    log_write("INFO", false, s);
+}
+
+/// 高频细节（拖动、交互区域、模型路径…）：默认不落盘，排查问题时再打开
+fn log_verbose(s: &str) {
+    log_write("DEBUG", true, s);
+}
+
+/// 需要注意但不致命
+fn log_warn(s: &str) {
+    log_write("WARN", false, s);
+}
+
+/// 出错了
+fn log_error(s: &str) {
+    log_write("ERROR", false, s);
+}
+
+/// 启动时轮转：pet.log 超过上限就改名成 pet.log.1（覆盖上一份备份）
+fn rotate_log(dir: &std::path::Path) {
+    let path = dir.join("pet.log");
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size <= LOG_MAX_BYTES {
+        return;
+    }
+    let backup = dir.join("pet.log.1");
+    let _ = std::fs::remove_file(&backup);
+    let _ = std::fs::rename(&path, &backup);
+}
+
+/// 「详细日志」开关：默认 debug 构建开、release 关；
+/// 需要时可用环境变量 PETRA_VERBOSE_LOG=1 临时打开（support 排查用）。
+fn verbose_log_enabled() -> bool {
+    cfg!(debug_assertions) || std::env::var("PETRA_VERBOSE_LOG").map(|v| v == "1").unwrap_or(false)
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn stamp_is_readable_local_time() {
+        let s = stamp();
+        assert_eq!(s.len(), 19, "时间戳格式应为 YYYY-MM-DD HH:MM:SS，实际 {s}");
+        assert_eq!(s.as_bytes()[4], b'-');
+        assert_eq!(s.as_bytes()[10], b' ');
+        assert_eq!(s.as_bytes()[13], b':');
+        assert!(s.starts_with("20"), "年份异常：{s}");
+    }
+
+    #[test]
+    fn truncate_keeps_short_text_intact() {
+        let s = "[2026-01-01 00:00:00] [INFO] hi\n";
+        assert_eq!(truncate_log(s), s);
+    }
+
+    #[test]
+    fn truncate_keeps_head_and_tail() {
+        let head_marker = "[2026-01-01 00:00:00] [INFO] === pet started v0.2.4 ===";
+        let tail_marker = "[2026-01-01 00:00:10] [ERROR] 最后一条";
+        let middle = "x".repeat(LOG_ATTACH_MAX_CHARS);
+        let text = format!("{head_marker}\n{middle}\n{tail_marker}\n");
+        let out = truncate_log(&text);
+        assert!(out.chars().count() < text.chars().count());
+        assert!(out.contains(head_marker), "保留了开头");
+        assert!(out.contains(tail_marker), "保留了结尾");
+        assert!(out.contains("中间省略"), "有省略提示");
+    }
+
+    #[test]
+    fn rotate_log_only_when_too_big() {
+        let dir = std::env::temp_dir().join(format!("petra-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 小文件不轮转
+        std::fs::write(dir.join("pet.log"), b"small").unwrap();
+        rotate_log(&dir);
+        assert!(dir.join("pet.log").exists());
+        assert!(!dir.join("pet.log.1").exists());
+
+        // 超过上限则轮转，旧备份被覆盖
+        std::fs::write(dir.join("pet.log"), vec![b'a'; (LOG_MAX_BYTES + 1) as usize]).unwrap();
+        std::fs::write(dir.join("pet.log.1"), b"old").unwrap();
+        rotate_log(&dir);
+        assert!(!dir.join("pet.log").exists(), "pet.log 被改名");
+        assert_eq!(std::fs::metadata(dir.join("pet.log.1")).unwrap().len(), LOG_MAX_BYTES + 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -158,21 +266,26 @@ fn log_environment() {
         r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
         "ProxyEnable",
     );
-    log_line(&format!("WinINET ProxyEnable: {sys}"));
+    // 这行留在 INFO：歌词/更新/小助手都走网络，出问题时第一眼就要看走没走代理
     log_line(&format!(
+        "系统代理: {}",
+        crate::proxy::get_system_proxy().unwrap_or_else(|| "无".into())
+    ));
+    log_verbose(&format!("WinINET ProxyEnable: {sys}"));
+    log_verbose(&format!(
         "HTTP_PROXY env: '{}'",
         std::env::var("HTTP_PROXY").unwrap_or_default()
     ));
-    log_line(&format!(
+    log_verbose(&format!(
         "HTTPS_PROXY env: '{}'",
         std::env::var("HTTPS_PROXY").unwrap_or_default()
     ));
-    log_line(&format!(
+    log_verbose(&format!(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '{}'",
         std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default()
     ));
     if let Some(dir) = LOG_DIR.get() {
-        log_line(&format!("LOG_DIR: {}", dir.display()));
+        log_line(&format!("日志目录: {}", dir.display()));
     }
 }
 
@@ -306,6 +419,7 @@ fn debug_mark(msg: String) {
     log_line(&msg);
 }
 
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -397,7 +511,7 @@ fn read_model_manifest(app: AppHandle) -> Result<String, String> {
     }
     for p in &candidates {
         if p.exists() {
-            log_line(&format!("read_model_manifest: {}", p.display()));
+            log_verbose(&format!("read_model_manifest: {}", p.display()));
             return std::fs::read_to_string(p).map_err(|e| e.to_string());
         }
     }
@@ -495,11 +609,11 @@ fn model_resource_path(app: AppHandle, name: String) -> Result<String, String> {
         let exists = p.exists();
         tried.push(format!("{rel} -> {} (exists={})", p.display(), exists));
         if exists {
-            log_line(&format!("model_resource_path: {file} -> {}", p.display()));
+            log_verbose(&format!("model_resource_path: {file} -> {}", p.display()));
             return Ok(p.to_string_lossy().to_string());
         }
     }
-    log_line(&format!("model_resource_path: {file} 未找到，尝试: {}", tried.join("; ")));
+    log_warn(&format!("model_resource_path: {file} 未找到，尝试: {}", tried.join("; ")));
     Err(format!("模型资源不存在: {file}"))
 }
 
@@ -516,7 +630,7 @@ fn delete_imported_model(app: AppHandle, name: String) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            log_line(&format!("delete_imported_model: 删除 {file_name} 失败: {e}"));
+            log_error(&format!("delete_imported_model: 删除 {file_name} 失败: {e}"));
             Err(e)
         }
     }
@@ -571,7 +685,7 @@ fn drag_start(app: AppHandle, state: State<'_, DragState>, locked_y: Option<i32>
             *state.offset.lock().unwrap() = off;
             *state.locked_y.lock().unwrap() = locked_y;
             state.active.store(true, Ordering::SeqCst);
-            log_line(&format!(
+            log_verbose(&format!(
                 "drag:start locked_y={}",
                 locked_y.map(|v| v.to_string()).unwrap_or_else(|| "none".into())
             ));
@@ -584,7 +698,7 @@ fn drag_start(app: AppHandle, state: State<'_, DragState>, locked_y: Option<i32>
 fn drag_end(state: State<'_, DragState>) {
     if state.active.swap(false, Ordering::SeqCst) {
         *state.locked_y.lock().unwrap() = None;
-        log_line("drag:end");
+        log_verbose("drag:end");
     }
 }
 
@@ -821,7 +935,24 @@ fn collect_session_log() -> String {
     };
     let offset = LOG_START_OFFSET.get().copied().unwrap_or(0) as usize;
     let start = offset.min(bytes.len());
-    String::from_utf8_lossy(&bytes[start..]).to_string()
+    let text = String::from_utf8_lossy(&bytes[start..]).to_string();
+    truncate_log(&text)
+}
+
+/// 日志太长时只保留开头（启动/环境信息）和结尾（最近的问题），避免反馈邮件超限。
+fn truncate_log(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= LOG_ATTACH_MAX_CHARS {
+        return text.to_string();
+    }
+    let head_len = 2_000usize;
+    let tail_len = LOG_ATTACH_MAX_CHARS - head_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!(
+        "{head}\n…（中间省略 {} 个字符；完整日志见菜单「诊断日志 → 打开日志文件夹」）…\n{tail}\n",
+        chars.len() - LOG_ATTACH_MAX_CHARS
+    )
 }
 
 /// 轻量混淆解密：XOR + 位置偏移（非密码学强度，仅防止明文散落在二进制/源码中）。
@@ -926,6 +1057,31 @@ fn chrono_now() -> String {
     format!("ts{ms}")
 }
 
+/// 把一段文本写到桌面的文件里（目前用于日记导出），返回文件路径。
+/// 只取文件名并过滤掉路径分隔符/非法字符，避免写到桌面以外的地方。
+#[tauri::command]
+fn export_text_to_desktop(file_name: String, text: String) -> Result<String, String> {
+    let mut safe: String = file_name
+        .chars()
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        })
+        .take(80)
+        .collect();
+    safe = safe.trim().to_string();
+    // 空名、纯点名或隐藏文件都换成默认名
+    if safe.is_empty() || safe.starts_with('.') || safe == "." || safe == ".." {
+        safe = format!("petra-导出-{}.txt", chrono_now());
+    }
+    let desktop = std::env::var("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Desktop"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let path = desktop.join(&safe);
+    log_line(&format!("导出到桌面: {}", path.display()));
+    std::fs::write(&path, text).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// 导出反馈文本到桌面文件（含用户描述 + 环境信息 + 本次启动日志），返回文件路径。
 #[tauri::command]
 fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
@@ -1016,6 +1172,67 @@ fn send_notification(title: String, body: String) {
     crate::log_line(&format!("send_notification: {title} | {body}"));
 }
 
+/// 天气查询脚本。`@PROXY@=0` 时绕过系统代理直连。
+/// 为什么要直连：开着梯子（系统代理）时 wttr.in 按**出口 IP** 定位，
+/// 实测出口在日本时返回的是 Tokyo/Sarugakcho —— 信息板就会显示梯子地区的天气。
+const WEATHER_PS: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+if ('@PROXY@' -eq '0') { [System.Net.WebRequest]::DefaultWebProxy = $null }
+try {
+  $r = Invoke-WebRequest -Uri '@URL@' -TimeoutSec 6 -UseBasicParsing
+  $j = $r.Content | ConvertFrom-Json
+  $c = $j.current_condition[0]
+  $w = $j.weather[0]
+  $a = $j.nearest_area[0]
+  "$($a.areaName[0].value)|$($c.weatherDesc[0].value)|$($c.temp_C)|$($w.maxtempC)|$($w.mintempC)|$($w.hourly[4].chanceofrain)|$($a.country[0].value)"
+} catch { "获取失败|天气获取失败|—|—|—|—|" }"#;
+
+/// 系统区域（zh-CN、en-US…）→ wttr.in 用的英文国名，用来判断定位有没有被代理带偏。
+fn locale_expected_country(locale: &str) -> Option<&'static str> {
+    let region = locale.rsplit('-').next().unwrap_or("").to_ascii_uppercase();
+    Some(match region.as_str() {
+        "CN" => "China",
+        "TW" => "Taiwan",
+        "HK" => "Hong Kong",
+        "MO" => "Macau",
+        "JP" => "Japan",
+        "KR" => "South Korea",
+        "SG" => "Singapore",
+        "MY" => "Malaysia",
+        "TH" => "Thailand",
+        "VN" => "Vietnam",
+        "PH" => "Philippines",
+        "ID" => "Indonesia",
+        "IN" => "India",
+        "US" => "United States",
+        "CA" => "Canada",
+        "GB" => "United Kingdom",
+        "DE" => "Germany",
+        "FR" => "France",
+        "IT" => "Italy",
+        "ES" => "Spain",
+        "NL" => "Netherlands",
+        "RU" => "Russia",
+        "AU" => "Australia",
+        "BR" => "Brazil",
+        _ => return None,
+    })
+}
+
+/// 定位到的国家与系统区域不符 → 很可能走了代理出口（区域未知时不判断，避免误报）
+fn weather_location_suspect(locale: &str, country: &str) -> bool {
+    let Some(expected) = locale_expected_country(locale) else {
+        return false;
+    };
+    let got = country.trim();
+    if got.is_empty() {
+        return false;
+    }
+    !got.eq_ignore_ascii_case(expected)
+}
+
+/// 取天气：优先用户指定的城市，否则先试 Windows 位置 API，再按 IP 定位。
+/// 网络请求一律**直连优先**，直连失败且有系统代理时才回退代理；
+/// 最后附一个"定位可疑"标记（系统区域与定位国家不符时），前端据此提示用户指定城市。
 #[tauri::command]
 async fn get_weather(city: Option<String>) -> Result<String, String> {
     let city_arg = city.unwrap_or_default();
@@ -1039,29 +1256,59 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
                 "https://wttr.in/?format=j1&lang=zh".to_string()
             }
         };
-        let ps_cmd = format!(r#"try {{
-                $r = Invoke-WebRequest -Uri '{}' -TimeoutSec 6 -UseBasicParsing;
-                $j = $r.Content | ConvertFrom-Json;
-                $c = $j.current_condition[0];
-                $w = $j.weather[0];
-                $loc = $j.nearest_area[0].areaName[0].value;
-                $desc = $c.weatherDesc[0].value;
-                $temp = $c.temp_C;
-                $max = $w.maxtempC;
-                $min = $w.mintempC;
-                $rain = $w.hourly[4].chanceofrain;
-                "$loc|$desc|$temp|$max|$min|$rain"
-                }} catch {{ "获取失败|天气获取失败|—|—|—|—" }}"#,
-            url
-        );
-        let output = hidden_command("powershell")
-            .args(["-NoProfile", "-Command", &ps_cmd])
-            .output()
-            .map_err(|e| format!("启动失败: {e}"))?;
-        if !output.status.success() {
-            return Err(format!("天气命令执行失败: {}", output.status));
+
+        let run_pass = |use_proxy: bool| -> Result<String, String> {
+            let cmd = WEATHER_PS
+                .replace("@PROXY@", if use_proxy { "1" } else { "0" })
+                .replace("@URL@", &url);
+            let output = hidden_command("powershell")
+                .args(["-NoProfile", "-Command", &cmd])
+                .output()
+                .map_err(|e| format!("启动失败: {e}"))?;
+            if !output.status.success() {
+                return Err(format!("天气命令执行失败: {}", output.status));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        };
+
+        // 直连优先（拿真实的本地出口 IP）；只有直连真的不通时才走系统代理
+        let mut raw = run_pass(false)?;
+        if raw.starts_with("获取失败") && crate::proxy::get_system_proxy().is_some() {
+            crate::log_line("[weather] 直连取天气失败，改用系统代理重试");
+            if let Ok(via_proxy) = run_pass(true) {
+                if !via_proxy.starts_with("获取失败") {
+                    raw = via_proxy;
+                }
+            }
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+
+        let parts: Vec<String> = raw.split('|').map(|s| s.trim().to_string()).collect();
+        if parts.len() < 7 {
+            return Ok(raw);
+        }
+        let country = parts[6].clone();
+        let locale = read_reg_value(r"HKCUControl PanelInternational", "LocaleName");
+        let suspect = weather_location_suspect(&locale, &country);
+        if suspect {
+            crate::log_line(&format!(
+                "[weather] 定位 {}({country}) 与系统区域 {locale} 不符，疑似代理出口",
+                parts[0]
+            ));
+        }
+        crate::log_line(&format!(
+            "[weather] {} {}°C（{}）定位可疑={suspect}",
+            parts[0], parts[2], parts[1]
+        ));
+        Ok(format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3],
+            parts[4],
+            parts[5],
+            if suspect { 1 } else { 0 }
+        ))
     })
     .await
     .map_err(|e| format!("天气任务异常: {e}"))?
@@ -1409,7 +1656,7 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             } else {
                 pass.detail.clone()
             };
-            crate::log_line(&format!("[lyrics] 取歌词失败 {t} - {a}（{mode}）：{detail}"));
+            crate::log_error(&format!("[lyrics] 取歌词失败 {t} - {a}（{mode}）：{detail}"));
             return Err(format!("歌词接口无响应（{detail}）"));
         }
         // 成功也记一行：便于区分"接口没查到"与"接口坏了"
@@ -1838,7 +2085,7 @@ fn set_menu_open(app: AppHandle, open: bool) {
     if let Some(m) = app.try_state::<MenuOpen>() {
         m.active.store(open, std::sync::atomic::Ordering::SeqCst);
     }
-    log_line(&format!("set_menu_open: open={open}"));
+    log_verbose(&format!("set_menu_open: open={open}"));
 }
 
 #[tauri::command]
@@ -1851,7 +2098,7 @@ fn set_interacting(state: State<'_, InteractionState>, active: bool) {
             snapshot.last_update = Some(std::time::Instant::now());
         }
     }
-    log_line(&format!("set_interacting: active={active}"));
+    log_verbose(&format!("set_interacting: active={active}"));
 }
 
 #[cfg(test)]
@@ -1990,6 +2237,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
             quit_app, restart_app, debug_mark, read_file_bytes, save_psd,
+            export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
             set_pet_target, set_pet_target_speed, set_pet_tracking, clear_pet_target,
@@ -2004,7 +2252,7 @@ pub fn run() {
             schedule_shutdown, cancel_shutdown,
         ])
         .setup(|app| {
-            LOG_DIR.get_or_init(|| {
+            let log_dir = LOG_DIR.get_or_init(|| {
                 let dir = app
                     .path()
                     .app_data_dir()
@@ -2013,13 +2261,22 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             });
+            // 先轮转再取偏移：顺序不能反，否则偏移会指向已经被改名走的旧文件
+            rotate_log(log_dir);
+            // 详细日志开关：debug 构建或 PETRA_VERBOSE_LOG=1 时记录高频埋点
+            let verbose = verbose_log_enabled();
+            VERBOSE_LOG.store(verbose, Ordering::Relaxed);
             // 记录本次启动日志起始偏移（反馈只附本次启动后的日志）
-            let offset = LOG_DIR
-                .get()
-                .and_then(|d| std::fs::metadata(d.join("pet.log")).ok().map(|m| m.len()))
+            let offset = std::fs::metadata(log_dir.join("pet.log"))
+                .map(|m| m.len())
                 .unwrap_or(0);
             LOG_START_OFFSET.get_or_init(|| offset);
-            log_line("=== pet started ===");
+            log_line(&format!(
+                "=== pet started v{} ({}{}) ===",
+                app.package_info().version,
+                if cfg!(debug_assertions) { "debug" } else { "release" },
+                if verbose { "，详细日志开" } else { "" }
+            ));
             log_environment();
 
             let handle = app.handle().clone();
@@ -2040,6 +2297,34 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod weather_tests {
+    use super::*;
+
+    #[test]
+    fn locale_maps_to_expected_country() {
+        assert_eq!(locale_expected_country("zh-CN"), Some("China"));
+        assert_eq!(locale_expected_country("zh-Hans-CN"), Some("China"));
+        assert_eq!(locale_expected_country("en-US"), Some("United States"));
+        assert_eq!(locale_expected_country("ja-JP"), Some("Japan"));
+        // 认不出的区域不能瞎猜，否则会给用户误报"定位可疑"
+        assert_eq!(locale_expected_country("xx-YY"), None);
+        assert_eq!(locale_expected_country(""), None);
+    }
+
+    #[test]
+    fn suspect_when_ip_country_differs_from_locale() {
+        // 实测：开着梯子时 wttr.in 按出口 IP 返回 Japan/Tokyo
+        assert!(weather_location_suspect("zh-CN", "Japan"));
+        assert!(weather_location_suspect("zh-CN", "United States"));
+        assert!(!weather_location_suspect("zh-CN", "China"));
+        assert!(!weather_location_suspect("en-US", "United States"));
+        // 国家拿不到 / 区域认不出时都不判可疑
+        assert!(!weather_location_suspect("zh-CN", ""));
+        assert!(!weather_location_suspect("xx-YY", "Japan"));
+    }
 }
 
 #[cfg(test)]

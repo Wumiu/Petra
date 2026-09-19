@@ -138,9 +138,9 @@ pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
     if !verified {
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         let last = LAST_LOG_AT.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) > 10000 {
+        if now_ms.saturating_sub(last) > 60000 {
             LAST_LOG_AT.store(now_ms, Ordering::Relaxed);
-            crate::log_line(&format!(
+            crate::log_warn(&format!(
             "ignore_cursor: {ignore} 设置后未生效！style={:#x}",
             unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) }
             ));

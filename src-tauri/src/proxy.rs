@@ -26,10 +26,24 @@ pub fn get_system_proxy() -> Option<String> {
     wininet_proxy()
 }
 
+/// 把注册表里的 REG_SZ 原始字节按 UTF-16LE 解码。
+/// RegQueryValueExW 返回的是宽字符字节流，以前这里用 String::from_utf8_lossy 直接读，
+/// 于是 "127.0.0.1:7890" 会变成 "1\0 2\0 7\0 .\0 …"（每个 ASCII 后跟一个 NUL），
+/// 传给重复器就是一个无效代理 —— 开着梯子检查更新必然失败。
+fn wide_to_string(raw: &[u8]) -> String {
+    let units: Vec<u16> = raw
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|&u| u != 0)
+        .collect();
+    String::from_utf16_lossy(&units).trim().to_string()
+}
+
 /// 规范成 updater 可接受 URL：reqwest::Proxy::all 要求带 scheme。
 fn normalize_proxy_url(raw: &str) -> Option<String> {
     let t = raw.trim();
-    if t.is_empty() {
+    // 控制字符/内嵌 NUL 不可能是合法代理地址，宁可当作"没有代理"也不要拿坏串去连
+    if t.is_empty() || t.chars().any(|c| c.is_control()) {
         return None;
     }
     if t.starts_with("http://") || t.starts_with("https://") || t.starts_with("socks5") {
@@ -122,7 +136,7 @@ fn wininet_proxy() -> Option<String> {
     // Clash/V2RayN 等 PAC 模式下必然失败。优先使用可用的静态代理；仅 PAC
     // 且没有 ProxyServer 时才退回系统直连。
     let server = query_value(hkey, "ProxyServer")
-        .map(|raw| String::from_utf8_lossy(&raw).trim_end_matches('\0').trim().to_string())
+        .map(|raw| wide_to_string(&raw))
         .unwrap_or_default();
     if !server.is_empty() {
         return parse_proxy_server(&server);
@@ -162,6 +176,28 @@ mod tests {
         assert_eq!(normalize_proxy_url("127.0.0.1:7897").as_deref(), Some("http://127.0.0.1:7897"));
         assert_eq!(normalize_proxy_url(" http://x:1 ").as_deref(), Some("http://x:1"));
         assert_eq!(normalize_proxy_url("  "), None);
+    }
+
+    #[test]
+    fn wide_registry_value_is_decoded() {
+        // 注册表 REG_SZ 是 UTF-16LE（带结尾 NUL）
+        let mut raw: Vec<u8> = "127.0.0.1:7890"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        raw.extend_from_slice(&[0, 0]);
+        assert_eq!(wide_to_string(&raw), "127.0.0.1:7890");
+        assert_eq!(
+            parse_proxy_server(&wide_to_string(&raw)).as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+    }
+
+    #[test]
+    fn broken_proxy_string_is_rejected() {
+        // 老的坏解码结果（ASCII + 内嵌 NUL）不能再被当成代理
+        let broken = "1\u{0}2\u{0}7\u{0}:\u{0}7\u{0}8\u{0}9\u{0}0";
+        assert_eq!(normalize_proxy_url(broken), None);
     }
 
     #[test]

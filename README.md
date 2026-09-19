@@ -170,9 +170,12 @@ public/models/              # 默认角色资源 + manifest.json
 
 ## 诊断
 
-- 前端报错与启动埋点汇集到 `%APPDATA%\com.wumiu.petra\logs\pet.log`
+- 前端报错与启动埋点汇集到 `%APPDATA%\com.wumiu.petra\logs\pet.log`，格式为 `[本地时间] [级别] 内容`（INFO / WARN / ERROR / DEBUG）
+- 高频埋点（拖动 / 交互 / 菜单开合 / 模型路径）在 dev 构建记录、release 默认不落盘；排查线上问题时可用环境变量 `PETRA_VERBOSE_LOG=1` 临时打开
+- 日志超过 1MB 会在启动时轮转为 `pet.log.1`（只留一份），反馈邮件里附带的日志上限 120k 字符（超长保留开头+结尾）
+- 反馈入口会自动附上本次启动的日志（`LOG_START_OFFSET` 之后的部分）
 - dev 构建自带 WebView2 远程调试端口 9222，`node scripts/cdp-diag.mjs` 可抓取页面异常详情
-- 排查启动问题先看 `pet.log`：`boot:start → boot:view=<类型> → boot:loop=start → boot:audio=on`
+- 排查启动问题先看 `pet.log`：`=== pet started vX.Y.Z === → boot:start → boot:view=<类型> → boot:loop=start → boot:audio=on`
 
 **Astrobot 预留接口**
 

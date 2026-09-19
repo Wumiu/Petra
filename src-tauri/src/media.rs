@@ -145,7 +145,7 @@ pub fn start_media_poller(app: AppHandle) {
                 Err(e) => {
                     fail_streak += 1;
                     if fail_streak == 1 || fail_streak % 30 == 0 {
-                        crate::log_line(&format!("[media] SMTC 不可用：{e}"));
+                        crate::log_warn(&format!("[media] SMTC 不可用：{e}"));
                     }
                 }
             }

@@ -772,6 +772,13 @@ body {
   line-height: 1.6;
 }
 
+.dp-toolbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
 .dp-list {
   display: flex;
   flex-direction: column;

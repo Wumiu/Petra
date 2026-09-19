@@ -11,7 +11,8 @@ import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
 import { trackEvent, incrementInteractionCount } from "./features/diary/DiaryEventTracker";
-import { checkAndGenerateDiary } from "./features/diary/DiaryManager";
+import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
+import { formatWeatherHtml } from "./features/weather/WeatherFormat";
 import { toggleDiaryPanel } from "./features/diary/DiaryPanel";
 import { hasDrawnToday } from "./features/card/DailyCardManager";
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
@@ -961,6 +962,8 @@ async function boot() {
     checkAndGenerateDiary().then(list => {
       if (list.length === 1) toast("📖 昨天的日记写好啦~");
       else if (list.length > 1) toast(`📖 补写了 ${list.length} 篇日记~`);
+      const warn = takeDiaryStorageWarning();
+      if (warn) toast(warn, "warn");
     }).catch(() => {});
     // 跨天自动补写：整天开着应用跨过午夜，日期变化后自动为刚结束的那天写日记
     const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -1741,7 +1744,41 @@ function buildMenu(engine: BehaviorEngine) {
       label: "对话记录",
       onPick: () => toggleChatHistory(),
     },
-    { id: "diary", label: "📖 日记本", onPick: () => toggleDiaryPanel() },
+    {
+      id: "diary",
+      label: "📖 日记本",
+      submenu: [
+        { id: "diary-open", label: "打开日记本", onPick: () => toggleDiaryPanel() },
+        {
+          id: "diary-auto",
+          label: "自动生成",
+          state: settings.diary.autoGenerate ? "开" : "关",
+          onPick: () => {
+            settings.diary.autoGenerate = !settings.diary.autoGenerate;
+            saveSettings(settings);
+            toast(
+              settings.diary.autoGenerate
+                ? "每天第一次打开时会自动写昨天的日记"
+                : "不再自动写日记，可在日记本里手动补写",
+            );
+          },
+        },
+        {
+          id: "diary-track",
+          label: "记录互动",
+          state: settings.diary.enabled ? "开" : "关",
+          onPick: () => {
+            settings.diary.enabled = !settings.diary.enabled;
+            saveSettings(settings);
+            toast(
+              settings.diary.enabled
+                ? "开始记录聊天/提醒/互动，第二天写成日记"
+                : "已停止记录互动（已有日记保留）",
+            );
+          },
+        },
+      ],
+    },
     { id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() },
     {
       id: "minigames",
@@ -2038,28 +2075,7 @@ let infoPanelEl: HTMLElement | null = null;
 let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWeather: { text: string; time: number } | null = null;
 
-/** 天气描述 → emoji */
-function weatherEmoji(desc: string): string {
-  const d = desc.toLowerCase();
-  if (d.includes("晴") || d.includes("sunny") || d.includes("clear")) return "☀️";
-  if (d.includes("多云") || d.includes("cloud")) return "⛅";
-  if (d.includes("阴") || d.includes("overcast")) return "☁️";
-  if (d.includes("雨") || d.includes("rain")) return "🌧";
-  if (d.includes("雪") || d.includes("snow")) return "❄️";
-  if (d.includes("雷") || d.includes("thunder")) return "⛈";
-  if (d.includes("雾") || d.includes("fog") || d.includes("mist")) return "🌫";
-  return "🌤";
-}
-
-/** 解析 wttr.in 返回的 "城市|描述|温度|最高|最低|降雨%" 格式 */
-function formatWeatherHtml(raw: string): string {
-  const parts = (raw || "").split("|");
-  if (parts.length < 6) return raw || "天气获取失败";
-  const [city, desc, temp, maxT, minT, rain] = parts.map((s) => s.trim());
-  const emoji = weatherEmoji(desc);
-  const displayCity = settings.weatherCity || city;
-  return `${displayCity}　${emoji} ${desc} ${temp}°C\n最高 ${maxT}° / 最低 ${minT}° · 降雨 ${rain}%`;
-}
+// 天气解析与展示见 src/features/weather/WeatherFormat.ts（纯函数，有单测）
 
 async function showInfoPanel() {
   if (!infoPanelEl) {
@@ -2080,7 +2096,7 @@ async function showInfoPanel() {
   } else {
     invoke<string>("get_weather", { city: settings.weatherCity || null })
       .then((raw) => {
-        weatherHtml = formatWeatherHtml(raw);
+        weatherHtml = formatWeatherHtml(raw, settings.weatherCity);
         cachedWeather = { text: weatherHtml, time: Date.now() };
         updateInfoPanelContent(el, companionText, weatherHtml);
       })
@@ -2719,6 +2735,14 @@ async function toggleAssistantSettings() {
     nickname.value = settings.assistant.nickname ?? "";
     mkRow("对用户的称呼", nickname);
 
+    // 天气城市：填了就按城市查，不会再被代理出口 IP 带偏
+    const weatherCity = document.createElement("input");
+    weatherCity.className = "as-input";
+    weatherCity.placeholder = "天气城市（如 北京；留空自动定位）";
+    weatherCity.value = settings.weatherCity ?? "";
+    const weatherCityRow = mkRow("天气城市", weatherCity);
+    weatherCityRow.title = "开了代理/VPN 时自动定位可能指向梯子地区，填上城市就不会错";
+
     // 主动问候间隔时间设置
     const greetRow = document.createElement("div");
     greetRow.className = "as-set-row";
@@ -2861,6 +2885,10 @@ async function toggleAssistantSettings() {
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
       settings.gameTalk = gameTalk.checked;
+      // 天气城市变了就清掉缓存，下次打开信息板立刻重新取
+      const cityNext = weatherCity.value.trim();
+      if (cityNext !== settings.weatherCity) cachedWeather = null;
+      settings.weatherCity = cityNext;
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       settings.assistant.greetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));

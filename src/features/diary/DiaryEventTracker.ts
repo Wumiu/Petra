@@ -8,6 +8,17 @@
  * - summary 截断安全处理
  */
 
+import { loadSettings } from "../../utils/settings";
+
+/** 日记功能关掉时不再采集事件：既不占 localStorage，也不留隐私记录 */
+function trackingEnabled(): boolean {
+  try {
+    return loadSettings().diary?.enabled !== false;
+  } catch {
+    return true;
+  }
+}
+
 export interface DiaryEvent {
   type: "chat" | "reminder_done" | "greeting" | "interaction";
   summary: string;
@@ -68,6 +79,7 @@ export function getEvents(date?: string): DiaryEvent[] {
 
 /** 记录一条事件 */
 export function trackEvent(event: Omit<DiaryEvent, "timestamp">): void {
+  if (!trackingEnabled()) return;
   try {
     const key = storageKey();
     const events: DiaryEvent[] = (() => {
@@ -85,6 +97,7 @@ export function trackEvent(event: Omit<DiaryEvent, "timestamp">): void {
 
 /** 记录用户交互（点击/拖拽），增量更新计数器 */
 export function incrementInteractionCount(): void {
+  if (!trackingEnabled()) return;
   try {
     const key = storageKey();
     const events: DiaryEvent[] = (() => {
