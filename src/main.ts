@@ -217,6 +217,8 @@ window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
   const saved = loadSettings();
   settings.gameSound = saved.gameSound;
   settings.gameSoundVolume = saved.gameSoundVolume;
+  settings.gameMusic = saved.gameMusic;
+  settings.gameMusicVolume = saved.gameMusicVolume;
 });
 let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
@@ -1778,6 +1780,17 @@ function buildMenu(engine: BehaviorEngine) {
             saveSettings(settings);
             window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
             toast(settings.gameSound ? `麻将音效已开启（${Math.round(settings.gameSoundVolume * 100)}%）` : "麻将音效已关闭");
+          },
+        },
+        {
+          id: "mg-music",
+          label: "麻将对局音乐",
+          state: settings.gameMusic ? `${Math.round(settings.gameMusicVolume * 100)}%` : "关",
+          onPick: () => {
+            settings.gameMusic = !settings.gameMusic;
+            saveSettings(settings);
+            window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+            toast(settings.gameMusic ? `麻将音乐已开启（${Math.round(settings.gameMusicVolume * 100)}%）` : "麻将音乐已关闭");
           },
         },
         { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },

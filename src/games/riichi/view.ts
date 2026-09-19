@@ -288,6 +288,7 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   const root = el("div", "mg-riichi");
   ctx.root.appendChild(root);
   root.addEventListener("click", (event) => {
+    sound.resumeForGesture();
     const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button") : null;
     if (target && !target.disabled && target.dataset.sfxEvent !== "true") sound.playButton();
   });
@@ -570,7 +571,49 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
         sound.preview();
       });
       volumeLabel.append(el("span", "", "音量"), range, value);
-      soundPanel.append(enabledLabel, volumeLabel, el("p", "mg-sound-help", "松开滑块试听；失焦或最小化时不播放对局音效。"));
+
+      const musicLabel = el("label", "mg-sound-toggle mg-music-toggle");
+      const musicEnabled = document.createElement("input");
+      musicEnabled.type = "checkbox";
+      musicEnabled.checked = sound.settings.musicEnabled;
+      musicEnabled.addEventListener("change", () => {
+        const settings = loadSettings();
+        settings.gameMusic = musicEnabled.checked;
+        saveSettings(settings);
+        window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+        sound.setMusicEnabled(musicEnabled.checked);
+        render();
+      });
+      musicLabel.append(musicEnabled, el("span", "", "对局与结算音乐"));
+      const musicVolumeLabel = el("label", "mg-sound-volume");
+      const musicValue = el("span", "mg-sound-value", `${Math.round(sound.settings.musicVolume * 100)}%`);
+      const musicRange = document.createElement("input");
+      musicRange.type = "range";
+      musicRange.min = "0";
+      musicRange.max = "100";
+      musicRange.step = "1";
+      musicRange.value = String(Math.round(sound.settings.musicVolume * 100));
+      musicRange.disabled = !sound.settings.musicEnabled;
+      musicRange.setAttribute("aria-label", "麻将音乐音量");
+      musicRange.addEventListener("input", () => {
+        const volume = Number(musicRange.value) / 100;
+        musicValue.textContent = `${musicRange.value}%`;
+        sound.setMusicVolume(volume);
+      });
+      musicRange.addEventListener("change", () => {
+        const settings = loadSettings();
+        settings.gameMusicVolume = Number(musicRange.value) / 100;
+        saveSettings(settings);
+        window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+      });
+      musicVolumeLabel.append(el("span", "", "音量"), musicRange, musicValue);
+      soundPanel.append(
+        enabledLabel,
+        volumeLabel,
+        musicLabel,
+        musicVolumeLabel,
+        el("p", "mg-sound-help", "音效滑块松开时试听；失焦或最小化时暂停麻将音频。"),
+      );
       root.appendChild(soundPanel);
     }
 

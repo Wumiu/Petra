@@ -47,6 +47,10 @@ export interface Settings {
   gameSound: boolean;
   /** 游戏音效音量，范围 0～1。 */
   gameSoundVolume: number;
+  /** 麻将对局与结算音乐开关。 */
+  gameMusic: boolean;
+  /** 麻将音乐音量，范围 0～1。 */
+  gameMusicVolume: number;
   activity: ActivityLevel;
   mouseTrack: boolean;
   idleMode: boolean;
@@ -78,6 +82,8 @@ const DEFAULTS: Settings = {
   audioEnabled: true,
   gameSound: true,
   gameSoundVolume: 0.3,
+  gameMusic: true,
+  gameMusicVolume: 0.18,
   activity: "low",
   mouseTrack: false,
   idleMode: false,
@@ -134,6 +140,8 @@ export function loadSettings(): Settings {
     };
     s.gameSound = s.gameSound !== false;
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
+    s.gameMusic = s.gameMusic !== false;
+    s.gameMusicVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameMusicVolume)) ? Number(s.gameMusicVolume) : DEFAULTS.gameMusicVolume));
     currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
     currentLevel = s.activity ?? DEFAULTS.activity;
     return s;
