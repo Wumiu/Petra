@@ -1501,7 +1501,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   z-index: 30;
   top: 49px;
   right: 14px;
-  width: 220px;
+  width: 238px;
   box-sizing: border-box;
   padding: 10px 11px 9px;
   border: 1px solid rgba(213, 182, 124, .32);
@@ -1514,6 +1514,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .mg-sound-toggle,
 .mg-sound-volume { display: flex; align-items: center; gap: 8px; min-height: 25px; }
 .mg-sound-toggle { font-weight: 700; }
+.mg-music-toggle { margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(170,181,198,.14); }
 .mg-sound-toggle input { accent-color: var(--mg-violet); }
 .mg-sound-volume > span:first-child { width: 28px; color: var(--mg-muted); }
 .mg-sound-volume input { min-width: 0; flex: 1; accent-color: var(--mg-violet); }
@@ -1871,7 +1872,7 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   .mg-overview { gap: 4px; }
   .mg-score, .mg-status { padding-inline: 6px; gap: 4px; }
   .mg-tool { width: 29px; min-width: 29px; padding: 0; }
-  .mg-sound-panel { top: 47px; right: 10px; width: 205px; }
+  .mg-sound-panel { top: 47px; right: 10px; width: 220px; }
   .mg-table { left: 10px; right: 10px; top: 57px; bottom: 8px; }
   .mg-seat-pet { height: 112px; }
   .mg-pet-hit { width: 126px; height: 82px; }
