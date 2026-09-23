@@ -1,8 +1,10 @@
 /**
  * 日记本逻辑测试（不依赖浏览器/API）：
  * - 导出 Markdown 的内容与顺序
- * - 缺失日期检测（有事件但还没写日记）
- * - 日记开关 / 自动生成开关的门禁
+ * - 缺失日期检测（有记录但还没写日记）
+ * - 门禁：没配 API Key / 关掉日记 / 关掉自动生成都不写
+ * - 素材采集：前台应用时长聚合、听歌去重计数
+ * - 提示词组装：时间线、复盘要求、字符预算
  * - localStorage 配额不足时的降级保存与告警
  *
  * 运行：npm run test:diary
@@ -25,6 +27,8 @@ global.localStorage = {
 };
 
 const dm = require("./build/features/diary/DiaryManager.js");
+const tr = require("./build/features/diary/DiaryEventTracker.js");
+const dg = require("./build/features/diary/DiaryDigest.js");
 
 const SETTINGS_KEY = "live2d-pet-settings";
 const DIARY_KEY = "petra-diaries";
@@ -77,10 +81,75 @@ const evt = () => JSON.stringify([{ type: "chat", summary: "聊了天", timestam
   store.set(SETTINGS_KEY, JSON.stringify({ diary: { autoGenerate: false } }));
   const r2 = await dm.checkAndGenerateDiary();
   check("关闭自动生成时不自动写", r2.length === 0);
+  // 没配 API Key（桩里 get_api_key 返回空）→ 日记只由大模型写，什么都不生成，素材保留
   const r3 = await dm.checkAndGenerateDiary({ manual: true });
-  check("手动补写在无 API 时写模板纪要", r3.length === 1 && r3[0].aiGenerated === false);
-  check("生成后清掉当天事件", !store.has(eventsKey(-1)));
-  check("模板日记带日期标题", r3[0].content.includes("的日记"));
+  check("没配 API 时不写日记", r3.length === 0, JSON.stringify(r3));
+  check("没配 API 时保留素材", store.has(eventsKey(-1)));
+  check("没配 API 时 hasApiKey 为假", (await dm.hasApiKey()) === false);
+  check("本来就没有日记", dm.loadDiaries().length === 0);
+
+  // ---------- 素材采集：应用用量 ----------
+  reset();
+  tr.trackAppUse("VS Code", 5);
+  tr.trackAppUse("VS Code", 5);
+  tr.trackAppUse("浏览器", 30);
+  const apps = tr.getAppUsage();
+  check("应用用量按时长聚合", apps.length === 2 && apps[0].app === "浏览器" && apps[0].minutes === 30, JSON.stringify(apps));
+  check("应用用量累计同一软件", apps.find((a) => a.app === "VS Code").minutes === 10);
+  check("应用用量按多少排序", apps[0].minutes >= apps[1].minutes);
+  tr.trackAppUse("", 5);
+  check("空应用名不记", tr.getAppUsage().length === 2);
+
+  // ---------- 素材采集：听歌 ----------
+  reset();
+  tr.trackMusic("Yesterday", "The Beatles");
+  tr.trackMusic("Yesterday", "The Beatles");
+  tr.trackMusic("晴天", "周杰伦");
+  const tracks = tr.getMusicTracks();
+  check("听歌去重计数", tracks.length === 2 && tracks[0].count === 2, JSON.stringify(tracks));
+  check("歌名带艺人", tracks[0].label.includes("Yesterday") && tracks[0].label.includes("The Beatles"));
+  tr.trackMusic("", "");
+  check("空歌名不记", tr.getMusicTracks().length === 2);
+
+  // ---------- 提示词组装 ----------
+  reset();
+  const prompt = dg.buildDiaryPrompt({
+    date: dstr(-1),
+    persona: "爱撒娇的猫娘",
+    nickname: "主人",
+    events: [
+      { type: "chat", summary: "聊了毕业论文", timestamp: Date.now() },
+      { type: "reminder_done", summary: "喝水", timestamp: Date.now() },
+      { type: "game", summary: "陪你玩了🀄立直麻将", timestamp: Date.now() },
+      { type: "interaction", summary: "被摸了7次头", timestamp: Date.now() },
+    ],
+    apps: [{ app: "VS Code", minutes: 130 }, { app: "浏览器", minutes: 40 }],
+    tracks: [{ label: "Yesterday - The Beatles", count: 2 }],
+    previousTail: "明天也要一起加油。",
+  });
+  check("提示词含时间线", prompt.includes("【今天的时间线】") && prompt.includes("VS Code（约 2 小时 10 分）"));
+  check("提示词含软件时长", prompt.includes("浏览器（40 分钟）"));
+  check("提示词含听歌", prompt.includes("【今天的时间线】") && prompt.includes("Yesterday"));
+  check("提示词含小游戏", prompt.includes("小游戏：陪你玩了 1 局"));
+  check("提示词含摸头", prompt.includes("被摸了7次头"));
+  check("提示词含聊天摘要", prompt.includes("【我们聊过的事】") && prompt.includes("聊了毕业论文"));
+  check("提示词含上一篇结尾", prompt.includes("上一篇日记的结尾") && prompt.includes("明天也要一起加油"));
+  check("提示词含人设与称呼", prompt.includes("爱撒娇的猫娘") && prompt.includes("主人"));
+  check("提示词要求先复盘", prompt.includes("先在心里把上面的线索过一遍"));
+  check("提示词禁止清单与系统词", prompt.includes("不要罗列清单") && prompt.includes("不要提"));
+  check("提示词不含占位符", !/\{[a-z]+\}/.test(prompt));
+
+  check("分钟格式化：少于 1 小时", dg.formatMinutes(40) === "40 分钟", dg.formatMinutes(40));
+  check("分钟格式化：整小时", dg.formatMinutes(120) === "约 2 小时", dg.formatMinutes(120));
+  check("分钟格式化：带零头", dg.formatMinutes(130) === "约 2 小时 10 分", dg.formatMinutes(130));
+  check("分钟格式化：0", dg.formatMinutes(0) === "0 分钟");
+  check("空用量不给时间线", dg.formatAppUsage([]) === "" && dg.formatMusic([]) === "");
+  check("时间线为空时不出现该段", !dg.buildDiaryPrompt({ events: [] }).includes("【今天的时间线】"));
+
+  const manyEvents = Array.from({ length: 60 }, (_, i) => ({ type: "chat", summary: "第" + i + "条聊天记录", timestamp: Date.now() + i }));
+  const digest = dg.buildEventDigest(manyEvents);
+  check("事件摘要按预算截断", digest.shown < 60 && digest.dropped === 60 - digest.shown, JSON.stringify({ shown: digest.shown, dropped: digest.dropped }));
+  check("事件摘要报告省略条数", dg.buildDiaryPrompt({ events: manyEvents }).includes("条零碎记录没有列出"));
 
   reset();
   const now = Date.now();

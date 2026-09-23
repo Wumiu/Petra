@@ -9,6 +9,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LyricClock } from "./LyricClock";
 import { lineIndexAt, lookupTranslation, cleanTitle, type LyricLine } from "./LrcParser";
+import { LyricFollower } from "./LyricFollow";
 import { loadSettings } from "../utils/settings";
 import { getLyrics } from "./Lyrics";
 import {
@@ -40,8 +41,8 @@ const LYRIC_LEAD_MS = 200;
 
 /** 最近一次音频能量（0~1）：用于判断换歌瞬间是否处在"两首之间的静音空隙" */
 let lastAudioLevel = 0;
-/** 换行气泡最小间隔：歌词密集时不刷屏，"时不时跳一下" */
-const MIN_BUBBLE_GAP_MS = 2500;
+/** 跟唱节流：只有真的显示了才记账，被节流的行下个 tick 补（见 LyricFollow） */
+const follower = new LyricFollower();
 
 let clock: LyricClock | null = null;
 let lines: LyricLine[] | null = null;
@@ -50,12 +51,10 @@ let transLines: LyricLine[] | null = null;
 /** 翻译开关（启动时读设置，菜单切换后立即生效） */
 let translateOn = true;
 let currentKey = "";
-let lastIndex = -1;
 /** 播放器是否在播放（用于"跟唱"状态） */
 let playing = false;
 /** 本首已确认没有歌词（纯音乐 / 库里没有）→ 静默不跟唱，也不再提示 */
 let noLyrics = false;
-let lastBubbleAt = 0;
 let driftNotified = false;
 let missingNotified = false;
 let tickTimer: number | null = null;
@@ -73,7 +72,7 @@ function resetTrackState(): void {
   clock = null;
   lines = null;
   currentKey = "";
-  lastIndex = -1;
+  follower.reset();
   playing = false;
   noLyrics = false;
   driftNotified = false;
@@ -146,7 +145,8 @@ async function onMedia(p: MediaPayload): Promise<void> {
     clock.markPendingOnset(lastAudioLevel < 0.03);
     lines = null;
     transLines = null;
-    lastIndex = -1;
+    // 换歌立刻允许显示新歌的第一行（旧代码在这里没清节流时间戳，新歌首行常被吃掉）
+    follower.reset();
     noLyrics = false;
     driftNotified = false;
     missingNotified = false;
@@ -188,13 +188,9 @@ function tick(): void {
   }
 
   const idx = lineIndexAt(lines, c.positionMs() + LYRIC_LEAD_MS);
-  if (idx < 0 || idx === lastIndex) return;
-  lastIndex = idx;
-
-  const now = Date.now();
-  if (now - lastBubbleAt < MIN_BUBBLE_GAP_MS) return;
-  lastBubbleAt = now;
-  const line = lines[idx];
+  const show = follower.next(idx, Date.now(), c.generationCount);
+  if (show === null) return;
+  const line = lines[show];
   const trans = translateOn && transLines ? lookupTranslation(transLines, line.timeMs) : null;
   showLyricLine(line.text, trans);
 }

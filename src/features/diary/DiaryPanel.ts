@@ -4,7 +4,7 @@
  * 列表显示全部已保存日记（最多 180 篇），展开后可复制/删除。
  */
 
-import { loadDiaries, deleteDiary, listMissingDiaryDates, checkAndGenerateDiary, diariesToMarkdown, takeDiaryStorageWarning } from "./DiaryManager";
+import { loadDiaries, deleteDiary, listMissingDiaryDates, checkAndGenerateDiary, diariesToMarkdown, takeDiaryStorageWarning, hasApiKey } from "./DiaryManager";
 import { getEvents } from "./DiaryEventTracker";
 import { invoke } from "@tauri-apps/api/core";
 import { copyText } from "../../ui/clipboard";
@@ -13,6 +13,8 @@ import { toast } from "../../ui/Toast";
 
 let panelEl: HTMLElement | null = null;
 let expandedDate: string | null = null;
+/** 有没有配置 API Key：日记只由大模型撰写，没配就只让看不让写 */
+let apiReady = false;
 /** 删除二次确认：第一次点变成"确认删除" */
 let confirmDeleteDate: string | null = null;
 
@@ -55,11 +57,19 @@ function renderList(host: HTMLElement) {
   titleBar.append(title, closeBtn);
   host.appendChild(titleBar);
 
+  // 没配 API：明确说清"日记要靠大模型写"，并只保留查看/导出
+  if (!apiReady) {
+    const hint = document.createElement("div");
+    hint.className = "dp-hint";
+    hint.textContent = "📖 日记由大模型撰写：请先在「右键 → 小助手设置」里填好 API Key，之后每天会自动回顾你今天做了什么。";
+    host.appendChild(hint);
+  }
+
   // 工具栏：补写缺失的日记 / 导出到桌面
   const toolbar = document.createElement("div");
   toolbar.className = "dp-toolbar";
 
-  if (missing.length > 0) {
+  if (apiReady && missing.length > 0) {
     const fillBtn = document.createElement("button");
     fillBtn.className = "dp-btn";
     fillBtn.textContent = `✍️ 补写 ${missing.length} 天`;
@@ -117,9 +127,10 @@ function renderList(host: HTMLElement) {
     const empty = document.createElement("div");
     empty.className = "dp-empty";
     const today = getEvents().length;
-    empty.textContent =
-      "还没有日记哦~跟我互动就会自动生成啦！" +
-      (today > 0 ? `（今天已经记下 ${today} 条互动，明天就会写成日记）` : "（日记在第二天自动补写）");
+    empty.textContent = apiReady
+      ? "还没有日记哦~跟我互动就会自动生成啦！" +
+        (today > 0 ? `（今天已经记下 ${today} 条记录，明天就会写成日记）` : "（日记在第二天自动补写）")
+      : "还没有日记。配置 API Key 后，我会每天回顾你做了什么，写成一篇日记。";
     host.appendChild(empty);
     return;
   }
@@ -217,7 +228,7 @@ function positionPanel(el: HTMLElement, panelW: number) {
   });
 }
 
-export function toggleDiaryPanel(): void {
+export async function toggleDiaryPanel(): Promise<void> {
   // 复用同一个面板元素（避免反复开关在 body 里堆积隐藏节点）
   if (!panelEl) {
     panelEl = document.createElement("div");
@@ -235,6 +246,8 @@ export function toggleDiaryPanel(): void {
     return;
   }
 
+  // 先确认有没有 API：面板要据此决定"能不能写"
+  apiReady = await hasApiKey();
   renderList(panelEl);
   panelEl.classList.remove("hidden");
 

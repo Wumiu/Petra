@@ -56,6 +56,27 @@ export const PROVIDERS: Record<AssistantProvider, ProviderInfo> = {
   custom:       { label: "自定义",            base: "",                                      defaultModel: "",                        placeholder: "API Key" },
 };
 
+/**
+ * 有些供应商根本不需要 API Key（本地 Ollama；指向本机的自定义端点如 LM Studio / llama.cpp）。
+ * 以前所有门禁都只看"Key 是否非空"，于是设置面板里明明写着「Ollama：API Key 留空」，
+ * 照做的用户却会被拦下说"未配置 API Key"。
+ */
+export function isKeylessProvider(provider: AssistantProvider, customBaseUrl = ""): boolean {
+  if (provider === "ollama") return true;
+  if (provider !== "custom") return false;
+  const base = (customBaseUrl || "").trim().toLowerCase();
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:\/]|$)/.test(base);
+}
+
+/** 这个配置是否已经可以用来发请求（不需要 Key 的供应商不填也算就绪） */
+export function isProviderReady(
+  assistant: { provider: AssistantProvider; customBaseUrl?: string },
+  apiKey: string,
+): boolean {
+  if (isKeylessProvider(assistant.provider, assistant.customBaseUrl ?? "")) return true;
+  return Boolean((apiKey ?? "").trim());
+}
+
 function resolveBase(provider: AssistantProvider, customBaseUrl: string): string {
   if (provider === "custom") {
     const b = (customBaseUrl || "").trim().replace(/\/+$/, "");

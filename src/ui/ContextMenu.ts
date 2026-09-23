@@ -8,6 +8,11 @@ export interface MenuItemSpec {
   submenu?: MenuItemSpec[];  // 子菜单
   onPick?: () => void;
   onStatePick?: () => void;
+  /**
+   * 行内自定义控件（例如免打扰时段的 ▲▼ 调时）。
+   * 填进这一行右侧；这一行不参与"点击即关闭菜单"，控件内部自己处理点击。
+   */
+  control?: (row: HTMLElement) => void;
 }
 
 /**
@@ -70,6 +75,18 @@ export function setupContextMenu(
           stateSpan.addEventListener("click", (ev) => { ev.stopPropagation(); hide("state-pick"); item.onStatePick?.(); });
         }
         row.appendChild(stateSpan);
+      }
+
+      if (item.control) {
+        row.classList.add("mi-control");
+        // 显式登记为可点击区域：菜单整体虽在交互白名单里，
+        // 但控件行会被 region 采集按 [data-petra-interactive] 再单独登记一次，避免点不透
+        row.dataset.petraInteractive = `menu-control-${item.id}`;
+        item.control(row);
+        // 控件行：点击落在行内不关菜单（▲▼ 要能连点），也不走 onPick
+        row.addEventListener("click", (ev) => ev.stopPropagation());
+        container.appendChild(row);
+        continue;
       }
 
       if (item.submenu && item.submenu.length) {

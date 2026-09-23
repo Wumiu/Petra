@@ -198,6 +198,106 @@ ok("assistant side: 咦 -> surprised", E.classifyAssistantEmotion("咦，你怎�
 ok("assistant side: 哼 -> angry", E.classifyAssistantEmotion("哼！人家才不呢") === "angry");
 ok("assistant side: plain text stays neutral", E.classifyAssistantEmotion("今天天气不错") === "neutral", E.classifyAssistantEmotion("今天天气不错"));
 
+// ---------- 跟唱健壮性（这次修的两个"漏跟"来源）----------
+// 安静段落（有微弱信号）不能被误判成"拖动进度"，否则整首歌都不再跟唱
+let n5 = 800000;
+const c8 = new LyricClock(function () { return n5; });
+c8.setTrack("歌9", "人9");
+c8.setPlaying(true);
+c8.noteAudio(0.5, 16);
+n5 += 800;
+c8.noteAudio(0.01, 800);          // 0.01：安静，但仍高于"深度静音"阈值
+n5 += 16;
+c8.noteAudio(0.5, 16);
+ok("quiet passage does not drift", c8.drift === false && c8.trusted === true);
+ok("quiet passage keeps advancing", c8.positionMs() >= 800, c8.positionMs());
+
+// 真的数字静音（level=0）才判定拖动
+let n6 = 900000;
+const c9 = new LyricClock(function () { return n6; });
+c9.setTrack("歌10", "人10");
+c9.setPlaying(true);
+c9.noteAudio(0.5, 16);
+n6 += 800;
+c9.noteAudio(0, 800);
+n6 += 16;
+c9.noteAudio(0.5, 16);
+ok("true silence still marks drift", c9.drift === true);
+
+// 失准后：重播（长深度静音）要能恢复跟唱
+let n9 = 1200000;
+const c12 = new LyricClock(function () { return n9; });
+c12.setTrack("歌14", "人14");
+const genA = c12.generationCount;
+c12.setPlaying(true);
+c12.noteAudio(0.5, 16);
+n9 += 800;
+c12.noteAudio(0, 800);
+n9 += 16;
+c12.noteAudio(0.5, 16);
+ok("drift set before replay", c12.drift === true);
+n9 += 1000;
+c12.noteAudio(0, 2000);          // 长深度静音 = 重播
+n9 += 16;
+c12.noteAudio(0.5, 16);
+ok("replay clears drift", c12.drift === false && c12.trusted === true);
+ok("replay bumps generation", c12.generationCount === genA + 1, c12.generationCount);
+ok("replay restarts position", c12.positionMs() < 200, c12.positionMs());
+
+// 失准后：播放器给出真实时间轴 → 恢复可信
+let n10 = 1300000;
+const c13 = new LyricClock(function () { return n10; });
+c13.setTrack("歌15", "人15");
+c13.setPlaying(true);
+c13.noteAudio(0.5, 16);
+n10 += 800;
+c13.noteAudio(0, 800);
+n10 += 16;
+c13.noteAudio(0.5, 16);
+ok("drift set before timeline", c13.drift === true);
+c13.setServerPosition(20000);
+ok("server timeline clears drift", c13.drift === false && c13.trusted === true, c13.positionMs());
+
+// 安静段落超过 1.6 秒也不能当成"单曲循环重播"把进度拽回 0
+let n8 = 1100000;
+const c11 = new LyricClock(function () { return n8; });
+c11.setTrack("歌13", "人13");
+c11.setPlaying(true);
+c11.noteAudio(0.5, 16);
+n8 += 2000;
+c11.noteAudio(0.012, 2000);       // 2 秒的安静段落（仍有微弱信号）
+n8 += 16;
+c11.noteAudio(0.5, 16);
+ok("long quiet passage does not reset clock", c11.positionMs() >= 2000, c11.positionMs());
+
+// 时间轴抖动：播放器只报整秒时的小幅回退要忽略（否则歌词会回跳/丢行）
+let n7 = 1000000;
+const c10 = new LyricClock(function () { return n7; });
+c10.setTrack("歌11", "人11");
+const gen0 = c10.generationCount;
+c10.setPlaying(true);
+c10.setServerPosition(30000);
+n7 += 1000;
+const beforeJitter = c10.positionMs();
+c10.setServerPosition(30200);          // 比推算值回退 800ms
+ok("small timeline jitter ignored", c10.positionMs() >= beforeJitter, [beforeJitter, c10.positionMs()]);
+ok("jitter keeps generation", c10.generationCount === gen0, c10.generationCount);
+
+// 前进校正照常生效
+c10.setServerPosition(33000);
+ok("forward timeline update re-anchors", Math.abs(c10.positionMs() - 33000) < 60, c10.positionMs());
+
+// 明显往后拖动：重新锚定 + 换代（跟唱器据此刻重置显示行）
+n7 += 500;
+c10.setServerPosition(10000);
+ok("backward seek re-anchors", Math.abs(c10.positionMs() - 10000) < 60, c10.positionMs());
+ok("backward seek bumps generation", c10.generationCount === gen0 + 1, c10.generationCount);
+
+// 换歌同样换代
+const genBefore = c10.generationCount;
+c10.setTrack("歌12", "人12");
+ok("track change bumps generation", c10.generationCount === genBefore + 1, c10.generationCount);
+
 console.log("");
 console.log("music: pass=" + pass + " fail=" + fail);
 process.exit(fail > 0 ? 1 : 0);

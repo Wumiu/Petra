@@ -10,7 +10,7 @@
  */
 
 import { rollRarity, rollCard, getCardPool, type CardDef, type Rarity } from "./CardPool";
-import { chatStream, type ChatMessage } from "../../assistant/AssistantClient";
+import { chatStream, isProviderReady, type ChatMessage } from "../../assistant/AssistantClient";
 import { getEvents } from "../diary/DiaryEventTracker";
 import { loadSettings } from "../../utils/settings";
 import { invoke } from "@tauri-apps/api/core";
@@ -116,7 +116,8 @@ async function generateAiText(card: CardDef, persona: string): Promise<{ text: s
   let apiKey = "";
   try { apiKey = await invoke<string>("get_api_key"); } catch {}
 
-  if (!apiKey) {
+  // 本地 Ollama / 本机端点不需要 Key，也算可以生成
+  if (!isProviderReady(settings.assistant, apiKey)) {
     return { text: card.baseText, ai: false };
   }
 

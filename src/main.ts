@@ -10,7 +10,7 @@ import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu } from "./ui/ContextMenu";
-import { trackEvent, incrementInteractionCount } from "./features/diary/DiaryEventTracker";
+import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "./features/diary/DiaryEventTracker";
 import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
 import { toggleDiaryPanel } from "./features/diary/DiaryPanel";
@@ -18,16 +18,19 @@ import { hasDrawnToday } from "./features/card/DailyCardManager";
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
+import { copyText } from "./ui/clipboard";
 import { setVisibleRect } from "./ui/visible";
 import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
-import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine } from "./assistant/AssistantPanel";
+import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
+import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
-import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, setMiniGameLifecycle } from "./games/host";
+import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
 import { clearPetTalkKeyCache } from "./games/riichi/petTalk";
@@ -666,6 +669,11 @@ async function boot() {
       engine.suspend(3600_000);
       closeAssistant();
       clearBubbles();
+      // 日记素材：今天陪你玩过什么
+      const id = activeMiniGameId();
+      const def = listMiniGames().find((g) => g.id === id);
+      const label = def ? `${def.emoji}${def.name}` : "小游戏";
+      trackEvent({ type: "game", summary: `陪你玩了${label}` });
     },
     () => {
       engine.suspend(IDLE_AFTER_DRAG_MS);
@@ -960,6 +968,15 @@ async function boot() {
   });
 
   
+  // 整点播报（本地文案，零 token；免打扰时段自动跳过）
+  applyHourlyChime();
+
+  // 日记素材：前台应用用量 + 听过的歌（开着日记才采集）
+  if (settings.diary?.enabled !== false) {
+    startActivitySampling();
+    startMusicJournaling();
+  }
+
   if (settings.diary?.enabled !== false) {
     checkAndGenerateDiary().then(list => {
       if (list.length === 1) toast("📖 昨天的日记写好啦~");
@@ -1719,6 +1736,46 @@ function buildMenu(engine: BehaviorEngine) {
           label: "动作试玩",
           onPick: () => void toggleActionDebug(),
         },
+        {
+          id: "hourly",
+          label: "⏰ 整点播报",
+          submenu: [
+            {
+              id: "hourly-on",
+              label: "整点播报",
+              state: settings.hourlyChime ? "开" : "关",
+              onPick: () => {
+                settings.hourlyChime = !settings.hourlyChime;
+                saveSettings(settings);
+                applyHourlyChime();
+                toast(settings.hourlyChime ? "每到整点，桌宠会报一下时间" : "已关闭整点播报");
+              },
+            },
+            ...buildHourlyQuietMenuItems(
+              // 传"读取函数"而不是快照：▲▼ 点完要立刻显示新值
+              () => ({
+                enabled: settings.hourlyChimeQuiet !== false,
+                start: settings.hourlyQuietStart ?? 23,
+                end: settings.hourlyQuietEnd ?? 8,
+              }),
+              (patch) => {
+                if (patch.enabled !== undefined) settings.hourlyChimeQuiet = patch.enabled;
+                if (patch.start !== undefined) settings.hourlyQuietStart = patch.start;
+                if (patch.end !== undefined) settings.hourlyQuietEnd = patch.end;
+                saveSettings(settings);
+                applyHourlyChime();
+                // 只在开关那一下提示，▲▼ 连点时不刷屏
+                if (patch.enabled !== undefined) {
+                  toast(
+                    settings.hourlyChimeQuiet
+                      ? `免打扰时段：${formatQuietRange(settings.hourlyQuietStart ?? 23, settings.hourlyQuietEnd ?? 8)}`
+                      : "免打扰已关闭，每个整点都会播报",
+                  );
+                }
+              },
+            ),
+          ],
+        },
       ],
     },
 
@@ -2081,6 +2138,94 @@ function toggleModelAdjustPanel() {
   render();
   p.classList.remove("hidden");
   positionPanelNearModel(p);
+}
+
+// ---------- 日记素材采样 ----------
+/**
+ * 从窗口标题猜"主人在用哪个软件"。
+ * Windows 标题惯例是 "文档名 - 应用名"，取最后一段；常见软件统一成短名字，
+ * 这样日记里的时间线读起来是"你在 VS Code 里泡了一下午"，而不是一串文件名。
+ */
+function appNameFromTitle(title: string): string {
+  const raw = (title || "").trim();
+  if (!raw) return "";
+  const seg = raw.split(" - ").pop()?.trim() || raw;
+  const tl = seg.toLowerCase();
+  const known: Array<[string[], string]> = [
+    [["visual studio code", "vscode", "code.exe"], "VS Code"],
+    [["chrome", "edge", "firefox", "brave"], "浏览器"],
+    [["wechat", "微信"], "微信"],
+    [["qq"], "QQ"],
+    [["steam"], "Steam"],
+    [["bilibili", "哔哩哔哩"], "B站"],
+    [["netease", "网易云"], "网易云音乐"],
+    [["word"], "Word"],
+    [["excel"], "Excel"],
+    [["powerpoint"], "PowerPoint"],
+    [["powershell", "terminal", "cmd", "windows terminal"], "终端"],
+    [["explorer", "文件资源管理器"], "文件管理器"],
+    [["typora", "obsidian", "notion"], "笔记"],
+  ];
+  for (const [keys, name] of known) {
+    if (keys.some((k) => tl.includes(k))) return name;
+  }
+  return seg.slice(0, 20);
+}
+
+/** 每 5 分钟采样一次前台应用；人离开（空闲 > 5 分钟）时不记 */
+function startActivitySampling(): void {
+  const SAMPLE_MINUTES = 5;
+  const sample = async () => {
+    try {
+      const idle = await invoke<number>("get_idle_seconds");
+      if (idle > 300) return;
+      const title = await invoke<string>("active_window_title");
+      const app = appNameFromTitle(title);
+      if (app) trackAppUse(app, SAMPLE_MINUTES);
+    } catch {
+      /* 忽略：采样失败不影响别的功能 */
+    }
+  };
+  void sample();
+  window.setInterval(() => void sample(), SAMPLE_MINUTES * 60_000);
+}
+
+/** 记录今天听过的歌：SMTC 每 500ms 推一次，只有换歌才记一条 */
+function startMusicJournaling(): void {
+  let lastKey = "";
+  void listen<{ hasSession: boolean; title: string; artist: string }>("media:nowplaying", (e) => {
+    const p = e.payload;
+    if (!p?.hasSession || !p.title) return;
+    const key = `${p.title}|${p.artist ?? ""}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    trackMusic(p.title, p.artist ?? "");
+  });
+}
+
+// ---------- 整点播报 ----------
+/**
+ * 免打扰时段：用户在「免打扰时段」面板里用左右两个上下调时控件设定。
+ * 关掉开关、或起止相同（例如 8→8）都用 quietStart === quietEnd 表示"永不静音"。
+ */
+function chimeOptions(): { quietStart: number; quietEnd: number } {
+  if (settings.hourlyChimeQuiet === false) return { quietStart: 0, quietEnd: 0 };
+  return {
+    quietStart: settings.hourlyQuietStart ?? 23,
+    quietEnd: settings.hourlyQuietEnd ?? 8,
+  };
+}
+
+/** 整点到了：打游戏 / 助手正在回答时就不打扰 */
+function onHourlyChime(line: string): void {
+  if (isMiniGameOpen() || isAssistantBusy()) return;
+  sayPetLine(line);
+}
+
+/** 按当前设置（重新）装载整点播报 */
+function applyHourlyChime(): void {
+  stopHourlyChime();
+  if (settings.hourlyChime) startHourlyChime(onHourlyChime, chimeOptions());
 }
 
 // ---------- 信息板（桌宠伴侣信息） ----------
@@ -2689,7 +2834,9 @@ async function toggleAssistantSettings() {
     const ollamaHint = document.createElement("div");
     ollamaHint.className = "as-privacy";
     ollamaHint.style.cssText = "display:none;";
-    ollamaHint.innerHTML = "💡 <b>Ollama：</b>① 安装 <code>ollama.com</code> ② 运行 <code>ollama serve</code> ③ <code>ollama pull qwen2.5:7b</code> ④ 点下方「自动获取模型」 ⑤ API Key 留空";
+    ollamaHint.innerHTML =
+      "💡 <b>Ollama：</b>① 安装 <code>ollama.com</code> ② 运行 <code>ollama serve</code> ③ <code>ollama pull qwen2.5:7b</code> ④ 点下方「自动获取模型」 ⑤ API Key 留空" +
+      "<br>同理，自定义端点填 <code>127.0.0.1</code>/<code>localhost</code>（LM Studio、llama.cpp）时也可以留空。";
     host.appendChild(ollamaHint);
 
     const toggleBaseUrl = () => {
@@ -2950,7 +3097,8 @@ function openFeedbackInput() {
 
     const desc = document.createElement("div");
     desc.className = "mp-hint";
-    desc.textContent = "告诉我们遇到了什么问题，将自动附上本次启动的运行日志发送给开发者；发送失败时自动导出到桌面。";
+    desc.textContent =
+      "告诉我们遇到了什么问题，会自动附上本次启动的运行日志。优先走邮件；邮件通道不可用时导出到桌面，也可以直接「复制」贴给我。";
     host.appendChild(desc);
 
     const ta = document.createElement("textarea");
@@ -2967,6 +3115,21 @@ function openFeedbackInput() {
     back.addEventListener("click", () => {
       host.classList.add("hidden");
     });
+    const copy = document.createElement("button");
+    copy.className = "as-btn";
+    copy.textContent = "复制";
+    copy.title = "复制描述 + 环境信息 + 本次启动日志，可直接粘给别人";
+    copy.addEventListener("click", () => {
+      const t = ta.value.trim();
+      if (!t) {
+        toast("请先描述一下遇到的问题", "warn");
+        return;
+      }
+      void invoke<string>("feedback_text", { message: t })
+        .then((text) => copyText(text))
+        .then((ok) => toast(ok ? "反馈内容已复制（含本次启动日志）" : "复制失败，请手动选中复制", ok ? "info" : "warn"))
+        .catch((e) => toast(`复制失败：${e}`, "warn"));
+    });
     const send = document.createElement("button");
     send.className = "as-btn as-btn-primary";
     send.textContent = "发送";
@@ -2979,7 +3142,7 @@ function openFeedbackInput() {
       host.classList.add("hidden");
       void doSendFeedback(t);
     });
-    btns.append(back, send);
+    btns.append(back, copy, send);
     host.appendChild(btns);
   };
 
@@ -3003,15 +3166,16 @@ async function doSendFeedback(message: string) {
   try {
     const msg = await invoke<string>("send_feedback", { message });
     toast(msg);
+    return;
   } catch (e) {
-    // 邮件发送失败：兜底导出桌面文件
-    toast(`邮件发送失败：${e}`, "warn");
-    try {
-      const path = await invoke<string>("export_feedback", { message });
-      toast(`已导出反馈文件到桌面：${path}`);
-    } catch {
-      /* 忽略 */
-    }
+    // 邮件发不出去（最常见：邮箱授权码失效，服务器回 535）：说清原因，再走桌面导出
+    toast(`邮件通道不可用：${e}`, "warn");
+  }
+  try {
+    const path = await invoke<string>("export_feedback", { message });
+    toast(`已导出到桌面：${path}（把这个文件发给我即可）`);
+  } catch (e2) {
+    toast(`导出也失败了：${e2}。请用「复制」把内容贴给我`, "warn");
   }
 }
 

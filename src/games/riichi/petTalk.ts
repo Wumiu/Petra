@@ -1,6 +1,6 @@
 /** 节制、可取消且严格按对手视角裁剪的麻将 AI 互动。 */
 import { invoke } from "@tauri-apps/api/core";
-import { chatStream, estimateTokens } from "../../assistant/AssistantClient";
+import { chatStream, estimateTokens, isKeylessProvider, isProviderReady } from "../../assistant/AssistantClient";
 import { loadSettings } from "../../utils/settings";
 import type { RiichiGame } from "./engine";
 import { isHonor, rankOf, suitOf } from "./tiles";
@@ -70,13 +70,15 @@ export function petTalkWanted(): boolean {
 export async function petTalkAvailable(): Promise<boolean> {
   const s = loadSettings();
   if (!s.assistant.enabled || s.gameTalk !== true) return false;
-  if (s.assistant.provider === "ollama") return true;
+  // 免 Key 的本地供应商（Ollama / 本机自定义端点）直接算就绪，
+  // 其它供应商才需要缓存地读一次 API Key
+  if (isKeylessProvider(s.assistant.provider, s.assistant.customBaseUrl)) return true;
   if (apiKeyCache === null || Date.now() - apiKeyCachedAt > KEY_TTL_MS) {
     try { apiKeyCache = await invoke<string>("get_api_key"); }
     catch { apiKeyCache = ""; }
     apiKeyCachedAt = Date.now();
   }
-  return !!apiKeyCache;
+  return isProviderReady(s.assistant, apiKeyCache ?? "");
 }
 
 export function clearPetTalkKeyCache(): void {

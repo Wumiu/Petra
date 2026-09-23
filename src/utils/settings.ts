@@ -76,6 +76,14 @@ export interface Settings {
   lyricsTranslate: boolean;
   /** 麻将桌上的 AI 实时互动（需要配置 API Key；有节流与每局/每场上限） */
   gameTalk: boolean;
+  /** 整点播报：每到整点让桌宠报一次时间（本地文案，零 token） */
+  hourlyChime: boolean;
+  /** 整点播报免打扰开关（时段由下面两个字段决定） */
+  hourlyChimeQuiet: boolean;
+  /** 免打扰开始小时（含），0~23，默认 23 */
+  hourlyQuietStart: number;
+  /** 免打扰结束小时（不含），0~23，默认 8 */
+  hourlyQuietEnd: number;
 }
 
 const DEFAULTS: Settings = {
@@ -114,6 +122,10 @@ const DEFAULTS: Settings = {
   musicLyrics: true,
   lyricsTranslate: true,
   gameTalk: false,
+  hourlyChime: true,
+  hourlyChimeQuiet: true,
+  hourlyQuietStart: 23,
+  hourlyQuietEnd: 8,
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */

@@ -11,6 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 const rt = require("./build/assistant/toolRuntime.js");
+const ac = require("./build/assistant/AssistantClient.js");
 
 let fail = 0;
 const check = (name, cond, extra = "") => {
@@ -96,6 +97,22 @@ const missingSpec = declared.filter((n) => !rt.isKnownTool(n));
 check("每个模型可见的工具都有运行时规格", missingSpec.length === 0, missingSpec.join(","));
 const extraSpec = rt.toolNames().filter((n) => !declared.includes(n));
 check("运行时表里没有多余工具", extraSpec.length === 0, extraSpec.join(","));
+
+// ---------- 供应商就绪判断（免 Key 的本地模型不能被当成"没配置"）----------
+check("ollama 免 Key", ac.isKeylessProvider("ollama") === true);
+check("openai 需要 Key", ac.isKeylessProvider("openai") === false);
+check("自定义指向 127.0.0.1 免 Key", ac.isKeylessProvider("custom", "http://127.0.0.1:1234/v1") === true);
+check("自定义指向 localhost 免 Key", ac.isKeylessProvider("custom", "http://localhost:8080/v1") === true);
+check("自定义指向远端需要 Key", ac.isKeylessProvider("custom", "https://api.example.com/v1") === false);
+check("自定义空地址需要 Key", ac.isKeylessProvider("custom", "") === false);
+
+check("ollama 空 Key 也算就绪", ac.isProviderReady({ provider: "ollama" }, "") === true);
+check("openai 空 Key 不就绪", ac.isProviderReady({ provider: "openai" }, "") === false);
+check("openai 有 Key 就绪", ac.isProviderReady({ provider: "openai" }, "sk-x") === true);
+check("纯空白 Key 不算就绪", ac.isProviderReady({ provider: "openai" }, "   ") === false);
+check("undefined Key 不炸", ac.isProviderReady({ provider: "deepseek" }, undefined) === false);
+check("本机自定义端点空 Key 就绪", ac.isProviderReady({ provider: "custom", customBaseUrl: "http://127.0.0.1:11434/v1" }, "") === true);
+check("远端自定义端点空 Key 不就绪", ac.isProviderReady({ provider: "custom", customBaseUrl: "https://x.example/v1" }, "") === false);
 
 console.log("assistant-tools: pass=" + (fail === 0 ? "all" : "has failures") + " fail=" + fail);
 process.exit(fail ? 1 : 0);

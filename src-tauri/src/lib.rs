@@ -987,13 +987,45 @@ impl SmtpConfig {
                 7, 71, 27, 53, 2, 91, 74, 70, 23, 89, 83, 66, 77, 28, 0, 61,
             ]),
             auth_code: xdecrypt(&[
-                58, 117, 27, 44, 2, 37, 40, 21, 19, 15, 53, 6, 16, 73, 34, 42,
+                33, 122, 28, 63, 17, 11, 69, 59, 38, 49, 15, 21,
+                9, 29, 1, 26,
             ]),
             to_email: xdecrypt(&[
                 65, 10, 69, 110, 65, 91, 65, 71, 103, 94, 37, 0, 18, 81, 12, 63, 79,
             ]),
         }
     }
+}
+
+/// 组织一份反馈文本（用户描述 + 环境信息 + 本次启动日志）。
+/// 邮件发送、桌面导出、前端「复制」都用它，保证三处内容一致。
+fn compose_feedback_text(app: &AppHandle, message: &str) -> String {
+    let msg = message.trim();
+    format!(
+        "用户反馈：\n{}\n\n{}\n=== 本次启动日志 ===\n{}",
+        if msg.is_empty() { "（未填写问题描述）" } else { msg },
+        collect_env_info(app),
+        collect_session_log(),
+    )
+}
+
+/// 把 SMTP 原始错误翻译成用户能看懂、能行动的一句话。
+fn describe_smtp_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    // 163/QQ 邮箱的"授权码"会被重置或过期，服务器回 535 —— 这是最常见的失效原因
+    if raw.contains("535") || lower.contains("authentication") {
+        "邮箱授权码失效（服务器拒绝认证），已改用桌面文件导出".into()
+    } else if lower.contains("timeout") || lower.contains("timed out") || lower.contains("connect") {
+        "连不上邮件服务器（网络或代理问题），已改用桌面文件导出".into()
+    } else {
+        format!("发送失败: {raw}")
+    }
+}
+
+/// 反馈文本（前端「复制」用，不写文件、不发邮件）
+#[tauri::command]
+fn feedback_text(app: AppHandle, message: String) -> String {
+    compose_feedback_text(&app, &message)
 }
 
 /// 发送反馈邮件：用户问题描述 + 环境信息 + 本次启动日志，直达开发者邮箱。
@@ -1004,13 +1036,7 @@ fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
     use lettre::{Message, SmtpTransport, Transport};
 
     let cfg = SmtpConfig::load();
-    let msg = message.trim();
-    let body = format!(
-        "用户反馈：\n{}\n\n{}\n=== 本次启动日志 ===\n{}",
-        if msg.is_empty() { "（未填写问题描述）" } else { msg },
-        collect_env_info(&app),
-        collect_session_log(),
-    );
+    let body = compose_feedback_text(&app, &message);
     let subject = format!("[桌宠反馈] v{} {}", app.package_info().version, chrono_now());
 
     let email = Message::builder()
@@ -1043,8 +1069,17 @@ fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
         cfg.username, cfg.to_email, cfg.smtp_server, cfg.port
     ));
     match mailer.send(&email) {
-        Ok(_) => Ok("反馈已发送".into()),
-        Err(e) => Err(format!("发送失败: {e}")),
+        Ok(_) => {
+            log_line("send_feedback: 已投递");
+            Ok("反馈已发送".into())
+        }
+        Err(e) => {
+            // 失败也要留痕：以前这里只把错误抛给前端，日志里什么都没有，
+            // 邮箱授权码失效这种问题完全查不到。
+            let raw = e.to_string();
+            log_error(&format!("send_feedback 失败（{}:{}）：{raw}", cfg.smtp_server, cfg.port));
+            Err(describe_smtp_error(&raw))
+        }
     }
 }
 
@@ -1085,12 +1120,7 @@ fn export_text_to_desktop(file_name: String, text: String) -> Result<String, Str
 /// 导出反馈文本到桌面文件（含用户描述 + 环境信息 + 本次启动日志），返回文件路径。
 #[tauri::command]
 fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
-    let text = format!(
-        "用户反馈：\n{}\n\n{}\n=== 本次启动日志 ===\n{}",
-        if message.trim().is_empty() { "（未填写问题描述）" } else { message.trim() },
-        collect_env_info(&app),
-        collect_session_log()
-    );
+    let text = compose_feedback_text(&app, &message);
     let desktop = std::env::var("USERPROFILE")
         .map(|p| std::path::PathBuf::from(p).join("Desktop"))
         .unwrap_or_else(|_| std::env::temp_dir());
@@ -2244,7 +2274,7 @@ pub fn run() {
             drag_start, set_model_bounds, drag_end, set_window_size,
             run_shell, launch_application, open_url, active_window_title,
             get_idle_seconds, get_system_proxy,
-            set_api_key, get_api_key, send_feedback, export_feedback,
+            set_api_key, get_api_key, send_feedback, export_feedback, feedback_text,
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,
             set_volume, send_notification, get_weather, fetch_lyrics,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { chatStream, extractCommand, stripCommand, PROVIDERS, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
 import { classifyEmotion, classifyAssistantEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
@@ -467,8 +467,14 @@ async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
   const apiKey = await ensureApiKey();
-  if (!apiKey) {
-    const b = addBubble("sys", "未配置 API Key，请到「小助手设置」填写");
+  if (!s.assistant.enabled) {
+    const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
+    scheduleFade(b, 4000);
+    return;
+  }
+  // 本地 Ollama / 本机自定义端点不需要 Key，这里不能再按"Key 为空"拦下
+  if (!isProviderReady(s.assistant, apiKey)) {
+    const b = addBubble("sys", "未配置 API Key，请到「小助手设置」填写（本地 Ollama 可以留空）");
     scheduleFade(b, 4000);
     return;
   }
@@ -983,11 +989,25 @@ async function extractMemoriesFromChat(s: any, apiKey: string) {
 }
 
 /** 主动问候：收集丰富上下文 + 召回相关记忆，让 AI 有温度地关心用户 */
+/**
+ * 让桌宠说一句**本地**文案（零 token、不调模型）：整点播报等本地事件用。
+ * 复用助手气泡与情绪着色，情绪由文案本身推断。
+ */
+export function sayPetLine(text: string, holdMs = 6000): void {
+  const line = text.trim();
+  if (!line) return;
+  const emo = classifyAssistantEmotion(line);
+  if (emo !== "neutral") reactNow(emo);
+  const b = addBubble("ai", emo !== "neutral" ? `${emotionEmoji(emo)} ${line}` : line);
+  if (emo !== "neutral") b.dataset.emotion = emo;
+  scheduleFade(b, holdMs);
+}
+
 export async function triggerProactive() {
   if (busy) return;
   const s = loadSettings();
   const apiKey = await ensureApiKey();
-  if (!s.assistant.enabled || !apiKey) return;
+  if (!s.assistant.enabled || !isProviderReady(s.assistant, apiKey)) return;
 
   // 收集上下文
   let currentTitle = "";
@@ -1074,7 +1094,7 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
   if (busy) return;
   const s = loadSettings();
   const apiKey = await ensureApiKey();
-  if (!s.assistant.enabled || !apiKey) return;
+  if (!s.assistant.enabled || !isProviderReady(s.assistant, apiKey)) return;
 
   let cardInfo = `主题「${card.theme}」，祝福语：${card.baseText}`;
   if (card.aiText !== card.baseText) cardInfo += `，AI文案：${card.aiText}`;

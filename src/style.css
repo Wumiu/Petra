@@ -725,6 +725,51 @@ body {
   margin-top: 4px;
 }
 
+/* ---------- 整点播报：免打扰时段（菜单里的行内调时） ---------- */
+.pet-menu .mi-control {
+  cursor: default;
+}
+
+.pet-menu .mi-control:hover {
+  background: transparent;
+}
+
+.hq-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.hq-inline-btn {
+  border: none;
+  background: rgba(208, 106, 154, 0.14);
+  color: #d06a9a;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.hq-inline-btn:hover {
+  background: rgba(208, 106, 154, 0.3);
+}
+
+.hq-inline-to {
+  font-size: 11px;
+  color: #8a7a95;
+}
+
+.hq-inline-val {
+  min-width: 22px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: #3a2a45;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- 待办提醒：模型头顶大气泡 ---------- */
 .big-toast {
   position: fixed;
@@ -769,6 +814,16 @@ body {
   font-size: 12px;
   text-align: center;
   padding: 20px 10px;
+  line-height: 1.6;
+}
+
+.dp-hint {
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(208, 106, 154, 0.12);
+  color: #7a5a6a;
+  font-size: 11.5px;
   line-height: 1.6;
 }
 
