@@ -6,6 +6,11 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+    // 不监视 Rust 构建产物：target 里的 build_script_*.exe 编译时会被瞬间占用，
+    // Vite 监视器一旦 watch 它就会抛 EBUSY。
+    watch: {
+      ignored: ["**/src-tauri/target/**"],
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
