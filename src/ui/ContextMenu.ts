@@ -186,6 +186,13 @@ export function setupContextMenu(
     showAt(e.clientX, e.clientY);
   });
 
+  // 待机下左键点宠物：用与右键完全一致的流程弹出迷你菜单（此时 build() 只返回待机开关一条）。
+  window.addEventListener("petra:show-menu", (e) => {
+    const { x, y } = (e as CustomEvent<{ x: number; y: number }>).detail;
+    void invoke("set_menu_open", { open: true }).catch(() => {});
+    void showAt(x, y);
+  });
+
   // pointerdown 关闭菜单：按下瞬间生效（在绿框内按下拖动时不会触发 click，所以用 pointerdown）
   document.addEventListener("pointerdown", (e) => {
     // 只对左键生效：右键（btn=2）本身也是 pointerdown，不能用来关菜单
