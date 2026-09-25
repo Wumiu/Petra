@@ -151,7 +151,14 @@ export class BehaviorEngine {
         // 基于角色边界的暴露量（确保头部露出）
         const charExpose = this.idleTop
           ? this.win - charBounds.bottom + margin
-          : charBounds.top + margin;
+          : (() => {
+              // 底部待机：工作区底边 = 任务栏顶边。旧算法只保证"头顶"在任务栏之上，
+              // 下巴/脸会被任务栏吞掉。这里按角色身高估算头高（约 40%），
+              // 让整个头（头顶→下巴）都在任务栏之上，下巴下方再留一点余量。
+              const charH = Math.max(1, charBounds.bottom - charBounds.top);
+              const headH = clamp(charH * 0.4, 90, 210);
+              return charBounds.top + headH + 14;
+            })();
         // 取两者最大值，确保既保留原始设计又能适应不同模型
         const expose = Math.max(defaultExpose, charExpose);
         y = this.idleTop

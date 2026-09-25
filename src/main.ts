@@ -30,6 +30,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
+import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
@@ -613,6 +614,148 @@ async function reloadView() {
   void applyModelScale(scale, false);
 }
 
+// ---------- 小助手全局呼出快捷键 ----------
+/** 前端监听 Rust 发出的全局快捷键事件名 */
+const ASSISTANT_HOTKEY_EVENT = "assistant-hotkey";
+/** 捕获快捷键时的临时提示条 */
+let hotkeyCaptureEl: HTMLElement | null = null;
+
+function removeHotkeyCapture() {
+  hotkeyCaptureEl?.remove();
+  hotkeyCaptureEl = null;
+}
+
+function showHotkeyCapture() {
+  removeHotkeyCapture();
+  const el = document.createElement("div");
+  el.className = "hotkey-capture";
+  el.textContent = "请按下新的快捷键组合…（Esc 取消）";
+  document.body.appendChild(el);
+  hotkeyCaptureEl = el;
+}
+
+/** 把浏览器按键归一成 Tauri 全局快捷键加速器里的键名（字母/数字/功能键/常用命名键） */
+function normalizeShortcutKey(e: KeyboardEvent): string | null {
+  const key = e.key;
+  // 单个字母/数字直接可用（字母统一小写，加速器解析不区分大小写）
+  if (key.length === 1 && /[a-zA-Z0-9]/.test(key)) {
+    return /[a-zA-Z]/.test(key) ? key.toLowerCase() : key;
+  }
+  const named: Record<string, string> = {
+    " ": "Space",
+    Space: "Space",
+    Enter: "Enter",
+    Tab: "Tab",
+    Escape: "Escape",
+    Backspace: "Backspace",
+    Delete: "Delete",
+    Insert: "Insert",
+    Home: "Home",
+    End: "End",
+    PageUp: "PageUp",
+    PageDown: "PageDown",
+    ArrowUp: "ArrowUp",
+    ArrowDown: "ArrowDown",
+    ArrowLeft: "ArrowLeft",
+    ArrowRight: "ArrowRight",
+    CapsLock: "CapsLock",
+  };
+  if (named[key]) return named[key];
+  // 功能键 F1~F24
+  if (/^F\d{1,2}$/.test(e.code)) return e.code;
+  return null;
+}
+
+/** 由一次按键事件拼出 accelerator 字符串，如 "Ctrl+Shift+A" */
+function buildAccelerator(e: KeyboardEvent, key: string): string {
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.altKey) mods.push("Alt");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.metaKey) mods.push("Super");
+  return [...mods, key].join("+");
+}
+
+/** 捕获一个新的呼出快捷键（返回 accelerator；Esc 或异常返回 null） */
+function captureAssistantHotkey(): Promise<string | null> {
+  return new Promise((resolve) => {
+    showHotkeyCapture();
+    const finish = (result: string | null) => {
+      document.removeEventListener("keydown", onKey);
+      removeHotkeyCapture();
+      resolve(result);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      // 单独按修饰键不算，继续等完整组合
+      if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+        return;
+      }
+      const key = normalizeShortcutKey(e);
+      if (!key) return;
+      e.preventDefault();
+      finish(buildAccelerator(e, key));
+    };
+    // 下一帧再挂监听：避免把「点击菜单项」这次事件意外卷入
+    requestAnimationFrame(() => document.addEventListener("keydown", onKey));
+  });
+}
+
+/** 调 Rust 注册/替换全局快捷键，返回是否成功 */
+async function registerAssistantHotkey(acc: string): Promise<boolean> {
+  try {
+    await invoke("register_assistant_shortcut", { shortcut: acc });
+    return true;
+  } catch (e) {
+    console.error("register_assistant_shortcut failed:", e);
+    return false;
+  }
+}
+
+/** 菜单项：进入捕获模式设置快捷键 */
+async function setAssistantHotkey() {
+  const acc = await captureAssistantHotkey();
+  if (!acc) {
+    toast("已取消设置快捷键", "info");
+    return;
+  }
+  settings.assistant.shortcut = acc;
+  saveSettings(settings);
+  const ok = await registerAssistantHotkey(acc);
+  toast(ok ? `呼出快捷键已设为 ${acc}` : `快捷键 ${acc} 注册失败，可换个组合试试`, ok ? "info" : "warn");
+}
+
+/** 菜单项：清除已设置的快捷键 */
+async function clearAssistantHotkey() {
+  settings.assistant.shortcut = "";
+  saveSettings(settings);
+  try {
+    await invoke("unregister_assistant_shortcut");
+  } catch (e) {
+    console.error("unregister_assistant_shortcut failed:", e);
+  }
+  toast("已清除呼出快捷键");
+}
+
+/** 监听 Rust 全局快捷键事件 + 启动时恢复上次设置的快捷键（跨重启保持） */
+async function setupAssistantHotkeyListener() {
+  await listen(ASSISTANT_HOTKEY_EVENT, async () => {
+    const s = loadSettings();
+    if (!s.assistant.enabled) {
+      toast("小助手模式没开，先右键开启再唤出", "warn");
+      return;
+    }
+    // Rust 侧在按下快捷键时已把窗口 show+focus 到前台，这里只需弹出对话框并聚焦输入框
+    openAssistant(getModelRect());
+  });
+  const saved = loadSettings().assistant.shortcut;
+  if (saved) {
+    await registerAssistantHotkey(saved);
+  }
+}
+
 async function boot() {
   try {
     await mountView();
@@ -686,6 +829,8 @@ async function boot() {
     }
     const action = emotionToAction(tag);
     if (action) view.playAction(action, false);
+    // 聊天时：在模型头部左/右随机一侧冒出情绪微表情（仅对话输入栏打开时可见）
+    try { showEmotionPopup(tag, getModelRect()); } catch { /* 不影响主流程 */ }
     if (import.meta.env.DEV) {
       document.dispatchEvent(new CustomEvent("petra-emotion-reacted", { detail: { tag, action } }));
     }
@@ -710,6 +855,7 @@ async function boot() {
   // 每 5 分钟检查一次场景
   setInterval(async () => {
     if (!settings.assistant.enabled) return;
+    if (settings.idleMode) return; // 待机期间不弹主动问候/对话框
     let idleSec = 0;
     try { idleSec = await invoke<number>("get_idle_seconds"); } catch {}
 
@@ -830,6 +976,7 @@ async function boot() {
     () => getModelRect(),
   );
   startInteractionRegionSync();
+  void setupAssistantHotkeyListener();
 
   // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应或打开小助手。
   // 非待机：拖动走 Rust 原生跟随线程（GetCursorPos → SetWindowPos，8ms，零每帧 IPC）。
@@ -911,6 +1058,7 @@ async function boot() {
   const endDrag = (cancelled = false) => {
     if (!drag) return;
     const clicked = !cancelled && !drag.moved;
+    const clickX = drag.sx; const clickY = drag.sy;
     if (drag.moved) {
       const start = nativeDragStart ?? Promise.resolve();
       void start.finally(() => {
@@ -927,12 +1075,17 @@ async function boot() {
     // 保存桌宠位置（供重启恢复）
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
-      view.playClick();
-      reactToTouch();
-      incrementInteractionCount();
-      showInfoPanel();
-      if (settings.assistant.enabled) {
-        openAssistant(getModelRect());
+      if (settings.idleMode) {
+        // 待机中：点击只弹"待机模式 开/关"小菜单，不弹对话框/天气栏，其余一概不响应
+        window.dispatchEvent(new CustomEvent("petra:show-menu", { detail: { x: clickX, y: clickY } }));
+      } else {
+        view.playClick();
+        reactToTouch();
+        incrementInteractionCount();
+        showInfoPanel();
+        if (settings.assistant.enabled) {
+          openAssistant(getModelRect());
+        }
       }
       }
     setInteractingDebounced(false);
@@ -1620,6 +1773,12 @@ async function toggleModelPanel() {
 }
 
 function buildMenu(engine: BehaviorEngine) {
+  // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
+  if (settings.idleMode) {
+    return [
+      { id: "idle", label: "待机模式", state: "开", onPick: () => void toggleIdle() },
+    ];
+  }
   return [
     {
       id: "model",
@@ -1794,6 +1953,17 @@ function buildMenu(engine: BehaviorEngine) {
       },
     },
     {
+      id: "assistant-hotkey",
+      label: "呼出快捷键",
+      state: settings.assistant.shortcut ? settings.assistant.shortcut : "未设置",
+      onPick: () => void setAssistantHotkey(),
+    },
+    {
+      id: "assistant-hotkey-clear",
+      label: "清除呼出快捷键",
+      onPick: () => void clearAssistantHotkey(),
+    },
+    {
       id: "assistant-settings",
       label: "小助手设置",
       onPick: () => void toggleAssistantSettings(),
@@ -1949,6 +2119,10 @@ async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
   if (settings.idleMode) {
+    // 进入待机：收起对话框/气泡/天气信息板，待机期间一律不显示
+    closeAssistant();
+    clearBubbles();
+    infoPanelEl?.classList.add("hidden");
     // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
