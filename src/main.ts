@@ -710,6 +710,7 @@ async function boot() {
   // 每 5 分钟检查一次场景
   setInterval(async () => {
     if (!settings.assistant.enabled) return;
+    if (settings.idleMode) return; // 待机期间不弹主动问候/对话框
     let idleSec = 0;
     try { idleSec = await invoke<number>("get_idle_seconds"); } catch {}
 
@@ -911,6 +912,7 @@ async function boot() {
   const endDrag = (cancelled = false) => {
     if (!drag) return;
     const clicked = !cancelled && !drag.moved;
+    const clickX = drag.sx; const clickY = drag.sy;
     if (drag.moved) {
       const start = nativeDragStart ?? Promise.resolve();
       void start.finally(() => {
@@ -927,12 +929,17 @@ async function boot() {
     // 保存桌宠位置（供重启恢复）
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
-      view.playClick();
-      reactToTouch();
-      incrementInteractionCount();
-      showInfoPanel();
-      if (settings.assistant.enabled) {
-        openAssistant(getModelRect());
+      if (settings.idleMode) {
+        // 待机中：点击只弹"待机模式 开/关"小菜单，不弹对话框/天气栏，其余一概不响应
+        window.dispatchEvent(new CustomEvent("petra:show-menu", { detail: { x: clickX, y: clickY } }));
+      } else {
+        view.playClick();
+        reactToTouch();
+        incrementInteractionCount();
+        showInfoPanel();
+        if (settings.assistant.enabled) {
+          openAssistant(getModelRect());
+        }
       }
       }
     setInteractingDebounced(false);
@@ -1620,6 +1627,12 @@ async function toggleModelPanel() {
 }
 
 function buildMenu(engine: BehaviorEngine) {
+  // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
+  if (settings.idleMode) {
+    return [
+      { id: "idle", label: "待机模式", state: "开", onPick: () => void toggleIdle() },
+    ];
+  }
   return [
     {
       id: "model",
@@ -1949,6 +1962,10 @@ async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
   if (settings.idleMode) {
+    // 进入待机：收起对话框/气泡/天气信息板，待机期间一律不显示
+    closeAssistant();
+    clearBubbles();
+    infoPanelEl?.classList.add("hidden");
     // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
