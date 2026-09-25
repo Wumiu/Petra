@@ -58,6 +58,8 @@ export interface RigParams {
   bodySwing: number;
   armY: number;
   armPos: number;
+  armL: number; // 屏幕左手（x<中心）绕肩抬起量 -1..1
+  armR: number; // 屏幕右手（x>中心）绕肩抬起量 -1..1
   bust: number;
   bustY: number;
   bangL: number;
@@ -76,7 +78,7 @@ const DEFAULTS: RigParams = {
   angleX: 0, angleY: 0, angleZ: 0, eyeOpenL: 1, eyeOpenR: 1, eyeX: 0, eyeY: 0,
   brow: 0, browAngL: 0, browAngR: 0, browAngSym: 0, mouthOpen: 0, mouthForm: 0,
   mouthCY: 0, mouthCAng: 0, mouthScale: 1, eyeCY: 0, eyeCAng: 0,
-  eyeScaleL: 1, eyeScaleR: 1, body: 0, bodySwing: 0, armY: 0, armPos: 0, bust: 2.5, bustY: 1,
+  eyeScaleL: 1, eyeScaleR: 1, body: 0, bodySwing: 0, armY: 0, armPos: 0, armL: 0, armR: 0, bust: 2.5, bustY: 1,
   bangL: 0, bangC: 0, bangR: 0, physAmp: 2, soft: 2, fhAmp: 2, fhSoft: 0.4,
   irisScale: 1, eyeEase: 0.3, mouthEase: 0.45,
 };
@@ -103,6 +105,8 @@ interface Layer {
   vboUV: WebGLBuffer;
   ibo: WebGLBuffer;
   tex: WebGLTexture;
+  wristL?: { x: number; y: number };
+  wristR?: { x: number; y: number };
 }
 
 function sh(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
@@ -648,10 +652,22 @@ export class PsdRuntime {
         y += this.bounce.dy * e.bust * Math.exp(-gx * gx - gy * gy);
       }
       if (bn === "handwear") {
-        const w = smooth((y - L.y) / L.h * 1.15);
-        y -= e.armY * 85 * this.FS * w;
-        y += e.armPos * 100 * this.FS;
-        x += e.armY * 14 * this.FS * w * (x < this.NP.cx ? 1 : -1);
+        // 2D 平面内挥手：每只手绕"中轴上、手图层顶端"的枢轴做平面旋转。
+        // 枢轴放在模型中线上（NP.cx）、手图层最顶端（肩线），保证左手全部在枢轴左侧、
+        // 右手全部在右侧，旋转时手不会被扯开。不能用"最靠上网格顶点"当枢轴——网格覆盖整个
+        // 包围盒、含大量透明空顶点，会把枢轴落到空角上，导致某只手像在伸缩、幅度错乱。
+        const px = this.NP.cx, py = L.y;
+        const angL = (e.armY * 0.5 + (e.armL || 0)) * 0.75;
+        const angR = (e.armY * 0.5 + (e.armR || 0)) * 0.75;
+        const isLeft = x < px;
+        const ang = isLeft ? angL : angR;
+        if (Math.abs(ang) > 1e-4) {
+          const rxv = x - px, ryv = y - py;
+          // 屏幕左手正向=向外抬起，屏幕右手正向=向外抬起，二者旋转方向相反
+          const ca = Math.cos(ang), sa = Math.sin(ang) * (isLeft ? 1 : -1);
+          x = px + rxv * ca - ryv * sa;
+          y = py + rxv * sa + ryv * ca;
+        }
       }
       if (L.bw && L.su) {
         const m = Math.pow(L.su[vi], 1.4) * 22 * this.FS;

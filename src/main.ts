@@ -395,10 +395,25 @@ function positionFloatingUi(
     const minCx = vr.left + lw / 2 + 4;
     const maxCx = vr.right - lw / 2 - 4;
     const cx = minCx <= maxCx ? Math.max(minCx, Math.min(idealCx, maxCx)) : (vr.left + vr.right) / 2;
-    let top = mr.top - lh - 12 - bubblesHeight; // 模型上方（叠在小助手气泡之上）
-    if (top < vr.top) top = mr.top - lh - 12; // 叠层放不下 → 紧贴模型上方
-    if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
-    if (top + lh > vr.bottom) top = Math.max(vr.top, vr.bottom - lh - 4); // 仍放不下 → 钳制可见区
+    const left = cx - lw / 2;
+    // 动作试玩面板打开时，歌词气泡必须避开它（不能压住面板）
+    const actPanel = document.getElementById("action-debug");
+    const actRect = actPanel && !actPanel.classList.contains("hidden") ? actPanel.getBoundingClientRect() : null;
+    const hitPanel = (l: number, t: number) =>
+      !!actRect && l < actRect.right && l + lw > actRect.left && t < actRect.bottom && t + lh > actRect.top;
+    const inView = (l: number, t: number) =>
+      l >= vr.left - 1 && l + lw <= vr.right + 1 && t >= vr.top - 1 && t + lh <= vr.bottom + 1;
+    // 候选：模型上方（叠助手气泡之上）→ 紧贴模型上方 → 模型下方
+    const candTops = [
+      mr.top - lh - 12 - bubblesHeight,
+      mr.top - lh - 12,
+      mr.bottom + 12,
+    ];
+    let top: number = Number.NaN;
+    for (const t of candTops) {
+      if (inView(left, t) && !hitPanel(left, t)) { top = t; break; }
+    }
+    if (Number.isNaN(top)) top = Math.max(vr.top + 8, Math.min(vr.bottom - lh - 8, candTops[candTops.length - 1]));
     lyric.style.left = `${Math.round(cx)}px`;
     lyric.style.top = `${Math.round(top)}px`;
     lyric.style.bottom = "auto";
