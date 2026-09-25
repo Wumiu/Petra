@@ -1,7 +1,7 @@
 {
   "name": "petra",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "test:riichi-sound": "tsc src/utils/settings.ts src/games/riichi/sound.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/riichi-sound.test.js",
     "test:music": "tsc src/music/LrcParser.ts src/music/LyricClock.ts src/music/LyricFollow.ts src/assistant/EmotionEngine.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/lrc.test.js && node tests/lyric-follow.test.js",
     "test:diary": "tsc src/features/diary/DiaryManager.ts src/features/diary/DiaryEventTracker.ts src/features/diary/DiaryDigest.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/diary.test.js",
-    "test:assistant": "tsc src/assistant/toolRuntime.ts src/assistant/AssistantClient.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/assistant-tools.test.js",
+    "test:assistant": "tsc src/assistant/toolRuntime.ts src/assistant/AssistantClient.ts src/assistant/EmotionEngine.ts src/ui/bubbleTiming.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/assistant-tools.test.js",
     "test:weather": "tsc src/features/weather/WeatherFormat.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/weather.test.js",
     "test:hourly": "tsc src/features/hourly/HourlyChime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/hourly.test.js"
   },

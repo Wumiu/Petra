@@ -5,6 +5,8 @@
  * - 参数解析：非法 JSON / 数组 / 空串都要有明确结果
  * - 调用指纹：键顺序无关，用于识别重复调用
  * - 循环预算：轮数、次数、重复提示、收尾说明
+ * - 气泡停留时长：按字数给时间，短句/长文/封顶
+ * - 模型列表解析：OpenAI 的 data[] 与 Ollama 的 models[]
  *
  * 运行：npm run test:assistant
  */
@@ -12,6 +14,8 @@ const fs = require("fs");
 const path = require("path");
 const rt = require("./build/assistant/toolRuntime.js");
 const ac = require("./build/assistant/AssistantClient.js");
+const bt = require("./build/ui/bubbleTiming.js");
+const ee = require("./build/assistant/EmotionEngine.js");
 
 let fail = 0;
 const check = (name, cond, extra = "") => {
@@ -97,6 +101,47 @@ const missingSpec = declared.filter((n) => !rt.isKnownTool(n));
 check("每个模型可见的工具都有运行时规格", missingSpec.length === 0, missingSpec.join(","));
 const extraSpec = rt.toolNames().filter((n) => !declared.includes(n));
 check("运行时表里没有多余工具", extraSpec.length === 0, extraSpec.join(","));
+check("空文本给最短时间", bt.readingHoldMs("") === 5000, String(bt.readingHoldMs("")));
+check("纯空白也算空", bt.readingHoldMs("   ") === 5000);
+check("短句按最短 5 秒", bt.readingHoldMs("好") === 5060, String(bt.readingHoldMs("好")));
+check("50 字给 8 秒", bt.readingHoldMs("x".repeat(50)) === 8000, String(bt.readingHoldMs("x".repeat(50))));
+check("100 字给 11 秒", bt.readingHoldMs("x".repeat(100)) === 11000, String(bt.readingHoldMs("x".repeat(100))));
+check("长文封顶 16 秒", bt.readingHoldMs("x".repeat(400)) === 16000, String(bt.readingHoldMs("x".repeat(400))));
+check("可自定义基数（报错提示留久一点）", bt.readingHoldMs("x", 8000) === 8060, String(bt.readingHoldMs("x", 8000)));
+check("最短不超过封顶", bt.BUBBLE_HOLD_MIN_MS <= bt.BUBBLE_HOLD_MAX_MS);
+
+// ---------- 气泡配色兜底（识别不到情绪时用心情上色，避免一片白）----------
+check("心情好 → 暖黄", ee.moodFallbackEmotion({ happiness: 0.8, energy: 0.5 }) === "happy");
+check("心情低落 → 关心色", ee.moodFallbackEmotion({ happiness: 0.2, energy: 0.5 }) === "worried");
+check("精力不足 → 疲惫色", ee.moodFallbackEmotion({ happiness: 0.5, energy: 0.1 }) === "tired");
+check("平淡期 → 暖粉", ee.moodFallbackEmotion({ happiness: 0.5, energy: 0.5 }) === "love");
+check("边界：0.6 算好", ee.moodFallbackEmotion({ happiness: 0.6, energy: 0.5 }) === "happy");
+check("边界：0.38 算低落", ee.moodFallbackEmotion({ happiness: 0.38, energy: 0.5 }) === "worried");
+check("边界：0.39 + 精力足 → 暖粉", ee.moodFallbackEmotion({ happiness: 0.39, energy: 0.31 }) === "love");
+check(
+  "兜底永远不会是 neutral（这才是'颜色不显现'的修复点）",
+  [
+    { happiness: 0, energy: 0 },
+    { happiness: 0.5, energy: 0.5 },
+    { happiness: 1, energy: 1 },
+  ].every((m) => ee.moodFallbackEmotion(m) !== "neutral"),
+);
+
+// ---------- 模型列表解析（OpenAI 格式 / Ollama 原生格式）----------
+check(
+  "OpenAI 的 data[].id",
+  JSON.stringify(ac.parseModelList({ data: [{ id: "gpt-4o-mini" }, { id: "deepseek-chat" }] })) ===
+    JSON.stringify(["gpt-4o-mini", "deepseek-chat"]),
+);
+check(
+  "Ollama 的 models[].name",
+  JSON.stringify(ac.parseModelList({ models: [{ name: "qwen2.5:7b" }, { model: "llama3:8b" }, { id: "plain" }] })) ===
+    JSON.stringify(["qwen2.5:7b", "llama3:8b", "plain"]),
+);
+check("空对象返回空数组", ac.parseModelList({}).length === 0);
+check("null / undefined 不炸", ac.parseModelList(null).length === 0 && ac.parseModelList(undefined).length === 0);
+check("过滤掉空 id", JSON.stringify(ac.parseModelList({ data: [{ id: "" }, { id: "ok" }] })) === JSON.stringify(["ok"]));
+check("data 不是数组时返回空", ac.parseModelList({ data: "nope" }).length === 0);
 
 // ---------- 供应商就绪判断（免 Key 的本地模型不能被当成"没配置"）----------
 check("ollama 免 Key", ac.isKeylessProvider("ollama") === true);

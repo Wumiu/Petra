@@ -44,7 +44,7 @@ def read_current_from_lib(path="src-tauri/src/lib.rs"):
     if not block:
         return None
     out = {}
-    for key in ("smtp_server", "username", "auth_code", "to_email"):
+    for key in ("smtp_server", "username", "auth_code", "to_email", "to_email2"):
         m = re.search(key + r": xdecrypt\(&\[([^\]]*)\]\)", block.group(1))
         if m:
             out[key] = [int(x) for x in re.findall(r"-?\d+", m.group(1))]
@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--username")
     ap.add_argument("--auth-code")
     ap.add_argument("--to")
+    ap.add_argument("--to2", help="第二个收件人（可选，留空则只发 --to）")
     ap.add_argument("--show-current", action="store_true", help="只解密显示当前配置（授权码只显示长度）")
     args = ap.parse_args()
 
@@ -87,8 +88,11 @@ def main():
         if not cur:
             print("没能从 src-tauri/src/lib.rs 解析出当前配置（路径不对？）", file=sys.stderr)
             sys.exit(1)
-        for k in ("smtp_server", "username", "auth_code", "to_email"):
+        for k in ("smtp_server", "username", "auth_code", "to_email", "to_email2"):
             if k not in cur:
+                continue
+            if k == "to_email2" and not xdecrypt(cur[k]):
+                print("%-12s: (未设置)" % k)
                 continue
             text = xdecrypt(cur[k]).decode("utf-8", "replace")
             print("%-12s: %s" % (k, "(长度 %d，不外显)" % len(text) if k == "auth_code" else text))
@@ -101,27 +105,40 @@ def main():
     else:
         auth_code = getpass.getpass("授权码（不回显）: ").strip()
     to_email = args.to or ask("收件邮箱", cur.get("to_email"))
+    # 第二个收件人可选：回车留空 = 不启用
+    if args.to2 is not None:
+        to_email2 = args.to2.strip()
+    else:
+        to_email2 = input("第二个收件人（可留空，走 Bcc）: ").strip()
 
     if not (server and username and auth_code and to_email):
-        print("四项都不能为空", file=sys.stderr)
+        print("前四项都不能为空", file=sys.stderr)
         sys.exit(1)
 
     print("")
-    print("把下面四段粘回 src-tauri/src/lib.rs 的 SmtpConfig::load()：")
+    print("把下面几段粘回 src-tauri/src/lib.rs 的 SmtpConfig::load()：")
     print("")
-    for name, value in (
+    entries = [
         ("smtp_server", server),
         ("username", username),
         ("auth_code", auth_code),
         ("to_email", to_email),
-    ):
+        ("to_email2", to_email2),
+    ]
+    for name, value in entries:
         arr = xencrypt(value)
+        if name == "to_email2" and not value:
+            print("            // 第二个收件人未设置（留空 = 只发 to_email）")
+            print("            %s: xdecrypt(&[])," % name)
+            continue
         print("            %s: xdecrypt(&[" % name)
         print(fmt(arr))
         print("            ]),")
     print("")
     print("（检查一下：解密回来是否等于你刚输入的值）")
-    for name, value in (("smtp_server", server), ("username", username), ("to_email", to_email)):
+    for name, value in entries:
+        if not value:
+            continue
         assert xdecrypt(xencrypt(value)).decode("utf-8") == value, name
     print("自检通过。")
 

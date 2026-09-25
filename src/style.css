@@ -148,10 +148,56 @@ body {
 }
 
 
-/* 对话记录面板：面板自身不限高，内部列表滚动 */
+/* 对话记录面板：面板限高，内部列表自己滚动。
+   以前是 max-height:none + overflow:visible，列表一长就整块溢出面板外面，
+   最下方（连同关闭按钮）会被切在面板外看不到。 */
 #chat-history-panel {
-  max-height: none;
-  overflow: visible;
+  overflow: hidden;
+}
+#chat-history-panel .ch-list {
+  flex: 1;
+  min-height: 0; /* flex 子项默认 min-height:auto，不写这个不会滚动 */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px 4px 0;
+}
+#chat-history-panel .ch-row {
+  position: relative;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 34px 6px 10px; /* 右侧给复制按钮留位 */
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#chat-history-panel .ch-row.ch-user {
+  background: rgba(100, 140, 255, 0.12);
+}
+#chat-history-panel .ch-row.ch-ai {
+  background: rgba(255, 255, 255, 0.6);
+}
+#chat-history-panel .ch-role {
+  font-weight: 700;
+  color: #8a7a95;
+  margin-right: 2px;
+}
+#chat-history-panel .ch-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: #b09ab8;
+  font-size: 11px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#chat-history-panel .ch-copy:hover {
+  background: rgba(208, 106, 154, 0.16);
+  color: #d06a9a;
 }
 
 .model-panel.hidden {
@@ -360,18 +406,21 @@ body {
 /* 左上角气泡区（回复气泡盖过信息板 180，低于右键菜单 200） */
 .as-bubbles {
   position: fixed;
-  left: 50%;
-  bottom: 80px;
-  transform: translateX(-50%);
+  /* 兜底位置：拿不到模型位置时贴左上角（真正的位置由 AssistantPanel.positionBubbles 按模型算，
+     以前固定 bottom:80px + 居中，正好压在桌宠身上） */
+  left: 12px;
+  top: 12px;
   z-index: 190;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 214px;
+  width: 300px;
+  max-width: calc(100vw - 24px);
   pointer-events: none;
 }
 .as-bubble {
   pointer-events: auto;
+  border-left: 4px solid transparent; /* 给情绪彩条占位，避免上色时文字位移 */
   padding: 7px 11px;
   border-radius: 12px;
   line-height: 1.5;
@@ -1435,17 +1484,15 @@ body {
   transform: scale(1.1);
 }
 /* ========== 气泡情绪着色（情感引擎 data-emotion） ========== */
-/* 左侧 3px 彩条 + 更饱和的渐变色，让情绪一眼可见 */
-.as-bubble[data-emotion] { border-left: 3px solid transparent; }
-.as-bubble[data-emotion="happy"] { background: linear-gradient(135deg, #fff1d6, #ffdfae); border-left-color: #f2b34d; }
-.as-bubble[data-emotion="sad"] { background: linear-gradient(135deg, #e8eefb, #d3dff6); border-left-color: #7d9ad6; }
-.as-bubble[data-emotion="angry"] { background: linear-gradient(135deg, #ffe2e2, #ffc9c9); border-left-color: #e06a6a; }
-.as-bubble[data-emotion="surprised"] { background: linear-gradient(135deg, #efe0ff, #ddc4ff); border-left-color: #a97ad8; }
-.as-bubble[data-emotion="shy"] { background: linear-gradient(135deg, #ffe6f2, #ffcde6); border-left-color: #e07ab0; }
-.as-bubble[data-emotion="tired"] { background: linear-gradient(135deg, #eaeef3, #d8dfe8); border-left-color: #8fa0b5; }
-.as-bubble[data-emotion="love"] { background: linear-gradient(135deg, #ffe3f0, #ffc7de); border-left-color: #e8709f; }
-.as-bubble[data-emotion="worried"] { background: linear-gradient(135deg, #e6f6f0, #cdeadf); border-left-color: #5fb99a; }
-
+/* 4px 彩条 + 更饱和的渐变 + 同色投影，让情绪一眼可见（之前太淡，用户反馈"有点弱"） */
+.as-bubble[data-emotion="happy"] { background: linear-gradient(135deg, #ffe7bd, #ffcd73); border-left-color: #e8a13a; box-shadow: 0 4px 14px rgba(232, 161, 58, 0.28); }
+.as-bubble[data-emotion="sad"] { background: linear-gradient(135deg, #dde8fb, #bfd1f2); border-left-color: #6488d4; box-shadow: 0 4px 14px rgba(100, 136, 212, 0.26); }
+.as-bubble[data-emotion="angry"] { background: linear-gradient(135deg, #ffdbdb, #ffb6b6); border-left-color: #d95252; box-shadow: 0 4px 14px rgba(217, 82, 82, 0.26); }
+.as-bubble[data-emotion="surprised"] { background: linear-gradient(135deg, #e9d5ff, #d0aeff); border-left-color: #9558d8; box-shadow: 0 4px 14px rgba(149, 88, 216, 0.26); }
+.as-bubble[data-emotion="shy"] { background: linear-gradient(135deg, #ffdbea, #ffb8d6); border-left-color: #dc5c99; box-shadow: 0 4px 14px rgba(220, 92, 153, 0.26); }
+.as-bubble[data-emotion="tired"] { background: linear-gradient(135deg, #e5eaf1, #cbd5e2); border-left-color: #7b90aa; box-shadow: 0 4px 14px rgba(123, 144, 170, 0.26); }
+.as-bubble[data-emotion="love"] { background: linear-gradient(135deg, #ffd8ea, #ffb2d2); border-left-color: #e0508b; box-shadow: 0 4px 14px rgba(224, 80, 139, 0.26); }
+.as-bubble[data-emotion="worried"] { background: linear-gradient(135deg, #d9f2e8, #b9e2d3); border-left-color: #3fa886; box-shadow: 0 4px 14px rgba(63, 168, 134, 0.26); }
 /* ========== 聊天情绪微表情：模型头部左/右冒出的小动画 ========== */
 #emotion-popups {
   position: fixed;

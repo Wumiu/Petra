@@ -25,7 +25,7 @@ import { loadSettings, saveSettings, type Settings, type AssistantProvider } fro
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
-import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
@@ -809,6 +809,8 @@ async function boot() {
     mb.className = "hidden";
     document.body.appendChild(mb);
   }
+  // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
+  setModelRectProvider(getModelRect);
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
     () => engine.suspend(3600_000),
@@ -2928,6 +2930,10 @@ function toggleChatHistory() {
       .map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) }));
   } catch {}
 
+  const copyOne = (text: string) => {
+    void copyText(text).then((ok) => toast(ok ? "已复制这条对话" : "复制失败，请手动选中", ok ? "info" : "warn"));
+  };
+
   if (msgs.length === 0) {
     const empty = document.createElement("div");
     empty.className = "mp-hint";
@@ -2935,25 +2941,48 @@ function toggleChatHistory() {
     panel.appendChild(empty);
   } else {
     const list = document.createElement("div");
-    list.style.cssText = "flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 0;scrollbar-width:thin;";
+    list.className = "ch-list";
     for (const m of msgs) {
       const row = document.createElement("div");
-      row.style.cssText = "font-size:12px;line-height:1.5;padding:6px 10px;border-radius:8px;white-space:pre-wrap;word-break:break-word;";
-      if (m.role === "user") {
-        row.style.background = "rgba(100,140,255,0.12)";
-        row.textContent = "👤 " + m.content;
-      } else {
-        row.style.background = "rgba(255,255,255,0.6)";
-        row.textContent = "🐾 " + m.content;
-      }
+      row.className = "ch-row " + (m.role === "user" ? "ch-user" : "ch-ai");
+
+      const role = document.createElement("span");
+      role.className = "ch-role";
+      role.textContent = m.role === "user" ? "👤 我" : "🐾 桌宠";
+
+      const body = document.createElement("span");
+      body.textContent = m.content;
+
+      // 单条复制：复制纯文本，不带角色前缀
+      const copy = document.createElement("button");
+      copy.className = "ch-copy";
+      copy.type = "button";
+      copy.textContent = "复制";
+      copy.title = "复制这条";
+      copy.addEventListener("click", (e) => {
+        e.stopPropagation();
+        copyOne(m.content);
+      });
+
+      row.append(role, document.createTextNode("  "), body, copy);
       list.appendChild(row);
     }
     panel.appendChild(list);
   }
 
-  // 关闭按钮
+  // 底部按钮：复制全部 / 关闭
   const btns = document.createElement("div");
   btns.className = "as-set-btns";
+  if (msgs.length > 0) {
+    const allBtn = document.createElement("button");
+    allBtn.className = "as-btn";
+    allBtn.textContent = "复制全部";
+    allBtn.addEventListener("click", () => {
+      const all = msgs.map((m) => `${m.role === "user" ? "我" : "桌宠"}：${m.content}`).join("\n");
+      copyOne(all);
+    });
+    btns.appendChild(allBtn);
+  }
   const closeBtn = document.createElement("button");
   closeBtn.className = "as-btn";
   closeBtn.textContent = "关闭";
@@ -2963,6 +2992,10 @@ function toggleChatHistory() {
 
   document.body.appendChild(panel);
   positionPanelNearModel(panel);
+  // 限高：超出就在列表里滚动。之前 CSS 写成 max-height:none + overflow:visible，
+  // 列表一长整块溢出到面板外面，最下方（连同关闭按钮）看不到。
+  const vr = getWindowVisibleRect();
+  panel.style.maxHeight = `${Math.max(200, Math.min(460, vr.bottom - vr.top - 40))}px`;
 
   // 点击外部关闭（延迟注册避免当前点击触发）
   setTimeout(() => {

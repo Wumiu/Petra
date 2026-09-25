@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { readingHoldMs } from "../ui/bubbleTiming";
 import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
-import { classifyEmotion, classifyAssistantEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
+import { classifyEmotion, classifyAssistantEmotion, moodFallbackEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
@@ -222,12 +223,61 @@ function ensureInput() {
   return inputBar;
 }
 
+/** 由 main.ts 注入：拿到桌宠（模型）当前位置，用来把气泡放到不挡它的地方 */
+let modelRectProvider: (() => { left: number; top: number; right: number; bottom: number } | null) | null = null;
+
+export function setModelRectProvider(fn: () => { left: number; top: number; right: number; bottom: number } | null): void {
+  modelRectProvider = fn;
+}
+
+/**
+ * 给气泡区定位：优先放在**模型上方**，上方放不下就放到下方/可见区内，
+ * 并整体钳制在可见区内。以前气泡固定贴在窗口底部中间，正好把桌宠挡住。
+ */
+function positionBubbles() {
+  if (!bubbles) return;
+  const vr = getVisibleRect();
+  const availW = Math.max(140, vr.right - vr.left - 16);
+  const width = Math.min(300, availW);
+  bubbles.style.width = `${width}px`;
+
+  const h = bubbles.offsetHeight || 80;
+  const rect = modelRectProvider?.() ?? null;
+  const clampLeft = (l: number) => Math.min(Math.max(l, vr.left + 8), Math.max(vr.left + 8, vr.right - width - 8));
+  const clampTop = (t: number) => Math.min(Math.max(t, vr.top + 8), Math.max(vr.top + 8, vr.bottom - h - 8));
+
+  if (!rect) {
+    // 没有模型位置：贴可见区左上角，绝不压住窗口中心
+    bubbles.style.left = `${vr.left + 8}px`;
+    bubbles.style.top = `${vr.top + 8}px`;
+    return;
+  }
+
+  const above = rect.top - h - 8;
+  // 往下放时要躲开输入条（输入条就在模型下方），否则气泡会压在输入框上
+  const inputOpen = inputBar !== null && !inputBar.classList.contains("hidden");
+  const below = rect.bottom + 8 + (inputOpen ? (inputBar!.offsetHeight || 60) + 8 : 0);
+  const canAbove = above >= vr.top + 8;
+  const canBelow = below + h <= vr.bottom - 8;
+  const top = canAbove ? above : canBelow ? below : clampTop(above);
+  bubbles.style.left = `${clampLeft(rect.left)}px`;
+  bubbles.style.top = `${clampTop(top)}px`;
+}
+
 function ensureBubbles() {
   if (bubbles) return bubbles;
   bubbles = document.createElement("div");
   bubbles.id = "as-bubbles";
   bubbles.className = "as-bubbles";
   bubbles.addEventListener("pointerdown", (e) => e.stopPropagation());
+  // 鼠标停在气泡上时别把输入条收起来：用户大概率还在读回复 / 想接着打字
+  bubbles.addEventListener("pointerenter", () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  });
+  bubbles.addEventListener("pointerleave", () => resetTimer());
   document.body.appendChild(bubbles);
   return bubbles;
 }
@@ -249,16 +299,46 @@ function addBubble(kind: "ai" | "sys" | "confirm", text: string): HTMLElement {
   b.textContent = text;
   bubbles!.appendChild(b);
   trimBubbles();
+  positionBubbles(); // 气泡数量变化会改高度，重新算一次位置
   return b;
 }
 
+/**
+ * 定时淡出气泡。
+ * 鼠标悬停时**暂停**倒计时（用户还在看），移开后继续、并至少再留 1.5 秒。
+ * 以前是死等 ms 毫秒，悬停没有任何用，长回复常被"抢走"。
+ */
 function scheduleFade(el: HTMLElement, ms: number) {
-  setTimeout(() => {
+  let remaining = Math.max(1000, ms);
+  let startedAt = Date.now();
+  let handle: number | null = null;
+
+  const fade = () => {
+    handle = null;
     if (!el.isConnected) return;
     el.style.transition = "opacity 0.4s ease";
     el.style.opacity = "0";
-    setTimeout(() => el.remove(), 450);
-  }, ms);
+    window.setTimeout(() => el.remove(), 450);
+  };
+  const arm = () => {
+    startedAt = Date.now();
+    handle = window.setTimeout(fade, remaining);
+  };
+  const pause = () => {
+    if (handle === null) return;
+    window.clearTimeout(handle);
+    handle = null;
+    remaining = Math.max(0, remaining - (Date.now() - startedAt));
+  };
+  const resume = () => {
+    if (handle !== null || !el.isConnected) return;
+    remaining = Math.max(remaining, 1500);
+    arm();
+  };
+
+  el.addEventListener("pointerenter", pause);
+  el.addEventListener("pointerleave", resume);
+  arm();
 }
 
 function trimBubbles() {
@@ -266,6 +346,7 @@ function trimBubbles() {
   while (kids.length > MAX_BUBBLES) {
     kids.shift()?.remove();
   }
+  positionBubbles();
 }
 
 export function openAssistant(modelRect?: { left: number; top: number; right: number; bottom: number }) {
@@ -395,6 +476,14 @@ function formatCompanion(): string {
   } catch {
     return "一段时间";
   }
+}
+
+/**
+ * 上色用的情绪：优先用识别到的；识别不到就用桌宠当前心情兜底。
+ * 只影响颜色，不影响表情动作（动作只由真正识别到的情绪触发）。
+ */
+function bubbleEmotion(detected: EmotionTag): EmotionTag {
+  return detected !== "neutral" ? detected : moodFallbackEmotion(getMood());
 }
 
 /**
@@ -534,9 +623,10 @@ async function send(text: string) {
       if (aiEmo !== "neutral") {
         reactNow(aiEmo);
         loading.textContent = `${emotionEmoji(aiEmo)} ${finalText}`;
-        loading.dataset.emotion = aiEmo;
         boostMood(aiEmo);
       }
+      // 颜色：识别不到情绪时用当前心情兜底，避免大部分回复都是白气泡
+      loading.dataset.emotion = bubbleEmotion(aiEmo);
       // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
       trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
@@ -565,13 +655,14 @@ async function send(text: string) {
       void extractMemoriesFromChat(s, apiKey);
     }
     if (!loading.textContent.trim()) loading.textContent = "(空回复)";
-    scheduleFade(loading, 8000);
+    // 按字数给阅读时间，长回复不会再"刷一下就没了"
+    scheduleFade(loading, readingHoldMs(loading.textContent));
   } catch (e) {
     loading.textContent = friendlyApiError(e);
     loading.dataset.emotion = "worried";
     // 出错时桌宠也难过一下，但不消耗任何 token
     reactNow("worried");
-    scheduleFade(loading, 9000);
+    scheduleFade(loading, readingHoldMs(loading.textContent, 8000));
   } finally {
     busy = false;
     resetTimer();
@@ -999,7 +1090,7 @@ export function sayPetLine(text: string, holdMs = 6000): void {
   const emo = classifyAssistantEmotion(line);
   if (emo !== "neutral") reactNow(emo);
   const b = addBubble("ai", emo !== "neutral" ? `${emotionEmoji(emo)} ${line}` : line);
-  if (emo !== "neutral") b.dataset.emotion = emo;
+  b.dataset.emotion = bubbleEmotion(emo);
   scheduleFade(b, holdMs);
 }
 
@@ -1074,10 +1165,8 @@ export async function triggerProactive() {
     boostMood("greeting_sent");
     const finalEmo = classifyAssistantEmotion(bubble.textContent);
     const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
-    if (emo !== "neutral") {
-      reactNow(emo);
-      bubble.dataset.emotion = emo;
-    }
+    if (emo !== "neutral") reactNow(emo);
+    bubble.dataset.emotion = bubbleEmotion(emo);
     scheduleFade(bubble, 10000);
   } catch {
     bubble.remove();
@@ -1113,10 +1202,8 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
     }, false);
     const finalEmo = classifyAssistantEmotion(bubble.textContent);
     const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
-    if (emo !== "neutral") {
-      reactNow(emo);
-      bubble.dataset.emotion = emo;
-    }
+    if (emo !== "neutral") reactNow(emo);
+    bubble.dataset.emotion = bubbleEmotion(emo);
     // 不保存到主 history，避免影响主动问候
     scheduleFade(bubble, 8000);
   } catch {

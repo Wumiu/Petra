@@ -982,6 +982,9 @@ struct SmtpConfig {
     username: String,
     auth_code: String,
     to_email: String,
+    /// 第二个收件人（可选，留空则只发 to_email）。
+    /// 放在 Bcc：两个收件人互相看不到对方地址，回复也各回各的。
+    to_email2: String,
 }
 
 impl SmtpConfig {
@@ -1001,8 +1004,54 @@ impl SmtpConfig {
             to_email: xdecrypt(&[
                 65, 10, 69, 110, 65, 91, 65, 71, 103, 94, 37, 0, 18, 81, 12, 63, 79,
             ]),
+            // 第二个收件人（走 Bcc，两个收件人互相看不到）：
+            // 用 scripts/enc-smtp.py --to2 <地址> 重新生成密文
+            to_email2: xdecrypt(&[
+                42, 69, 28, 111, 68, 94, 64, 66, 102, 94, 87, 67,
+                85, 63, 0, 37, 86, 77, 79, 74, 15, 8, 1, 39,
+                6,
+            ]),
         }
     }
+}
+
+impl SmtpConfig {
+    /// 去掉空值后的实际收件人（最多两个）
+    fn recipients(&self) -> Vec<String> {
+        [self.to_email.trim(), self.to_email2.trim()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+}
+
+/// 组装反馈邮件。抽成独立函数，方便单测「两个收件人是否都进了信封」。
+fn build_feedback_email(cfg: &SmtpConfig, subject: String, body: String) -> Result<lettre::Message, String> {
+    use lettre::message::Mailbox;
+    use lettre::Message;
+
+    let parse = |addr: &str| {
+        addr.parse::<Mailbox>()
+            .map_err(|e| format!("收件邮箱无效（{addr}）：{e}"))
+    };
+    let recipients = cfg.recipients();
+    let (first, rest) = recipients.split_first().ok_or("没有配置收件邮箱")?;
+
+    // lettre 的 .to() / .bcc() 是"有则追加"（MessageBuilder::mailbox → join_mailboxes），
+    // 所以连续调用就能把多个收件人都放进信封；第一个进 To，其余走 Bcc（互相看不到地址）。
+    let mut builder = Message::builder()
+        .from(
+            format!("<{}>", cfg.username)
+                .parse::<Mailbox>()
+                .map_err(|e| format!("发件邮箱无效（{}）：{e}", cfg.username))?,
+        )
+        .to(parse(first)?)
+        .subject(subject);
+    for addr in rest {
+        builder = builder.bcc(parse(addr)?);
+    }
+    builder.body(body).map_err(|e| e.to_string())
 }
 
 /// 组织一份反馈文本（用户描述 + 环境信息 + 本次启动日志）。
@@ -1041,26 +1090,12 @@ fn feedback_text(app: AppHandle, message: String) -> String {
 fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
     use lettre::transport::smtp::authentication::Credentials;
     use lettre::transport::smtp::client::{Tls, TlsParameters};
-    use lettre::{Message, SmtpTransport, Transport};
+    use lettre::{SmtpTransport, Transport};
 
     let cfg = SmtpConfig::load();
     let body = compose_feedback_text(&app, &message);
     let subject = format!("[桌宠反馈] v{} {}", app.package_info().version, chrono_now());
-
-    let email = Message::builder()
-        .from(
-            format!("<{}>", cfg.username)
-                .parse::<lettre::message::Mailbox>()
-                .map_err(|e| e.to_string())?,
-        )
-        .to(
-            format!("<{}>", cfg.to_email)
-                .parse::<lettre::message::Mailbox>()
-                .map_err(|e| e.to_string())?,
-        )
-        .subject(subject)
-        .body(body)
-        .map_err(|e| e.to_string())?;
+    let email = build_feedback_email(&cfg, subject, body)?;
 
     let creds = Credentials::new(cfg.username.clone(), cfg.auth_code.clone());
     let tls_params = TlsParameters::builder(cfg.smtp_server.clone())
@@ -1074,7 +1109,10 @@ fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
 
     log_line(&format!(
         "send_feedback: {} -> {} via {}:{}",
-        cfg.username, cfg.to_email, cfg.smtp_server, cfg.port
+        cfg.username,
+        cfg.recipients().join(", "),
+        cfg.smtp_server,
+        cfg.port
     ));
     match mailer.send(&email) {
         Ok(_) => {
@@ -2388,6 +2426,64 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod smtp_tests {
+    use super::*;
+
+    fn cfg_with(to_email: &str, to_email2: &str) -> SmtpConfig {
+        SmtpConfig {
+            smtp_server: "smtp.example.com".into(),
+            port: 465,
+            username: "sender@example.com".into(),
+            auth_code: "code".into(),
+            to_email: to_email.into(),
+            to_email2: to_email2.into(),
+        }
+    }
+
+    #[test]
+    fn single_recipient_goes_into_envelope() {
+        let cfg = cfg_with("a@example.com", "");
+        let mail = build_feedback_email(&cfg, "s".into(), "b".into()).expect("应能组装");
+        let env = mail.envelope();
+        assert_eq!(env.to().len(), 1, "只配一个收件人时信封里应只有他");
+        assert_eq!(env.to()[0].to_string(), "a@example.com");
+        // 空白的第二收件人不能被当成有效地址
+        let cfg2 = cfg_with("a@example.com", "   ");
+        let mail2 = build_feedback_email(&cfg2, "s".into(), "b".into()).expect("应能组装");
+        assert_eq!(mail2.envelope().to().len(), 1);
+    }
+
+    #[test]
+    fn second_recipient_gets_a_copy_but_is_hidden() {
+        let cfg = cfg_with("a@example.com", "b@example.com");
+        let mail = build_feedback_email(&cfg, "标题".into(), "正文".into()).expect("应能组装");
+        // 信封（= SMTP 的 RCPT TO 列表）里两个人都要有，否则第二个人收不到
+        let env = mail.envelope();
+        let tos: Vec<String> = env.to().iter().map(|a| a.to_string()).collect();
+        assert_eq!(tos.len(), 2, "两个收件人都必须进信封：{tos:?}");
+        assert!(tos.contains(&"a@example.com".to_string()));
+        assert!(tos.contains(&"b@example.com".to_string()));
+        // 但 Bcc 不会出现在正文头里：收件人互相看不到对方地址
+        let raw = String::from_utf8_lossy(&mail.formatted()).to_string();
+        assert!(raw.contains("a@example.com"), "To 头应保留第一个收件人");
+        assert!(!raw.contains("b@example.com"), "Bcc 不应出现在邮件头里");
+    }
+
+    #[test]
+    fn invalid_recipient_reports_which_one() {
+        let cfg = cfg_with("不是邮箱", "");
+        let err = build_feedback_email(&cfg, "s".into(), "b".into()).expect_err("应报错");
+        assert!(err.contains("不是邮箱"), "错误信息要指出是哪个地址：{err}");
+    }
+
+    #[test]
+    fn no_recipient_is_an_error() {
+        let cfg = cfg_with("", "");
+        assert!(build_feedback_email(&cfg, "s".into(), "b".into()).is_err());
+    }
 }
 
 #[cfg(test)]

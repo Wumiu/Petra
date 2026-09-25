@@ -570,44 +570,83 @@ function recordUsage(input: number, output: number, cached = 0): void {
   }
 }
 
-/** 拉取模型列表（OpenAI 兼容 /models）；8s 超时，失败抛出带原因的错误 */
+/**
+ * 解析模型列表（纯函数，便于单测）：
+ * - OpenAI 兼容格式：{ data: [{ id }] }
+ * - Ollama 原生格式：{ models: [{ name/model }] }
+ */
+export function parseModelList(json: unknown): string[] {
+  const j = json as
+    | { data?: Array<{ id?: string }>; models?: Array<{ name?: string; model?: string; id?: string }> }
+    | null
+    | undefined;
+  if (!j) return [];
+  if (Array.isArray(j.data)) {
+    return j.data.map((x) => x?.id).filter((v): v is string => Boolean(v));
+  }
+  if (Array.isArray(j.models)) {
+    return j.models.map((x) => x?.name || x?.model || x?.id).filter((v): v is string => Boolean(v));
+  }
+  return [];
+}
+
+/** Ollama 原生接口在 /api/tags，去掉可能存在的 /v1 尾巴 */
+function ollamaOrigin(base: string): string {
+  return base.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
+/** 请求一个端点并解析模型列表 */
+async function fetchModelList(url: string, apiKey: string): Promise<string[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    const res = await fetch(url, { headers, signal: ctrl.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}${body ? ": " + body.slice(0, 100) : ""}`);
+    }
+    return parseModelList(await res.json());
+  } catch (e: unknown) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("请求超时（8 秒）");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 拉取可用模型列表。
+ *
+ * Ollama 优先走**原生接口 /api/tags**：老版本 Ollama 没有 OpenAI 兼容的 /v1/models，
+ * 直接查 /v1/models 会 404，于是"明明装了很多模型却列不出来"。失败再退回 /v1/models。
+ */
 export async function listModels(
   provider: AssistantProvider,
   apiKey: string,
   customBaseUrl: string,
 ): Promise<string[]> {
   const base = resolveBase(provider, customBaseUrl);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const headers: Record<string, string> = {};
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-    const res = await fetch(`${base}/models`, { headers, signal: ctrl.signal });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${body.slice(0, 100)}`);
+  const useOllamaApi = provider === "ollama" || /:11434(\/|$)/.test(base);
+  const urls = useOllamaApi ? [`${ollamaOrigin(base)}/api/tags`, `${base}/models`] : [`${base}/models`];
+
+  const errors: string[] = [];
+  for (const url of urls) {
+    try {
+      const arr = await fetchModelList(url, apiKey);
+      if (arr.length) return arr;
+      errors.push(`${url}：返回了空的模型列表`);
+    } catch (e: unknown) {
+      errors.push(`${url}：${e instanceof Error ? e.message : String(e)}`);
     }
-    const json = await res.json();
-    // OpenAI 格式: { data: [{ id: "model-name" }] }
-    // Ollama 格式: { models: [{ name: "model-name" }] }
-    let arr: string[] = [];
-    if (Array.isArray(json?.data)) {
-      arr = json.data.map((x: { id?: string }) => x.id).filter(Boolean);
-    } else if (Array.isArray(json?.models)) {
-      arr = json.models.map((x: { name?: string; id?: string }) => x.name || x.id).filter(Boolean);
-    }
-    if (arr.length === 0) {
-      throw new Error("接口返回了空的模型列表，请检查端点是否正确");
-    }
-    return arr;
-  } catch (e: unknown) {
-    if (e instanceof DOMException && e.name === "AbortError") {
-      throw new Error("请求超时（8秒），请检查网络或端点地址");
-    }
-    throw e;
-  } finally {
-    clearTimeout(timer);
   }
+  const localHint = /(localhost|127\.0\.0\.1)/.test(base)
+    ? "（本地服务：若报 Failed to fetch，多半是浏览器跨域被拦——给服务设 OLLAMA_ORIGINS=* 后重启即可）"
+    : "";
+  throw new Error(errors.join("；") + localHint);
 }
 
 /** 从 AI 自由文本中提取 CMD: <命令> 行（兜底，不用 function calling 时） */

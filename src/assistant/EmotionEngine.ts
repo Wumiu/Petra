@@ -60,8 +60,22 @@ const ASSISTANT_EMOTION_RULES: Array<{ tag: EmotionTag; pattern: RegExp }> = [
   { tag: "surprised", pattern: /咦|诶|欸|哦？|喔？|哇[！!～~]?|居然|竟然|原来|天哪|天呐|没想到|😲|😮/ },
   { tag: "shy",       pattern: /害羞|脸红|羞羞|别夸我|哪有|😳/ },
   { tag: "tired",     pattern: /好困|困了|想睡|睡啦|熬夜|好累|😪|😴|🥱/ },
-  { tag: "happy",     pattern: /哈哈|嘻嘻|嘿嘿|开心|高兴|太好了|太棒|真棒|好耶|没问题|当然|乐意|交给我|包在我身上|好嘞|好的呀|搞定|完成啦|好啦|这就去|马上[就去]|😊|😄|😆|😁|🎉|✌|[～~]$|[呀啦呢]$|[！!]$/ },
+  { tag: "happy",     pattern: /哈哈|嘻嘻|嘿嘿|开心|高兴|太好了|太棒|真棒|好耶|没问题|当然|乐意|交给我|包在我身上|好嘞|好滴|好的|好的呀|收到|遵命|安排上|搞定|完成啦|好啦|这就去|马上[就去]|😊|😄|😆|😁|🎉|✌|[～~]$|[呀啦呢]$|[！!]$/ },
 ];
+
+/**
+ * 情绪识别全落空时的兜底：用桌宠当前心情给气泡上色。
+ *
+ * 桌宠回复大多是功能句（"已经帮你打开了浏览器"），关键词一个都命中不了，
+ * 结果大部分回复都是白气泡 —— 用户反馈"颜色那个功能有时候不显现"。
+ * 心情是长期累积的、几乎总有倾向，用它兜底既稳定又有意义。
+ */
+export function moodFallbackEmotion(mood: { happiness: number; energy: number }): EmotionTag {
+  if (mood.happiness >= 0.6) return "happy";
+  if (mood.happiness <= 0.38) return "worried";
+  if (mood.energy <= 0.3) return "tired";
+  return "love"; // 平淡期也给一点暖色，别是一片白
+}
 
 /** 桌宠回复的情绪识别：先用"说话侧"规则，再退回通用规则 */
 export function classifyAssistantEmotion(text: string): EmotionTag {
