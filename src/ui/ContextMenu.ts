@@ -13,6 +13,8 @@ export interface MenuItemSpec {
    * 填进这一行右侧；这一行不参与"点击即关闭菜单"，控件内部自己处理点击。
    */
   control?: (row: HTMLElement) => void;
+  /** 纯提示行：灰色小字、不可点击、不关闭菜单（例如待机时的"睡着啦，喊我起来吧"） */
+  hint?: boolean;
 }
 
 /**
@@ -56,6 +58,16 @@ export function setupContextMenu(
         const sep = document.createElement("div");
         sep.className = "sep";
         container.appendChild(sep);
+        continue;
+      }
+      // 纯提示行：灰色小字、不可点、不关闭菜单
+      if (item.hint) {
+        const hint = document.createElement("div");
+        hint.className = "mi mi-hint";
+        hint.style.cssText =
+          "font-size:11px;color:#9a8a9a;line-height:1.5;padding:4px 14px;cursor:default;opacity:0.85;white-space:nowrap;";
+        hint.textContent = item.label ?? "";
+        container.appendChild(hint);
         continue;
       }
       const row = document.createElement("div");
