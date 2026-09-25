@@ -30,7 +30,6 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
-import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
 import { registerRiichiGame } from "./games/riichi";
@@ -687,8 +686,6 @@ async function boot() {
     }
     const action = emotionToAction(tag);
     if (action) view.playAction(action, false);
-    // 聊天时：在模型头部左/右随机一侧冒出情绪微表情（仅对话输入栏打开时可见）
-    try { showEmotionPopup(tag, getModelRect()); } catch { /* 不影响主流程 */ }
     if (import.meta.env.DEV) {
       document.dispatchEvent(new CustomEvent("petra-emotion-reacted", { detail: { tag, action } }));
     }

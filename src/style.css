@@ -1446,6 +1446,46 @@ body {
 .as-bubble[data-emotion="love"] { background: linear-gradient(135deg, #ffe3f0, #ffc7de); border-left-color: #e8709f; }
 .as-bubble[data-emotion="worried"] { background: linear-gradient(135deg, #e6f6f0, #cdeadf); border-left-color: #5fb99a; }
 
+/* ========== 聊天情绪微表情：模型头部左/右冒出的小动画 ========== */
+#emotion-popups {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 200;
+  pointer-events: none;
+}
+.emotion-pop {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 2px 3px rgba(40, 20, 60, 0.25));
+  will-change: transform, opacity;
+  /* animation-duration 由 JS 动态设置（1.8~3s） */
+  animation-timing-function: ease-out;
+  animation-fill-mode: forwards;
+}
+.emotion-pop[data-side="left"] {
+  animation-name: emotion-rise-left;
+}
+.emotion-pop[data-side="right"] {
+  animation-name: emotion-rise-right;
+}
+@keyframes emotion-rise-left {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  15%  { opacity: 1; transform: translate(-55%, -70%) scale(1.08); }
+  55%  { opacity: 1; transform: translate(-55%, -70%) scale(1.0); }
+  100% { opacity: 0; transform: translate(-85%, -240%) scale(0.85); }
+}
+@keyframes emotion-rise-right {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+  15%  { opacity: 1; transform: translate(-45%, -70%) scale(1.08); }
+  55%  { opacity: 1; transform: translate(-45%, -70%) scale(1.0); }
+  100% { opacity: 0; transform: translate(-15%, -240%) scale(0.85); }
+}
+
 /* ========== 立直麻将：深靛蓝 2.5D 全窗口牌桌 ========== */
 .mg-view {
   --mg-bg: #111522;
