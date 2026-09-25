@@ -656,7 +656,9 @@ export class PsdRuntime {
         // 枢轴放在模型中线上（NP.cx）、手图层最顶端（肩线），保证左手全部在枢轴左侧、
         // 右手全部在右侧，旋转时手不会被扯开。不能用"最靠上网格顶点"当枢轴——网格覆盖整个
         // 包围盒、含大量透明空顶点，会把枢轴落到空角上，导致某只手像在伸缩、幅度错乱。
-        const px = this.NP.cx, py = L.y;
+        // 枢轴在中线上、肩线位置。L.y 是手图层最顶端（偏高），往下挪到肩/腋下，
+        // 否则手绕着脖子根转，看起来像手臂从肩膀上面脱出去。
+        const px = this.NP.cx, py = L.y + 75 * this.FS;
         const angL = (e.armY * 0.5 + (e.armL || 0)) * 0.75;
         const angR = (e.armY * 0.5 + (e.armR || 0)) * 0.75;
         const isLeft = x < px;
