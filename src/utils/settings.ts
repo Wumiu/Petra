@@ -30,6 +30,8 @@ export interface AssistantSettings {
   greetInterval: number;
   /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
   nickname: string;
+  /** 全局呼出快捷键（Tauri accelerator 字符串，如 "Ctrl+Shift+A"）；空表示未设置 */
+  shortcut: string;
 }
 
 export interface DiarySettings {
@@ -109,6 +111,7 @@ const DEFAULTS: Settings = {
     customBaseUrl: "",
     greetInterval: 20,
     nickname: "",
+    shortcut: "",
   },
   diary: {
     enabled: true,

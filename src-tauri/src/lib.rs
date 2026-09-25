@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Windows GUI 子系统中启动控制台程序（powershell/cmd/reg/shutdown）时，
 /// 默认会弹出一个新的控制台窗口。加 CREATE_NO_WINDOW 避免窗口闪现。
@@ -68,6 +70,12 @@ const INTERACTION_STATE_STALE_AFTER: std::time::Duration =
 /// 右键菜单打开状态，仅用于光标离开主窗口时通知前端关闭菜单。
 pub struct MenuOpen {
     pub active: std::sync::atomic::AtomicBool,
+}
+
+/// 小助手全局呼出快捷键状态：前端负责「设置/清除」的交互与持久化，
+/// Rust 侧负责系统级注册（tauri-plugin-global-shortcut）并在按下时向前端 emit 事件。
+pub struct AssistantHotkey {
+    pub shortcut: std::sync::Mutex<Option<Shortcut>>,
 }
 
 /// 拖动状态：开始后由 8ms 线程直接 GetCursorPos 跟随（零每帧 IPC）。
@@ -2226,6 +2234,54 @@ mod interaction_tests {
 
 
 
+/// 注册（或替换）小助手全局呼出快捷键。
+/// shortcut 为 Tauri accelerator 字符串，如 "Ctrl+Shift+A"。
+/// 注册成功后，按下该组合会向前端 emit "assistant-hotkey" 事件。
+#[tauri::command]
+fn register_assistant_shortcut(
+    app: AppHandle,
+    state: State<'_, AssistantHotkey>,
+    shortcut: String,
+) -> Result<(), String> {
+    let trimmed = shortcut.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("快捷键不能为空".into());
+    }
+    // 先解绑上一次注册的快捷键，避免重复注册覆盖不了旧组合
+    if let Some(prev) = state.shortcut.lock().unwrap().take() {
+        let _ = app.global_shortcut().unregister(prev);
+    }
+    let sc = Shortcut::from_str(&trimmed).map_err(|e| format!("快捷键格式无效：{e}"))?;
+    // on_shortcut 内部已完成注册，不要再先 register 再 on_shortcut，否则会因重复注册失败。
+    app.global_shortcut()
+        .on_shortcut(sc, |app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                // 无论窗口被托盘隐藏，还是被其它窗口挡住，都先唤出并拉到前台。
+                // 按下快捷键本身是一次键盘输入，Windows 允许本进程把窗口提到最前。
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+                let _ = app.emit("assistant-hotkey", ());
+            }
+        })
+        .map_err(|e| format!("注册失败（可能已被占用）：{e}"))?;
+    *state.shortcut.lock().unwrap() = Some(sc);
+    Ok(())
+}
+
+/// 解绑小助手全局呼出快捷键（清除设置时调用）。
+#[tauri::command]
+fn unregister_assistant_shortcut(
+    app: AppHandle,
+    state: State<'_, AssistantHotkey>,
+) -> Result<(), String> {
+    if let Some(prev) = state.shortcut.lock().unwrap().take() {
+        let _ = app.global_shortcut().unregister(prev);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -2237,6 +2293,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AudioState {
             enabled: Arc::new(AtomicBool::new(true)),
         })
@@ -2249,6 +2306,9 @@ pub fn run() {
         })
         .manage(MenuOpen {
             active: std::sync::atomic::AtomicBool::new(false),
+        })
+        .manage(AssistantHotkey {
+            shortcut: std::sync::Mutex::new(None),
         })
         .manage(InteractionState {
             snapshot: std::sync::Mutex::new(InteractionSnapshot {
@@ -2280,6 +2340,7 @@ pub fn run() {
             set_volume, send_notification, get_weather, fetch_lyrics,
             list_installed_apps, open_path, lock_screen,
             schedule_shutdown, cancel_shutdown,
+            register_assistant_shortcut, unregister_assistant_shortcut,
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {
