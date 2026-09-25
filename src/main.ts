@@ -747,6 +747,14 @@ async function setupAssistantHotkeyListener() {
       toast("小助手模式没开，先右键开启再唤出", "warn");
       return;
     }
+    // 待机模式下：不弹对话框，改为在模型旁弹出"待机模式 开/关 + 睡着啦"小菜单
+    if (s.idleMode) {
+      const mr = getModelRect();
+      window.dispatchEvent(new CustomEvent("petra:show-menu", {
+        detail: { x: mr.left + mr.width / 2, y: mr.top },
+      }));
+      return;
+    }
     // Rust 侧在按下快捷键时已把窗口 show+focus 到前台，这里只需弹出对话框并聚焦输入框
     openAssistant(getModelRect());
   });
@@ -1777,6 +1785,7 @@ function buildMenu(engine: BehaviorEngine) {
   if (settings.idleMode) {
     return [
       { id: "idle", label: "待机模式", state: "开", onPick: () => void toggleIdle() },
+      { id: "idle-hint", label: "睡着啦，喊我起来吧", hint: true },
     ];
   }
   return [
