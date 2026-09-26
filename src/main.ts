@@ -27,6 +27,7 @@ import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
+import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
@@ -2176,10 +2177,15 @@ async function toggleIdle() {
 
 
 // ---------- 模型调节面板 ----------
+/** 模型调节面板里「手臂轴心」控件的卸载函数（面板重建/关闭时必须调用） */
+let axisControlsCleanup: (() => void) | null = null;
+
 function toggleModelAdjustPanel() {
   const panel = document.getElementById("model-adjust-panel") as HTMLElement | null;
   if (panel && !panel.classList.contains("hidden")) {
     panel.classList.add("hidden");
+    axisControlsCleanup?.();
+    axisControlsCleanup = null;
     return;
   }
 
@@ -2203,6 +2209,8 @@ function toggleModelAdjustPanel() {
   const savedAuto = settings.modelAuto[modelName] ?? {};
 
   const render = () => {
+    axisControlsCleanup?.();
+    axisControlsCleanup = null;
     p.innerHTML = "";
 
     // 标题
@@ -2334,9 +2342,16 @@ function toggleModelAdjustPanel() {
     backBtn.textContent = "返回";
     backBtn.addEventListener("click", () => {
       p.classList.add("hidden");
+      axisControlsCleanup?.();
+      axisControlsCleanup = null;
     });
     btns.append(resetBtn, backBtn);
     p.appendChild(btns);
+
+    // 手臂轴心（测试）：点模型上的方框设轴、滑杆实时预览（见 HandAxisPicker.ts）
+    if (view instanceof Rigged2DView) {
+      axisControlsCleanup = mountHandAxisControls(p, view);
+    }
   };
 
   render();
@@ -2786,9 +2801,12 @@ declare global {
       info: () => { idle: boolean; idleTop: boolean; idleTarget: { x: number; y: number }; pos: { x: number; y: number } };
       winPos: () => Promise<{ x: number; y: number }>;
       setPos: (x: number, y: number) => Promise<void>;
+      /** 打开手臂轴心拾取器（DEV） */
+      axisPicker?: () => void;
     };
   }
 }
+
 window.__pet = {
   toggleIdle: () => toggleIdle(),
   info: () => ({
@@ -2803,6 +2821,15 @@ window.__pet = {
     const p = await getCurrentWindow().outerPosition();
     return { x: p.x, y: p.y };
   },
+  // 轴心拾取器（仅 DEV：菜单「手臂轴心（调试）」或 window.__pet.axisPicker()）
+  ...(import.meta.env.DEV
+    ? {
+        axisPicker: () => {
+          const p = document.getElementById("model-adjust-panel");
+          if (!p || p.classList.contains("hidden")) toggleModelAdjustPanel();
+        },
+      }
+    : {}),
   setPos: async (x: number, y: number) => {
     await getCurrentWindow().setPosition(new LogicalPosition(x, y));
     engine.setPos(x, y);
@@ -2812,15 +2839,25 @@ window.__pet = {
 // ---------- 调整模型边界面板 ----------
 let boundsPanelOpen = false;
 let boundsPanelWasShowing = false;
+/**
+ * 关闭边界面板，并**恢复打开前的绿框状态**。
+ * 绿框是"打开面板时自动显示"的，所以关闭时必须收回去 ——
+ * 之前只有菜单开关那条路会恢复，「完成」按钮直接 hidden 就把绿框留在屏幕上了。
+ */
+function closeBoundsPanel() {
+  const panel = document.getElementById("bounds-panel") as HTMLElement | null;
+  if (!panel) return;
+  panel.classList.add("hidden");
+  boundsPanelOpen = false;
+  if (!boundsPanelWasShowing && debugModelBoundsVisible) {
+    toggleModelBounds();
+  }
+}
+
 function toggleBoundsPanel() {
   const panel = document.getElementById("bounds-panel") as HTMLElement | null;
   if (panel && !panel.classList.contains("hidden")) {
-    // 关闭面板时恢复绿框状态
-    boundsPanelOpen = false;
-    if (!boundsPanelWasShowing && debugModelBoundsVisible) {
-      toggleModelBounds();
-    }
-    panel.classList.add("hidden");
+    closeBoundsPanel();
     return;
   }
   // 打开面板时自动显示绿框
@@ -2886,14 +2923,13 @@ function toggleBoundsPanel() {
       settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
       saveSettings(settings);
       (view as any).setBoundsPadding?.(settings.boundsPadding);
-      host.classList.add("hidden");
-      toggleBoundsPanel();
+      closeBoundsPanel();
     });
     const done = document.createElement("button");
     done.className = "as-btn as-btn-primary";
     done.textContent = "完成";
     done.addEventListener("click", () => {
-      host.classList.add("hidden");
+      closeBoundsPanel();
     });
     btns.append(reset, done);
     host.appendChild(btns);

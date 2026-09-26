@@ -58,8 +58,8 @@ export interface RigParams {
   bodySwing: number;
   armY: number;
   armPos: number;
-  armL: number; // 屏幕左手（x<中心）绕肩抬起量 -1..1
-  armR: number; // 屏幕右手（x>中心）绕肩抬起量 -1..1
+  armL: number; // 屏幕左手（x<中心）绕根部抬起量：实际角度 = 值 × 0.75 rad（2 ≈ 86°）
+  armR: number; // 屏幕右手（x>中心）绕根部抬起量：实际角度 = 值 × 0.75 rad（2 ≈ 86°）
   bust: number;
   bustY: number;
   bangL: number;
@@ -82,6 +82,24 @@ const DEFAULTS: RigParams = {
   bangL: 0, bangC: 0, bangR: 0, physAmp: 2, soft: 2, fhAmp: 2, fhSoft: 0.4,
   irisScale: 1, eyeEase: 0.3, mouthEase: 0.45,
 };
+
+import { loadHandAxes, saveHandAxis, clearHandAxes, type HandAxis, type HandAxisStore } from "./handAxis";
+
+/** 手臂轴心信息（供轴心拾取器显示/拖动） */
+export interface HandAxisInfo {
+  side: "L" | "R";
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** 当前生效的轴（用户拾取过就是拾取值） */
+  axis: HandAxis;
+  /** 自动算出来的默认轴（用于"重置"和对比） */
+  auto: HandAxis;
+  /** 该图层是否只含一只手（rigger 拆分过） */
+  perHand: boolean;
+}
 
 interface Layer {
   name: string;
@@ -200,6 +218,16 @@ export class PsdRuntime {
   private _warnings: string[] = [];
   partsCount = 0;
   strandCount = 0;
+  /** 只有一条手臂图层（另一只手画在别的图层里）时为 true */
+  singleHand = false;
+  /** 用户拾取的手臂轴（按模型存 localStorage；空 = 用自动算的） */
+  private handAxes: HandAxisStore = {};
+  /** 模型中轴 x（对称镜像用） */
+  get centerX(): number {
+    return this.NP.cx;
+  }
+  /** 当前模型的标识（轴存储的 key） */
+  private modelKey = "";
 
   /** 解析 PSD 字节并构建 rig，返回 warnings */
   async load(u8: Uint8Array): Promise<string[]> {
@@ -348,6 +376,16 @@ export class PsdRuntime {
     this.canvas.height = this.CH;
     this.partsCount = this.layers.length;
     this.strandCount = this.layers.reduce((s, L) => s + (L.strands ? L.strands.length : 0), 0);
+    // 只有一条手臂图层时（很多 PSD 另一只手画在别的图层里），挥手动作默认驱动的是"另一侧"，
+    // 那样会出现"抬手动作一半概率完全不动"——所以单手臂时改成跟随动作真正有值的那一侧。
+    this.singleHand = this.layers.filter((L) => L.bn === "handwear").length <= 1;
+    // 模型标识：画布尺寸 + 图层数 + 手臂图层的名字/包围盒 —— 换模型不会串轴
+    const handSig = this.layers
+      .filter((L) => L.bn === "handwear")
+      .map((L) => `${L.name}:${L.x},${L.y},${L.w},${L.h}`)
+      .join("|");
+    this.modelKey = `${this.CW}x${this.CH}/${this.layers.length}/${handSig}`;
+    this.handAxes = loadHandAxes(this.modelKey);
     this.cur = { ...DEFAULTS };
     this.tgt = { ...DEFAULTS };
     return this._warnings;
@@ -530,6 +568,50 @@ export class PsdRuntime {
     if (minX < maxX) this.charBounds = { left: minX, top: minY, right: maxX, bottom: maxY };
   }
 
+  /** 自动算出来的手臂轴：拆过手的图层 = 该手内侧上角；否则退回中轴 + 肩线 */
+  private autoHandAxis(L: Layer, isLeft: boolean): HandAxis {
+    const perHand = L.side === "L" || L.side === "R";
+    return perHand ? { x: isLeft ? L.x + L.w : L.x, y: L.y } : { x: this.NP.cx, y: L.y + 75 * this.FS };
+  }
+
+  /** 图层是屏幕左还是右手（拆过的按包围盒中心判） */
+  private handSideOf(L: Layer, vertexIsLeft: boolean): "L" | "R" {
+    const perHand = L.side === "L" || L.side === "R";
+    const isLeft = perHand ? L.x + L.w / 2 < this.NP.cx : vertexIsLeft;
+    return isLeft ? "L" : "R";
+  }
+
+  /** 供轴心拾取器：列出所有手臂图层的包围盒与当前轴 */
+  handAxisInfo(): HandAxisInfo[] {
+    const out: HandAxisInfo[] = [];
+    for (const L of this.layers) {
+      if (L.bn !== "handwear") continue;
+      const perHand = L.side === "L" || L.side === "R";
+      const isLeft = perHand ? L.x + L.w / 2 < this.NP.cx : true;
+      const side = this.handSideOf(L, isLeft);
+      const auto = this.autoHandAxis(L, isLeft);
+      const picked = perHand ? (isLeft ? this.handAxes.L : this.handAxes.R) : undefined;
+      out.push({ side, name: L.name, x: L.x, y: L.y, w: L.w, h: L.h, axis: picked ?? auto, auto, perHand });
+    }
+    return out;
+  }
+
+  /** 供轴心拾取器：设置并持久化某侧的轴 */
+  setHandAxis(side: "L" | "R", x: number, y: number): void {
+    this.handAxes = { ...this.handAxes, [side]: { x: Math.round(x), y: Math.round(y) } };
+    if (this.modelKey) saveHandAxis(this.modelKey, side, { x, y });
+  }
+
+  /** 清空拾取的轴（回到自动值） */
+  resetHandAxes(): void {
+    this.handAxes = {};
+    if (this.modelKey) clearHandAxes(this.modelKey);
+  }
+
+  get handAxisModelKey(): string {
+    return this.modelKey;
+  }
+
   private fadeAlpha(L: Layer, e: any): number {
     if (!L.fade) return 1;
     if (L.fade === "eyeOpen") {
@@ -652,28 +734,36 @@ export class PsdRuntime {
         y += this.bounce.dy * e.bust * Math.exp(-gx * gx - gy * gy);
       }
       if (bn === "handwear") {
-        // 2D 平面内挥手：每只手绕"中轴上、手图层顶端"的枢轴做平面旋转。
-        // 枢轴放在模型中线上（NP.cx）、手图层最顶端（肩线），保证左手全部在枢轴左侧、
-        // 右手全部在右侧，旋转时手不会被扯开。不能用"最靠上网格顶点"当枢轴——网格覆盖整个
-        // 包围盒、含大量透明空顶点，会把枢轴落到空角上，导致某只手像在伸缩、幅度错乱。
-        // 枢轴在中线上、肩线位置。L.y 是手图层最顶端（偏高），往下挪到肩/腋下，
-        // 否则手绕着脖子根转，看起来像手臂从肩膀上面脱出去。
-        const px = this.NP.cx, py = L.y + 75 * this.FS;
-        const angL = (e.armY * 0.5 + (e.armL || 0)) * 0.75;
-        const angR = (e.armY * 0.5 + (e.armR || 0)) * 0.75;
-        const isLeft = x < px;
-        const ang = isLeft ? angL : angR;
+        // 2D 平面内挥手/举手：绕**这只手自己的根部**旋转，且以基础（rest）位置为基准。
+        //
+        // rigger（本地补丁：handwear 槽位 split:true）会把"一只手一层"的 PSD 拆成
+        // handwear_l / handwear_r，每只手拿到自己紧贴 alpha 的包围盒。根部就取它的
+        // **内侧上角**——最靠近身体的那条竖边 + 手的顶边，也就是手臂与身体相接的位置。
+        //
+        // 以前枢轴固定在中轴（NP.cx）且比手低 ~60px，一挥就把整只手连同根部绕身体中心抬起来，
+        // 看起来就是"根部上升"。枢轴放在手自己的根部后，根部是旋转中心，不会再上下跑。
+        const bx = L.base[vi * 2], by = L.base[vi * 2 + 1];
+        const perHand = L.side === "L" || L.side === "R"; // rigger 已按左右手拆成两个图层
+        // 侧别用"基础包围盒中心 vs 中轴"判断，不迷信 _l/_r 命名（命名反了也不会转错边）
+        const isLeft = perHand ? L.x + L.w / 2 < this.NP.cx : bx < this.NP.cx;
+        // 根部：拆过的图层用这只手的内侧上角；没拆（一层两只手）才退回中轴+肩线
+        const auto = this.autoHandAxis(L, isLeft);
+        // 用户拾取过这根轴就用拾取值（轴心拾取器保存的），否则用自动算的
+        const picked = perHand ? (isLeft ? this.handAxes.L : this.handAxes.R) : undefined;
+        const px = picked ? picked.x : auto.x;
+        const py = picked ? picked.y : auto.y;
+        // 动作驱动量：正常双手模型各用自己那侧；单手臂模型跟随动作里有值的那一侧
+        const drive = this.singleHand
+          ? (Math.abs(e.armL || 0) >= Math.abs(e.armR || 0) ? (e.armL || 0) : (e.armR || 0))
+          : (isLeft ? (e.armL || 0) : (e.armR || 0));
+        const ang = (e.armY * 0.5 + drive) * 0.75;
         if (Math.abs(ang) > 1e-4) {
-          const rxv = x - px, ryv = y - py;
-          // 屏幕左手正向=向外抬起，屏幕右手正向=向外抬起，二者旋转方向相反
           const ca = Math.cos(ang), sa = Math.sin(ang) * (isLeft ? 1 : -1);
-          x = px + rxv * ca - ryv * sa;
-          y = py + rxv * sa + ryv * ca;
+          const dxOther = x - bx, dyOther = y - by; // 其它形变带来的位移，原样保留
+          const rxv = bx - px, ryv = by - py;
+          x = px + rxv * ca - ryv * sa + dxOther;
+          y = py + rxv * sa + ryv * ca + dyOther;
         }
-      }
-      if (L.bw && L.su) {
-        const m = Math.pow(L.su[vi], 1.4) * 22 * this.FS;
-        x += (e.bangL * L.bw[vi * 3] + e.bangC * L.bw[vi * 3 + 1] + e.bangR * L.bw[vi * 3 + 2]) * m;
       }
       if (nS) {
         const u = isFH ? Math.min(1, L.su![vi] * 1.6) : L.su![vi];

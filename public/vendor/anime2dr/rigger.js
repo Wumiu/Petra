@@ -11,23 +11,126 @@
   'use strict';
 
   // ---------- layer naming ----------
+  // Aliases are keyed by a "squashed" form (NFKC, lower case, no spaces,
+  // underscores, hyphens or middle dots) so that "Front_Hair", "front-hair",
+  // "前髪" and "bangs" all resolve to the same semantic slot.
+  var ALIAS_GROUPS = {
+    'front hair':  'fronthair hairfront bangs fringe 前髪 まえがみ',
+    'back hair':   'backhair hairback 後ろ髪 後髪 うしろがみ',
+    'side hair':   'sidehair hairside sidelock sidelocks 横髪 サイド髪 もみあげ',
+    'ahoge':       'ahoge アホ毛 あほ毛',
+    'hair':        'hair 髪 髪の毛 かみ',
+    'face':        'face 顔 かお 輪郭 facebase',
+    'facedetail':  'facedetail blush cheek cheeks 頬 頬染め チーク',
+    'eyewhite':    'eyewhite eyewhites sclera 白目',
+    'irides':      'irides iris irises pupil pupils 瞳 黒目 虹彩',
+    'eyelash':     'eyelash eyelashes lash lashes eyeline まつ毛 まつげ 睫毛 アイライン',
+    'eyebrow':     'eyebrow eyebrows brow brows 眉 眉毛 まゆ まゆげ',
+    'eye_close':   'eyeclose eyeclosed eyesclosed closedeye closedeyes 閉じ目 目閉じ 閉眼',
+    'mouth_open':  'mouthopen openmouth 口 開き口 口開き 開口',
+    'mouth_close': 'mouthclose mouthclosed closedmouth 閉じ口 口閉じ',
+    'nose':        'nose 鼻 はな',
+    'ears':        'ears ear 耳',
+    'earwear':     'earwear earring earrings イヤリング ピアス 耳飾り',
+    'neck':        'neck 首',
+    'neckwear':    'neckwear necktie tie necklace choker ネクタイ ネックレス チョーカー 首飾り',
+    'topwear':     'topwear top tops shirt body torso clothes 服 上着 体 胴体 上半身 トップス',
+    'bottomwear':  'bottomwear bottom bottoms skirt pants スカート ズボン ボトムス 下半身',
+    'handwear':    'handwear hand hands arm arms gloves 手 腕 手袋',
+    'legwear':     'legwear leg legs socks tights 脚 足 靴下 ソックス タイツ',
+    'footwear':    'footwear shoes shoe boots 靴 ブーツ',
+    'headwear':    'headwear hat cap hairpin hairband 帽子 カチューシャ 髪飾り ヘアピン',
+    'eyewear':     'eyewear glasses 眼鏡 メガネ めがね',
+    'tail':        'tail しっぽ 尻尾 シッポ',
+    'wings':       'wings wing 羽 翼 羽根',
+    'objects':     'objects object 小物 持ち物'
+  };
+  var ALIASES = Object.create(null);
+  Object.keys(ALIAS_GROUPS).forEach(function (canon) {
+    ALIAS_GROUPS[canon].split(' ').forEach(function (a) { ALIASES[squash(a)] = canon; });
+  });
+  function squash(s) { return String(s).replace(/[\s_\-・･.]+/g, ''); }
+  function canonical(base) { return ALIASES[squash(base)] || null; }
+
   function normName(n) {
-    n = (n || '').normalize('NFKC').trim().replace(/ のコピー\s*\d*$/,'').toLowerCase();
-    if (n === 'eyelash_c') n = 'eye_close';       // legacy aliases
-    if (n === 'mouth_c') n = 'mouth_close';
-    if (n === 'mouth' || /^mouth[ _-]?\d+$/.test(n)) n = 'mouth_open';   // see-through raw output
-    if (n === 'レイヤー 1') n = 'facedetail';
+    n = String(n || '').normalize('NFKC').trim()
+      .replace(/\s*のコピー\s*\d*$/, '').replace(/\s+copy(\s*\d+)?$/i, '')
+      .toLowerCase().replace(/\s+/g, ' ');
+    // Legacy and special names first.
+    if (n === 'eyelash_c') return 'eye_close';
+    if (n === 'mouth_c') return 'mouth_close';
+    if (n === 'レイヤー 1') return 'facedetail';
+    if (n === 'mouth' || /^mouth[ _-]?\d+$/.test(n)) return 'mouth_open';   // see-through raw output
+    // "eye_close2" / "eyeclose2" / "閉じ目2" select the long closed-eye variant.
+    // A separator before the number ("eye_close_2") is a numbered part instead.
+    if (/^(eye_?close|eye close|閉じ目)2$/.test(n)) return 'eye_close2';
+    var direct = canonical(n);
+    if (direct) return direct;
+    var m = /^(.+?)[ _-]?(\d+)$/.exec(n);
+    if (m) {
+      var base = canonical(m[1].trim()) || (SLOTS[m[1].trim()] ? m[1].trim() : null);
+      if (base) return base + '_' + m[2];
+    }
     return n;
   }
-  function baseName(n) { return n.replace(/_\d+$/, ''); }
+  function baseName(n) { return n === 'eye_close2' ? n : n.replace(/_\d+$/, ''); }
+
+  // PSD folders are only an authoring convenience.  Leaf coordinates emitted by
+  // ag-psd are canvas-relative, so flattening the tree does not alter placement.
+  function imageLayersOf(psd) {
+    var out = [];
+    function visit(nodes, parentVisible) {
+      (nodes || []).forEach(function (c) {
+        var visible = parentVisible && c.hidden !== true;
+        if (!visible) return;
+        if (c.children) visit(c.children, visible);
+        else if (c.imageData) out.push(c);
+      });
+    }
+    visit(psd.children, true);
+    return out;
+  }
+
+  function validatePsd(psd) {
+    if (!psd || !Number.isInteger(psd.width) || !Number.isInteger(psd.height) || psd.width < 2 || psd.height < 2)
+      throw new Error('PSDのキャンバスサイズが不正です');
+    if (psd.width * psd.height > 24000000 || Math.max(psd.width, psd.height) > 16384)
+      throw new Error('キャンバスが大きすぎます（最大2400万画素・一辺16384px）');
+    var pixels = 0, count = 0;
+    function visit(nodes, depth) {
+      if (depth > 64) throw new Error('フォルダの階層が深すぎます');
+      (nodes || []).forEach(function (c) {
+        if (++count > 1000) throw new Error('レイヤー数が多すぎます（最大1000）');
+        if (c.children) visit(c.children, depth + 1);
+        var w = c.imageData ? c.imageData.width : Math.max(0, (c.right || 0) - (c.left || 0));
+        var h = c.imageData ? c.imageData.height : Math.max(0, (c.bottom || 0) - (c.top || 0));
+        if (!Number.isInteger(w) || !Number.isInteger(h) || w < 0 || h < 0 || w * h > 24000000)
+          throw new Error('画像レイヤーのサイズが不正または過大です');
+        pixels += w * h;
+        if (c.imageData && (!c.imageData.data || c.imageData.data.length !== w * h * 4))
+          throw new Error('画像レイヤーの画素データが不正です');
+      });
+    }
+    visit(psd.children, 0);
+    if (pixels > 96000000) throw new Error('レイヤー画像の合計が大きすぎます（最大9600万画素）');
+    return psd;
+  }
 
   var SLOTS = {
+    'wings':       { depth: 0.48, group: 'body' },
+    'tail':        { depth: 0.50, group: 'body', phys: 'sway' },
     'back hair':   { depth: 0.55, group: 'head', phys: 'hair' },
+    'footwear':    { depth: 0.83, group: 'body' },
+    'legwear':     { depth: 0.84, group: 'body' },
     'bottomwear':  { depth: 0.88, group: 'body' },
     'neck':        { depth: 0.95, group: 'body' },
     'topwear':     { depth: 0.90, group: 'body' },
-    'handwear':    { depth: 0.86, group: 'body' },
-    'earwear':     { depth: 0.97, group: 'head' },
+    'neckwear':    { depth: 0.98, group: 'body' },
+    // [Petra 本地补丁] 手图层按左右手拆成两个部件（splitSides 按连通块质心分左右），
+    // 这样左右手各自拿到自己的紧包围盒，能绕"自己的根部"旋转，而不是绕模型中线转导致根部上抬。
+    'handwear':    { depth: 0.86, group: 'body', split: true },
+    'objects':     { depth: 1.00, group: 'auto' },
+    'earwear':     { depth: 0.97, group: 'head', phys: 'sway' },
     'ears':        { depth: 0.96, group: 'head' },
     'face':        { depth: 1.00, group: 'head' },
     'facedetail':  { depth: 1.02, group: 'head' },
@@ -40,7 +143,21 @@
     'irides':      { depth: 1.08, group: 'head', split: true, fade: 'eyeOpen' },
     'eyelash':     { depth: 1.12, group: 'head', split: true, fade: 'eyeOpen' },
     'eye_close':   { depth: 1.12, group: 'head', split: true, fade: 'eyeClose' },
-    'front hair':  { depth: 1.28, group: 'head', phys: 'hair' }
+    'eye_close2':  { depth: 1.12, group: 'head', split: true, fade: 'eyeClose2' },
+    'eyewear':     { depth: 1.18, group: 'head' },
+    'side hair':   { depth: 1.22, group: 'head', phys: 'hair' },
+    'front hair':  { depth: 1.28, group: 'head', phys: 'hair' },
+    'ahoge':       { depth: 1.30, group: 'head', phys: 'hair' }
+  };
+  // Human readable role names used by the editor and diagnostics.
+  var ROLE_LABELS = {
+    'wings': '翼', 'tail': '尻尾', 'back hair': '後髪', 'footwear': '靴', 'legwear': '脚',
+    'bottomwear': '下半身の服', 'neck': '首', 'topwear': '上半身の服', 'neckwear': '首元',
+    'handwear': '腕・手', 'objects': '小物', 'earwear': '耳飾り', 'ears': '耳', 'face': '顔',
+    'facedetail': '顔の細部', 'headwear': '頭の飾り', 'mouth_close': '閉じ口', 'mouth_open': '開き口',
+    'nose': '鼻', 'eyewhite': '白目', 'eyebrow': '眉', 'irides': '瞳', 'eyelash': 'まつ毛',
+    'eye_close': '閉じ目', 'eye_close2': '長い閉じ目', 'eyewear': '眼鏡', 'side hair': '横髪',
+    'front hair': '前髪', 'ahoge': 'アホ毛'
   };
 
   // ---------- image ops (full-canvas alpha as Uint8Array) ----------
@@ -152,21 +269,35 @@
     return s ? { cx: sx / s, cy: sy / s } : null;
   }
 
+  function mergeAlphas(entries, W, H) {
+    if (!entries || !entries.length) return null;
+    var out = new Uint8Array(W * H);
+    for (var e = 0; e < entries.length; e++) {
+      var a = entries[e].alpha;
+      for (var i = 0; i < out.length; i++) if (a[i] > out[i]) out[i] = a[i];
+    }
+    return out;
+  }
+
   // ---------- generic close-diff synthesis ----------
   function resampleRGBA(src, tw, th) {   // bilinear
     var out = new Uint8ClampedArray(tw * th * 4);
     var sw = src.width, sh = src.height, d = src.data;
     for (var y = 0; y < th; y++) {
-      var sy = (y + 0.5) * sh / th - 0.5;
+      var sy = Math.max(0, Math.min(sh - 1, (y + 0.5) * sh / th - 0.5));
       var y0 = Math.max(0, Math.floor(sy)), y1 = Math.min(sh - 1, y0 + 1), fy = sy - y0;
       for (var x = 0; x < tw; x++) {
-        var sx = (x + 0.5) * sw / tw - 0.5;
+        var sx = Math.max(0, Math.min(sw - 1, (x + 0.5) * sw / tw - 0.5));
         var x0 = Math.max(0, Math.floor(sx)), x1 = Math.min(sw - 1, x0 + 1), fx = sx - x0;
         var o = (y * tw + x) * 4;
-        for (var c = 0; c < 4; c++) {
-          var v00 = d[(y0 * sw + x0) * 4 + c], v01 = d[(y0 * sw + x1) * 4 + c];
-          var v10 = d[(y1 * sw + x0) * 4 + c], v11 = d[(y1 * sw + x1) * 4 + c];
-          out[o + c] = v00 * (1 - fx) * (1 - fy) + v01 * fx * (1 - fy) + v10 * (1 - fx) * fy + v11 * fx * fy;
+        var ids = [(y0 * sw + x0) * 4, (y0 * sw + x1) * 4, (y1 * sw + x0) * 4, (y1 * sw + x1) * 4];
+        var ws = [(1-fx)*(1-fy), fx*(1-fy), (1-fx)*fy, fx*fy], a = 0;
+        for (var k = 0; k < 4; k++) a += d[ids[k]+3] * ws[k];
+        out[o+3] = a;
+        for (var c = 0; c < 3; c++) {
+          var value = 0;
+          for (var q = 0; q < 4; q++) value += d[ids[q]+c] * d[ids[q]+3] * ws[q];
+          out[o+c] = a ? value/a : 0;
         }
       }
     }
@@ -198,7 +329,7 @@
     var tw = Math.max(2, Math.round(targetW)), th = Math.max(2, Math.round(gimg.height * scale));
     var data = resampleRGBA(gimg, tw, th);
     if (tint) recolorTo(data, tint);
-    return { name: name, x: Math.round(cx - tw / 2), y: Math.round(anchorY - vAlign * th),
+    return { name: name, source: '', x: Math.round(cx - tw / 2), y: Math.round(anchorY - vAlign * th),
              w: tw, h: th, z: 0, depth: slot.depth, group: 'head', phys: null,
              fade: slot.fade || null, side: side || null, strands: null, synthetic: true,
              img: { width: tw, height: th, data: data } };
@@ -226,19 +357,21 @@
   }
   // alpha-over composite of all layers, trimmed
   function flattenPsdToImg(psd) {
+    validatePsd(psd);
     var W = psd.width, H = psd.height;
     var buf = new Uint8ClampedArray(W * H * 4);
-    (psd.children || []).forEach(function (c) {
+    imageLayersOf(psd).forEach(function (c) {
       if (!c.imageData) return;
       var img = c.imageData, lw = img.width, lh = img.height, lx = c.left | 0, ly = c.top | 0, d = img.data;
       for (var y = 0; y < lh; y++) {
         var cy = y + ly; if (cy < 0 || cy >= H) continue;
         for (var x = 0; x < lw; x++) {
           var cx = x + lx; if (cx < 0 || cx >= W) continue;
-          var si = (y * lw + x) * 4, di = (cy * W + cx) * 4, a = d[si + 3] / 255;
+          var si = (y * lw + x) * 4, di = (cy * W + cx) * 4, a = d[si + 3] / 255 * (c.opacity == null ? 1 : c.opacity);
           if (!a) continue;
-          for (var k = 0; k < 3; k++) buf[di + k] = d[si + k] * a + buf[di + k] * (1 - a);
-          buf[di + 3] = Math.min(255, d[si + 3] + buf[di + 3] * (1 - a));
+          var da = buf[di+3]/255, oa = a + da*(1-a);
+          for (var k = 0; k < 3; k++) buf[di + k] = (d[si+k]*a + buf[di+k]*da*(1-a))/oa;
+          buf[di + 3] = oa * 255;
         }
       }
     });
@@ -268,7 +401,13 @@
   // ---------- strand detection ----------
   function findPeaks(a, minDist, minProm) {
     var n = a.length, cand = [], i;
-    for (i = 1; i < n - 1; i++) if (a[i] > a[i - 1] && a[i] >= a[i + 1]) cand.push(i);
+    for (i = 1; i < n - 1; i++) {
+      if (!(a[i] > a[i - 1] && a[i] >= a[i + 1])) continue;
+      // A flat top (common after box smoothing of narrow parts) peaks at its centre.
+      var e = i; while (e + 1 < n && a[e + 1] === a[i]) e++;
+      if (e + 1 < n && a[e + 1] > a[i]) continue;
+      cand.push((i + e) >> 1); i = e;
+    }
     var peaks = [];
     for (var ci = 0; ci < cand.length; ci++) {
       var p = cand[ci], lmin = a[p], rmin = a[p], j;
@@ -314,23 +453,31 @@
     while (xs.length < want && guard++ < 50) {
       var best = -1, bestD = -1;
       for (var t = 0; t < 40; t++) {
-        var cx = Math.round(minX + 30 + (maxX - minX - 60) * t / 39);
+        var inset = Math.min(30, (maxX - minX) / 4);
+        var cx = Math.round(minX + inset + (maxX - minX - 2 * inset) * t / 39);
         if (cx < 0 || cx >= W || top[cx] < 0) continue;
         var dmin = 1e9;
         for (var m = 0; m < xs.length; m++) dmin = Math.min(dmin, Math.abs(cx - xs[m]));
         if (xs.length === 0) dmin = 1e9 - t;
         if (dmin > bestD) { bestD = dmin; best = cx; }
       }
-      if (best < 0) break;
+      if (best < 0 || (xs.length && bestD < Math.max(1, minSep))) break;
       xs.push(best);
     }
     xs.sort(function (a, b) { return a - b; });
-    var strands = [];
+    var strands = [], used = Object.create(null);
     for (var s = 0; s < xs.length; s++) {
       var sx = xs[s];
-      if (top[sx] < 0) continue;
+      // Smoothing can move a peak off the painted columns; snap to the nearest one.
+      for (var r = 0; top[sx] < 0 && r < W; r++) {
+        if (xs[s] - r >= 0 && top[xs[s] - r] >= 0) sx = xs[s] - r;
+        else if (xs[s] + r < W && top[xs[s] + r] >= 0) sx = xs[s] + r;
+      }
+      if (top[sx] < 0 || used[sx]) continue;
+      used[sx] = true;
       strands.push({ x: sx, tipY: bottom[sx], rootY: top[sx] });
     }
+    strands.sort(function (a, b) { return a.x - b.x; });
     return strands;
   }
 
@@ -363,8 +510,9 @@
       }
     }
     return {
-      name: name, x: x0, y: y0, w: w, h: h, z: z,
+      name: name, source: String(layer.name == null ? '' : layer.name), x: x0, y: y0, w: w, h: h, z: z,
       depth: slot.depth, group: slot.group, phys: slot.phys || null,
+      opacity: layer.opacity == null ? 1 : Math.max(0, Math.min(1, layer.opacity)),
       fade: slot.fade || null, side: side || null, strands: strands || null,
       img: { width: w, height: h, data: data }
     };
@@ -373,26 +521,43 @@
   // ---------- main ----------
   function buildRig(psd, opts) {
     opts = opts || {};
+    validatePsd(psd);
     var W = psd.width, H = psd.height;
     var warnings = [];
-    var kids = (psd.children || []).filter(function (c) { return c.imageData; });
-    if (!kids.length) throw new Error('レイヤーが見つかりません（グループは未対応・フラット構成にしてください）');
+    var kids = imageLayersOf(psd);
+    if (!kids.length) throw new Error('表示可能な画像レイヤーが見つかりません');
+    if (kids.length * W * H > 128000000) throw new Error('リグ解析に必要なメモリが大きすぎます。レイヤー数または解像度を減らしてください');
 
     // full alphas, cleaned
     var entries = [];
     for (var i = 0; i < kids.length; i++) {
       var name = normName(kids[i].name);
       var fa = cleanAlpha(fullAlphaOf(kids[i], W, H), W, H, 40);
+      if (!bboxOf(fa, W, H, 8)) { warnings.push('空のレイヤー "' + name + '" をスキップしました'); continue; }
       entries.push({ name: name, layer: kids[i], alpha: fa });
     }
-    var byName = {};
-    entries.forEach(function (e) { byName[e.name] = e; });
+    if (!entries.length) throw new Error('キャンバス内に表示可能な画素がありません');
+    // A plain "hair" layer is split by the painter's order: above the face it
+    // is front hair, below it back hair (see-through emits both as "hair").
+    var faceIndex = -1;
+    for (var fi = 0; fi < entries.length; fi++) if (baseName(entries[fi].name) === 'face') { faceIndex = fi; break; }
+    entries.forEach(function (e, idx) {
+      if (baseName(e.name) !== 'hair') return;
+      var suffix = e.name.slice(4);
+      e.name = (faceIndex >= 0 && idx > faceIndex ? 'front hair' : 'back hair') + suffix;
+    });
+    var byBase = Object.create(null);
+    entries.forEach(function (e) {
+      var bn = baseName(e.name);
+      (byBase[bn] || (byBase[bn] = [])).push(e);
+    });
+    function merged(name) { return mergeAlphas(byBase[name], W, H); }
 
     // face anchor (required-ish)
-    var faceE = byName['face'];
+    var faceAlpha = merged('face');
     var FACE;
-    if (faceE) {
-      var fb = bboxOf(faceE.alpha, W, H, 8), fc = centroidOf(faceE.alpha, W, H);
+    if (faceAlpha) {
+      var fb = bboxOf(faceAlpha, W, H, 8), fc = centroidOf(faceAlpha, W, H);
       FACE = { cx: fc.cx, cy: fc.cy, x0: fb.x0, x1: fb.x1, y0: fb.y0, y1: fb.y1 };
     } else {
       warnings.push('face レイヤーがありません — キャンバス中央を顔とみなします');
@@ -404,11 +569,12 @@
     for (var ei = 0; ei < entries.length; ei++) {
       var e = entries[ei];
       var bn = baseName(e.name);
-      var slot = SLOTS[bn];
-      if (!slot) {
+      var slot = Object.prototype.hasOwnProperty.call(SLOTS, bn) ? SLOTS[bn] : null;
+      if (!slot || slot.group === 'auto') {
         var c0 = centroidOf(e.alpha, W, H);
-        slot = { depth: 1.0, group: (c0 && c0.cy < FACE.y1) ? 'head' : 'body' };
-        warnings.push('未知のレイヤー名 "' + e.name + '" — ' + slot.group + ' として扱います');
+        var guessed = (c0 && c0.cy < FACE.y1) ? 'head' : 'body';
+        if (!slot) warnings.push('未知のレイヤー名 "' + e.name + '" — ' + (guessed === 'head' ? '頭' : '体') + 'に追従させます');
+        slot = { depth: slot ? slot.depth : 1.0, group: guessed, unknown: !slot };
       }
       if (slot.split) {
         var masks = splitSides(e.alpha, W, H, FACE.cx);
@@ -420,7 +586,9 @@
             parts.push(rec); z++;
             var ma = new Uint8Array(W * H);
             for (var q = 0; q < W * H; q++) ma[q] = masks[s][q] ? e.alpha[q] : 0;
-            sided[e.name + '|' + s] = ma;
+            var sideKey = bn + '|' + s;
+            if (!sided[sideKey]) sided[sideKey] = ma;
+            else for (var mq = 0; mq < ma.length; mq++) if (ma[mq] > sided[sideKey][mq]) sided[sideKey][mq] = ma[mq];
             got = true;
           }
         });
@@ -434,9 +602,17 @@
         var strands = detectStrands(e.alpha, W, H, minSep, want);
         var rec2 = makePart(e.name, e.layer, e.alpha, null, W, H, slot, z, null, strands);
         if (rec2) { parts.push(rec2); z++; }
+      } else if (slot.phys === 'sway') {
+        // Earrings, tails: a few pendulums hanging from the top of the part.
+        var bb3 = bboxOf(e.alpha, W, H, 16);
+        var wpx3 = bb3 ? (bb3.x1 - bb3.x0) : 0;
+        var want3 = Math.max(1, Math.min(4, Math.round(wpx3 / 140)));
+        var sway = detectStrands(e.alpha, W, H, Math.max(20, Math.round(wpx3 / (want3 * 1.6))), want3);
+        var rec4 = makePart(e.name, e.layer, e.alpha, null, W, H, slot, z, null, sway);
+        if (rec4) { parts.push(rec4); z++; }
       } else {
         var rec3 = makePart(e.name, e.layer, e.alpha, null, W, H, slot, z, null, null);
-        if (rec3) { parts.push(rec3); z++; }
+        if (rec3) { if (slot.unknown) rec3.unknown = true; parts.push(rec3); z++; }
       }
     }
 
@@ -457,18 +633,18 @@
     });
     if (!anchors.eyeL || !anchors.eyeR) warnings.push('目のアンカーが不完全です（eyewhite/irides を確認）');
 
-    var mSrc = byName['mouth_open'] || byName['mouth_close'];
-    if (mSrc) {
-      var mb = bboxOf(mSrc.alpha, W, H, 8), mc = centroidOf(mSrc.alpha, W, H);
+    var mouthAlpha = merged('mouth_open') || merged('mouth_close');
+    if (mouthAlpha) {
+      var mb = bboxOf(mouthAlpha, W, H, 8), mc = centroidOf(mouthAlpha, W, H);
       anchors.mouth = { x0: mb.x0, x1: mb.x1, y0: mb.y0, y1: mb.y1, cx: mc.cx, cy: mc.cy };
     } else {
       warnings.push('mouth_open / mouth_close がありません');
       anchors.mouth = { x0: FACE.cx - 20, x1: FACE.cx + 20, y0: FACE.cy + 40, y1: FACE.cy + 60, cx: FACE.cx, cy: FACE.cy + 50 };
     }
 
-    var nE = byName['neck'];
-    if (nE) {
-      var nb = bboxOf(nE.alpha, W, H, 8), nc = centroidOf(nE.alpha, W, H);
+    var neckAlpha = merged('neck');
+    if (neckAlpha) {
+      var nb = bboxOf(neckAlpha, W, H, 8), nc = centroidOf(neckAlpha, W, H);
       anchors.neckPivot = { cx: nc.cx, cy: nb.y0 + (nb.y1 - nb.y0) * 0.85 };
       anchors.neckTop = nb.y0; anchors.neckBottom = nb.y1;
     } else {
@@ -476,41 +652,44 @@
       anchors.neckTop = FACE.y1; anchors.neckBottom = FACE.y1 + 60;
     }
     anchors.bodyPivot = { cx: anchors.neckPivot.cx, cy: H };
-    anchors.faceScale = (FACE.x1 - FACE.x0) / 333.0;
+    anchors.faceScale = Math.max(1, FACE.x1 - FACE.x0) / 333.0;
     anchors.hairRootY = FACE.y0 + 60;
 
     // ---------- synthesize missing close diffs from generic parts ----------
     var synth = { eye: false, mouth: false };
     var G = opts.generic;
     if (G) {
-      var findPart = function (pref) { return parts.filter(function (p) { return p.name.indexOf(pref) === 0; }); };
+      var partBase = function (p) { return baseName(p.name.replace(/_(l|r)$/, '')); };
+      var findPart = function (name) { return parts.filter(function (p) { return partBase(p) === name; }); };
       // eyes
-      if (G.eyeL && G.eyeR && !findPart('eye_close').length && anchors.eyeL && anchors.eyeR) {
+      if (G.eyeL || G.eyeR) {
         var slotEC = SLOTS['eye_close'];
         var mk = function (S, gimg, side) {
-          var lash = findPart('eyelash_' + side.toLowerCase())[0] || findPart('eyebrow_' + side.toLowerCase())[0];
+          var lash = findPart('eyelash').find(function(p){return p.side === side;}) || findPart('eyebrow').find(function(p){return p.side === side;});
           var tint = lash ? meanColorOfImg(lash.img || { data: new Uint8ClampedArray(0) }, false) : null;
           return synthPart('eye_close_' + side.toLowerCase(), gimg,
             (S.x1 - S.x0) * 1.1, (S.x0 + S.x1) / 2, S.closeY, 0.55, tint, slotEC, side);
         };
-        var eL = mk(anchors.eyeL, G.eyeL, 'L');
-        var eR = mk(anchors.eyeR, G.eyeR, 'R');
         var idxE = lastIndexWhere(parts, function (p) { return p.name.indexOf('eyelash') === 0; });
         if (idxE < 0) idxE = lastIndexWhere(parts, function (p) { return p.name.indexOf('irides') === 0; });
         if (idxE < 0) idxE = lastIndexWhere(parts, function (p) { return p.name === 'face'; });
-        parts.splice(idxE + 1, 0, eL, eR);
-        synth.eye = true;
-        warnings.push('eye_close が無いため汎用閉じ目を自動配置しました（「目」の差分バーで調整可）');
+        ['L', 'R'].forEach(function(side) {
+          if (G['eye'+side] && anchors['eye'+side] && !findPart('eye_close').some(function(p){return p.side===side;})) {
+            parts.splice(++idxE, 0, mk(anchors['eye'+side], G['eye'+side], side));
+            synth.eye = true;
+          }
+        });
+        if (synth.eye) warnings.push('不足する閉じ目を自動配置しました（「目」の差分バーで調整可）');
       }
       // mouth
-      if (G.mouth && !findPart('mouth_close').length && byName['mouth_open']) {
+      if (G.mouth && !findPart('mouth_close').length && merged('mouth_open')) {
         var m = anchors.mouth;
         var mc = synthPart('mouth_close', G.mouth,
           (m.x1 - m.x0) * 1.1, m.cx, m.y0 + 0.30 * (m.y1 - m.y0), 0.5,
-          (function () { var mo = parts.filter(function (p) { return p.name === 'mouth_open'; })[0];
+          (function () { var mo = findPart('mouth_open')[0];
                          return mo ? meanColorOfImg(mo.img, true) : null; })(),
           SLOTS['mouth_close'], null);
-        var idxM = lastIndexWhere(parts, function (p) { return p.name === 'mouth_open'; });
+        var idxM = lastIndexWhere(parts, function (p) { return partBase(p) === 'mouth_open'; });
         if (idxM < 0) idxM = lastIndexWhere(parts, function (p) { return p.name === 'face'; });
         parts.splice(idxM + 1, 0, mc);
         synth.mouth = true;
@@ -525,8 +704,9 @@
   // in-place preprocessing: denoise every layer (connected components >= 40px)
   // and trim to content bbox. Fixes PSDs with low-alpha noise across the canvas.
   function cleanPsdLayers(psd) {
+    validatePsd(psd);
     var stats = { noisy: 0, layers: 0 };
-    var kids = (psd.children || []).filter(function (c) { return c.imageData; });
+    var kids = imageLayersOf(psd);
     for (var i = 0; i < kids.length; i++) {
       var c = kids[i], img = c.imageData, W = img.width, H = img.height, d = img.data;
       stats.layers++;
@@ -555,8 +735,12 @@
     return stats;
   }
 
-  return { buildRig: buildRig, normName: normName, baseName: baseName, cleanPsdLayers: cleanPsdLayers,
-           flattenPsdToImg: flattenPsdToImg, splitImgLR: splitImgLR,
+  function roleLabel(bn) { return ROLE_LABELS[bn] || null; }
+
+  return { buildRig: buildRig, normName: normName, baseName: baseName, cleanPsdLayers: cleanPsdLayers, validatePsd: validatePsd,
+           flattenPsdToImg: flattenPsdToImg, splitImgLR: splitImgLR, roleLabel: roleLabel,
+           SLOT_NAMES: Object.keys(SLOTS),
            _internals: { findPeaks: findPeaks, detectStrands: detectStrands,
-                         labelComponents: labelComponents, cleanAlpha: cleanAlpha } };
+                         labelComponents: labelComponents, cleanAlpha: cleanAlpha,
+                         imageLayersOf: imageLayersOf, mergeAlphas: mergeAlphas, resampleRGBA: resampleRGBA } };
 });

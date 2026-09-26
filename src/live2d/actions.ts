@@ -85,15 +85,14 @@ export const ACTIONS: ActionDef[] = [
     ],
   },
   {
-    // 举手：模型不动，手在 2D 平面内绕肩向上转一定角度后回位。
+    // 举手：模型不动，手在 2D 平面内绕轴向上转，**举到顶后保持一会儿**再放下。
     // 双手同起同落（armL/armR 始终相同）；播放时随机选双手齐举或单手上举。
-    id: "raiseHand", label: "举手", duration: 1.4, pool: "mid",
+    id: "raiseHand", label: "举手", duration: 2.0, pool: "mid",
     keys: [
       { t: 0, params: { armL: 0, armR: 0 } },
-      { t: 0.25, params: { armL: 0.8, armR: 0.8 } },
-      { t: 0.6, params: { armL: 0.8, armR: 0.8 } },
-      { t: 0.9, params: { armL: 0.25, armR: 0.25 } },
-      { t: 1, params: { armL: 0, armR: 0 } },
+      { t: 0.32, params: { armL: 2, armR: 2 } },         // 平滑举起（≈0.64s）到满量程 2（≈86°）
+      { t: 0.72, params: { armL: 2, armR: 2 } },         // 举到顶保持（≈0.8s）
+      { t: 1, params: { armL: 0, armR: 0 } },            // 平滑放下
     ],
   },
   {

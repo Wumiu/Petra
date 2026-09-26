@@ -100,6 +100,37 @@ export class Rigged2DView implements PetView {
   // ---- 用户调节参数（覆盖计算值） ----
   private userParams: Partial<Record<string, number>> = {};
 
+  /**
+   * 轴心调试预览：非 null 时用这里的角度驱动左右手（见 HandAxisPicker）。
+   * 设为 null 恢复正常动画。
+   */
+  armPreview: { L: number; R: number } | null = null;
+
+  /** 供轴心拾取器：列出手臂图层与当前轴 */
+  handAxisInfo() {
+    return this.runtime.handAxisInfo();
+  }
+
+  /** 供轴心拾取器：设置某侧轴（立即生效 + 持久化） */
+  setHandAxis(side: "L" | "R", x: number, y: number) {
+    this.runtime.setHandAxis(side, x, y);
+  }
+
+  /** 供轴心拾取器：清空拾取，回到自动轴 */
+  resetHandAxes() {
+    this.runtime.resetHandAxes();
+  }
+
+  get axisCanvasSize(): { w: number; h: number } {
+    return { w: this.runtime.canvasWidth, h: this.runtime.canvasHeight };
+  }
+
+  /** 供轴心拾取器：模型中轴 x（对称镜像用） */
+  get modelCenterX(): number {
+    return this.runtime.centerX;
+  }
+
+
   private static rand() {
     return Math.random();
   }
@@ -414,6 +445,13 @@ export class Rigged2DView implements PetView {
     for (const k in this.userParams) {
       const v = this.userParams[k];
       if (v !== undefined) (o as any)[k] = v;
+    }
+
+    // 轴心调试：临时接管手臂角度，实时预览"绕轴旋转"（不动其它动画）
+    if (this.armPreview) {
+      o.armY = 0;
+      o.armL = this.armPreview.L;
+      o.armR = this.armPreview.R;
     }
 
     this.runtime.update(dt, o);
