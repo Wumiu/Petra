@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Petra · 会陪你的 AI 桌宠</title>
+<meta name="description" content="Petra 是一个运行在 Windows 桌面的可自定义 AI 桌宠：会漫游、会躲鼠标、视线跟随，还能聊天、帮你打开软件。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%233B6FE0'/%3E%3Ccircle cx='36' cy='44' r='7' fill='%23fff'/%3E%3Ccircle cx='64' cy='44' r='7' fill='%23fff'/%3E%3Cpath d='M40 66 Q50 74 60 66' stroke='%23fff' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="https://miaoda.feishu.cn/fonts/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap" />
+<style>
+  :root{
+    --bg:#FFF8F1;
+    --ink:#24202B;
+    --ink-soft:#7A6E66;
+    --coral:#FF6B57;
+    --coral-deep:#E8503C;
+    --coral-soft:#FFE4DE;
+    --blue:#3B6FE0;
+    --blue-deep:#2B56C4;
+    --blue-soft:#E3EDFB;
+    --mint:#4E9C82;
+    --mint-soft:#DCEFE7;
+    --card:#FFFFFF;
+    --line:#EFE4D8;
+    --dark:#2B2320;
+    --radius:22px;
+    --shadow:0 10px 30px rgba(50,70,140,.10);
+    --shadow-lift:0 20px 50px rgba(50,70,140,.18);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:"Noto Sans SC",-apple-system,"Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--ink);
+    line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  a{color:inherit;text-decoration:none}
+  img{max-width:100%;display:block}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+
+  /* ===== 顶部导航 ===== */
+  header{
+    position:sticky;top:0;z-index:50;
+    background:rgba(255,248,241,.82);
+    backdrop-filter:saturate(1.4) blur(12px);
+    border-bottom:1px solid var(--line);
+  }
+  .nav{display:flex;align-items:center;gap:24px;height:68px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:900;font-size:20px;letter-spacing:.5px}
+  .brand img{width:40px;height:40px;border-radius:12px;box-shadow:0 4px 12px rgba(59,111,224,.25)}
+  .brand small{font-weight:500;font-size:12px;color:var(--ink-soft)}
+  .menu{display:flex;gap:4px;margin-left:8px;flex:1}
+  .menu a{padding:8px 14px;border-radius:999px;font-size:15px;color:var(--ink-soft);transition:background .2s,color .2s}
+  .menu a:hover{background:var(--blue-soft);color:var(--blue-deep)}
+  .menu a.active{color:var(--blue-deep);font-weight:700;background:var(--blue-soft)}
+  .qq{position:relative;margin-left:auto}
+  .qq-btn{
+    display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:999px;cursor:pointer;
+    background:var(--dark);color:#fff;font-size:14px;font-weight:500;border:none;font-family:inherit;
+    transition:transform .15s,background .2s;
+  }
+  .qq-btn:hover{background:var(--blue);transform:translateY(-1px)}
+  .qq-pop{
+    position:absolute;right:0;top:calc(100% + 12px);width:200px;background:#fff;border:1px solid var(--line);
+    border-radius:16px;box-shadow:var(--shadow-lift);padding:16px;text-align:center;
+    opacity:0;visibility:hidden;transform:translateY(6px);
+    transition:opacity .2s,transform .2s,visibility .2s;
+  }
+  .qq:hover .qq-pop,.qq:focus-within .qq-pop{opacity:1;visibility:visible;transform:translateY(0)}
+  .qq-pop img{width:168px;border-radius:12px;margin:0 auto 8px;display:block}
+  .qq-pop p{font-size:12px;color:var(--ink-soft)}
+  .qq-pop b{color:var(--blue-deep)}
+
+  /* ===== Hero（顶部 1/3 蓝色调） ===== */
+  .hero{
+    position:relative;overflow:hidden;
+    background:
+      radial-gradient(900px 420px at 85% -10%, rgba(59,111,224,.16), transparent 60%),
+      radial-gradient(700px 380px at 8% 8%, rgba(255,107,87,.10), transparent 55%),
+      linear-gradient(180deg,#E8F0FC 0%,#F3F7FE 55%,var(--bg) 100%);
+  }
+  .hero-inner{display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center;padding:60px 0 70px}
+  .eyebrow{display:inline-block;padding:6px 14px;border-radius:999px;background:#fff;color:var(--blue-deep);font-size:13px;font-weight:700;box-shadow:var(--shadow);margin-bottom:18px}
+  h1{font-size:clamp(34px,5vw,54px);line-height:1.18;font-weight:900;letter-spacing:-.5px}
+  h1 .hl{color:var(--blue)}
+  .sub{margin-top:18px;font-size:17px;color:#5d5560;max-width:46ch}
+  .hero-actions{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .btn-primary{
+    display:inline-flex;align-items:center;gap:10px;background:var(--coral);color:#fff;font-weight:700;font-size:16px;font-family:inherit;
+    padding:14px 28px;border-radius:999px;box-shadow:0 12px 26px rgba(255,107,87,.4);
+    transition:transform .15s,box-shadow .2s,background .2s;
+  }
+  .btn-primary:hover{background:var(--coral-deep);transform:translateY(-2px);box-shadow:0 16px 34px rgba(255,107,87,.5)}
+  .btn-ghost{display:inline-flex;align-items:center;gap:8px;padding:13px 22px;border-radius:999px;border:1.5px solid #d8e2f5;color:var(--blue-deep);font-weight:500;font-size:15px;background:#fff;transition:border-color .2s,transform .15s}
+  .btn-ghost:hover{border-color:var(--blue);transform:translateY(-2px)}
+  .hero-note{margin-top:14px;font-size:13px;color:#8a8090}
+  .hero-note b{color:var(--blue-deep)}
+  .stats{display:flex;gap:22px;margin-top:26px;flex-wrap:wrap}
+  .stat{font-size:13px;color:#6a6272}
+  .stat b{display:block;font-size:20px;font-weight:900;color:var(--ink)}
+
+  /* Hero 视觉区 */
+  .hero-stage{position:relative;min-height:380px}
+  .main-visual{
+    width:78%;margin-left:auto;border-radius:24px;box-shadow:var(--shadow-lift);
+    transform:rotate(2deg);border:5px solid #fff;background:#fff;
+  }
+  .float-badge{
+    position:absolute;left:0;bottom:-10px;width:150px;border-radius:20px;border:5px solid #fff;
+    box-shadow:var(--shadow-lift);background:#fff;transform:rotate(-7deg);
+    animation:bob 3.6s ease-in-out infinite alternate;
+  }
+  .float-chip{
+    position:absolute;right:6%;top:-14px;display:flex;align-items:center;gap:8px;
+    background:#fff;border-radius:999px;padding:8px 14px 8px 8px;box-shadow:var(--shadow);
+    font-size:12.5px;font-weight:700;color:var(--blue-deep);animation:bob 4.2s ease-in-out infinite alternate-reverse;
+  }
+  .float-chip img{width:30px;height:30px;border-radius:50%;object-fit:cover}
+  .big-d{display:inline-block;font-size:1.35em;font-weight:900;color:var(--coral-deep);transform:rotate(-10deg) translateY(-2px)}
+  @keyframes bob{from{transform:translateY(0) rotate(-7deg)}to{transform:translateY(-14px) rotate(-5deg)}}
+  .float-chip{animation-name:bobchip}
+  @keyframes bobchip{from{transform:translateY(0)}to{transform:translateY(-10px)}}
+
+  /* ===== 滚动淡入 ===== */
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    .reveal{opacity:1;transform:none;transition:none}
+    .float-badge,.float-chip{animation:none}
+  }
+
+  /* ===== 下载条 ===== */
+  .download{
+    margin:36px 0 10px;background:linear-gradient(120deg,#2B56C4,#3B6FE0 60%,#5B86F0);
+    color:#fff;border-radius:28px;padding:44px 40px;display:flex;align-items:center;gap:28px;flex-wrap:wrap;
+    position:relative;overflow:hidden;box-shadow:0 20px 44px rgba(59,111,224,.35);
+  }
+  .download::after{content:"";position:absolute;right:-50px;top:-50px;width:220px;height:220px;background:radial-gradient(circle,rgba(255,255,255,.25),transparent 70%)}
+  .download h2{font-size:26px;font-weight:900}
+  .download p{color:#d8e4fb;margin-top:6px;font-size:14px}
+  .download .meta{font-size:12.5px;color:#bcd0f5;margin-top:4px}
+  .download .btn-primary{margin-left:auto;position:relative;z-index:1}
+
+  /* ===== 区块 ===== */
+  section.block{padding:64px 0 24px}
+  .sec-head{margin-bottom:36px;max-width:60ch}
+  .sec-head .tag{color:var(--blue);font-weight:700;font-size:14px;letter-spacing:2px}
+  .sec-head h2{font-size:clamp(26px,3.4vw,38px);font-weight:900;margin-top:8px;letter-spacing:-.3px}
+  .sec-head p{color:var(--ink-soft);margin-top:12px;font-size:16px}
+
+  .feat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
+  .feat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:28px;box-shadow:var(--shadow);transition:transform .2s,box-shadow .2s}
+  .feat:hover{transform:translateY(-4px);box-shadow:var(--shadow-lift)}
+  .feat .ico{width:46px;height:46px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:var(--blue-soft);margin-bottom:16px}
+  .feat .ico svg{width:24px;height:24px;stroke:var(--blue-deep);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .feat.mint .ico{background:var(--mint-soft)}
+  .feat.mint .ico svg{stroke:var(--mint)}
+  .feat h3{font-size:19px;font-weight:700;margin-bottom:10px}
+  .feat ul{list-style:none;margin-top:6px}
+  .feat li{position:relative;padding-left:20px;color:#5d5560;font-size:14.5px;margin-top:7px}
+  .feat li::before{content:"";position:absolute;left:0;top:9px;width:8px;height:8px;border-radius:50%;background:var(--blue)}
+  .feat.mint li::before{background:var(--mint)}
+
+  /* API 说明 */
+  .api-note{margin-top:14px;background:var(--blue-soft);border-radius:14px;padding:14px 16px;font-size:13.5px;color:#33508e}
+  .api-note summary{cursor:pointer;font-weight:700;color:var(--blue-deep);list-style:none;display:flex;align-items:center;gap:6px}
+  .api-note summary::before{content:"?";display:inline-flex;width:18px;height:18px;border-radius:50%;background:var(--blue);color:#fff;align-items:center;justify-content:center;font-size:12px;flex:none}
+  .api-note p{margin-top:8px;color:#4a6296}
+
+  /* ===== 模型区 ===== */
+  .model-layout{display:grid;grid-template-columns:1fr;gap:20px}
+  .placeholder{border:2px dashed #d9e2f2;border-radius:var(--radius);background:#fff;padding:48px 24px;text-align:center;color:#8a93a8}
+  .placeholder h3{font-size:19px;color:#5a6a8c;font-weight:700;margin-bottom:8px}
+  .placeholder p{font-size:14px}
+  .custom-card{background:linear-gradient(120deg,#fff,#F0F5FE);border:1.5px solid #d8e4fb;border-radius:var(--radius);padding:28px;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .custom-card .txt h3{font-size:19px;font-weight:900;color:var(--blue-deep)}
+  .custom-card .txt p{font-size:14px;color:var(--ink-soft);margin-top:4px}
+  .btn-blue{margin-left:auto;background:var(--blue);color:#fff;font-weight:700;font-family:inherit;padding:12px 24px;border-radius:9999px;box-shadow:0 10px 22px rgba(59,111,224,.35);transition:transform .15s,background .2s}
+  .btn-blue:hover{background:var(--blue-deep);transform:translateY(-2px)}
+  .custom-form{display:none;margin-top:18px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;box-shadow:var(--shadow)}
+  .custom-form.open{display:block}
+  .custom-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+  .custom-form label{font-size:13px;font-weight:700;color:#5d5560;display:block;margin-bottom:6px}
+  .custom-form input,.custom-form textarea{width:100%;border:1.5px solid #e2e8f4;border-radius:10px;padding:10px 12px;font-family:inherit;font-size:14px;background:#f8faff}
+  .custom-form textarea{min-height:80px;resize:vertical}
+  .custom-form .tip{font-size:12.5px;color:#98a0b3;margin-top:8px}
+
+  /* ===== Footer ===== */
+  footer{margin-top:64px;border-top:1px solid var(--line);padding:36px 0 48px;color:var(--ink-soft);font-size:14px}
+  .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
+  .foot .links{display:flex;gap:18px}
+  .foot a:hover{color:var(--blue-deep)}
+  .credit{margin-top:14px;font-size:12px;color:#a89a8c}
+
+  /* ===== 漫游小模型（背景装饰，随机移动+碰边反弹，不可点） ===== */
+  .deco{position:fixed;top:0;left:0;pointer-events:none;z-index:1;opacity:.92;will-change:transform;
+    filter:drop-shadow(0 10px 18px rgba(59,111,224,.20))}
+  @media (max-width:1280px){.deco{display:none}}
+  @media (prefers-reduced-motion:reduce){.deco{animation:none}}
+
+  /* 其他项目 */
+  .more-list{display:flex;flex-direction:column;gap:18px}
+  .proj-card{display:grid;grid-template-columns:220px 1fr;background:#fff;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);transition:transform .2s,box-shadow .2s}
+  .proj-card:hover{transform:translateY(-4px);box-shadow:var(--shadow-lift)}
+  .proj-thumb{width:220px;min-height:180px;object-fit:cover;display:block}
+  .proj-body{padding:22px 24px}
+  .proj-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .proj-head h3{font-size:19px;font-weight:900;color:var(--ink)}
+  .proj-tag{font-size:12px;font-weight:700;color:var(--blue-deep);background:var(--blue-soft);padding:3px 10px;border-radius:999px}
+  .proj-body p{margin-top:10px;color:#5d5560;font-size:14.5px}
+  .proj-link{display:inline-block;margin-top:12px;font-weight:700;color:var(--coral-deep);font-size:14px}
+  .more-tip{color:var(--ink-soft);font-size:13.5px;text-align:center;margin-top:4px}
+  .custom-note{margin-top:4px;background:var(--coral-soft);color:var(--coral-deep);border-radius:14px;padding:14px 18px;font-size:14px;line-height:1.7}
+  .custom-note b{font-weight:900}
+  .qq-contact{display:flex;flex-direction:column;align-items:center;gap:1px;background:#fff;border:1.5px dashed var(--blue-deep);border-radius:10px;padding:8px 14px;flex:none}
+  .qq-label{font-size:11px;color:var(--ink-soft);font-weight:700}
+  .qq-num{font-size:18px;font-weight:900;color:var(--blue-deep);letter-spacing:.5px;font-variant-numeric:tabular-nums;line-height:1.2}
+  .qq-hint{font-size:11px;color:var(--ink-soft)}
+  .dl-btns{display:flex;gap:12px;flex-wrap:wrap;margin-left:auto}
+  .dl-btns .btn-ghost{background:rgba(255,255,255,.15);color:#fff;border-color:rgba(255,255,255,.35)}
+  .dl-btns .btn-ghost:hover{background:rgba(255,255,255,.25);color:#fff;border-color:#fff}
+  .mirror-link{display:block;margin-top:10px;font-size:13px;color:var(--ink-soft);text-decoration:underline;text-underline-offset:3px}
+  .mirror-link:hover{color:var(--blue-deep)}
+  @media (max-width:860px){
+    .menu{display:none}
+    .hero-inner{grid-template-columns:1fr;gap:36px;padding:40px 0 50px}
+    .hero-stage{min-height:auto}
+    .main-visual{width:100%}
+    .feat-grid{grid-template-columns:1fr}
+    .custom-form .row{grid-template-columns:1fr}
+    .download{padding:30px 24px}
+    .download .btn-primary{margin-left:0}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#home">
+      <img src="assets/petra-logo.png" alt="Petra" />
+      <span>Petra <small>AI 桌宠</small></span>
+    </a>
+    <nav class="menu" id="menu">
+      <a href="#home" class="active">首页</a>
+      <a href="#features">功能</a>
+      <a href="https://www.bilibili.com/video/BV1Yt8g6fEuB/" target="_blank" rel="noopener">教程</a>
+      <a href="#models">模型</a>
+      <a href="#more">其他好玩的项目</a>
+    </nav>
+    <div class="qq">
+      <button class="qq-btn" id="qqBtn" aria-haspopup="true">加入 QQ 群</button>
+      <div class="qq-pop">
+        <img src="assets/qr.jpg" alt="QQ 群二维码：桌宠群 908632095" />
+        <p>扫码加入 · 群号 <b>908632095</b></p>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ===== 首页 Hero ===== -->
+<section class="hero" id="home">
+  <div class="wrap hero-inner">
+    <div class="reveal in">
+      <span class="eyebrow">Windows 桌面 · 开源免费 · v0.2.6</span>
+      <h1>一只软乎乎的<br/>会<span class="hl">自己跑</span>的 AI 桌宠</h1>
+      <p class="sub">Petra 会在你的桌面上漫游、躲鼠标、视线追着光标跑；点它就能聊天，还能帮你启动软件、记住你的小习惯。内置蓝色大肥鱼，也支持换成任何你喜欢的角色。</p>
+      <div class="hero-actions">
+        <a class="btn-primary" href="https://github.com/Wumiu/Petra/releases/latest" target="_blank" rel="noopener">
+          下载 Windows 版
+        </a>
+        <a class="btn-ghost" href="#features">看看它会什么</a>
+      </div>
+      <p class="hero-note"><b>macOS 版本正在开发中</b> · 目前支持 Windows 10 / 11 · 解压安装即用</p>
+      <div class="stats">
+        <div class="stat"><b>MIT</b>完全开源</div>
+        <div class="stat"><b>本地</b>离线渲染角色</div>
+        <div class="stat"><b>2.5D</b>拖入 PSD 即换装</div>
+      </div>
+    </div>
+    <div class="hero-stage reveal in">
+      <img class="main-visual" src="assets/fish-hug.png" alt="DeepSeek 蓝色大肥鱼同人插画" />
+      <img class="float-badge" src="assets/fish-chibi.png" alt="蓝色大肥鱼 Q 版同人" />
+      <div class="float-chip"><img src="assets/fish-laptop.png" alt="" />生活<span class="big-d">大</span>助手</div>
+    </div>
+  </div>
+</section>
+
+<main class="wrap">
+
+  <!-- ===== 下载条 ===== -->
+  <section class="download reveal">
+    <div>
+      <h2>把 Petra 领回桌面</h2>
+      <p>一键 Setup 完成，解压即可使用。</p>
+      <p class="meta">当前提供 Windows 版 · macOS 适配中 · 仍无法下载？加 QQ 群 <b>908632095</b>，群文件内有最新安装包 · 蓝奏云提取码 <b>1n0y</b></p>
+    </div>
+    <div class="dl-btns">
+      <a class="btn-primary" href="https://github.com/Wumiu/Petra/releases/latest" target="_blank" rel="noopener">GitHub 下载 v0.2.6</a>
+      <a class="btn-ghost dl-mirror" href="https://nas.qicwken.cn/@s/petra-win" target="_blank" rel="noopener">网盘直链下载</a>
+      <a class="btn-ghost dl-mirror" href="https://wwbvc.lanzouv.com/b01eupkw4d" target="_blank" rel="noopener">蓝奏云下载</a>
+    </div>
+  </section>
+
+  <!-- ===== 功能 ===== -->
+  <section class="block" id="features">
+    <div class="sec-head reveal">
+      <span class="tag">FEATURES</span>
+      <h2>它到底能做什么</h2>
+      <p>角色、行为、AI、桌面能力——四块拼起来，就是一只真正住在你电脑里的小家伙。</p>
+    </div>
+    <div class="feat-grid">
+      <div class="feat reveal">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l2.5 5 5.5.8-4 3.9.9 5.5-4.9-2.6L7.1 18.2 8 12.7 4 8.8 9.5 8z"/></svg></div>
+        <h3>自定义角色</h3>
+        <ul>
+          <li>拖入分层 PSD 自动生成 2.5D 角色：自动眨眼、发丝物理、表情变形，全本地离线，不需要 Cubism Editor</li>
+          <li>同时支持标准 Live2D 模型（model3.json），现成模型可直接导入</li>
+          <li>视线追踪：眼睛带死区和平滑，会自然看向你的鼠标</li>
+          <li>内置 DeepSeek 大肥鱼、Elaina 等多个角色，右键一键切换</li>
+        </ul>
+      </div>
+      <div class="feat mint reveal">
+        <div class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></div>
+        <h3>桌宠行为</h3>
+        <ul>
+          <li>桌面漫游：在当前屏幕工作区内随机闲逛，活跃度低 / 中 / 高三档可调</li>
+          <li>鼠标靠近自动躲避，逗猫棒模式反过来追着鼠标跑</li>
+          <li>点头、摇头、挥手、打哈欠、伸懒腰等 14 个动作，按节奏自动播放</li>
+          <li>待机时贴屏幕边缘倒挂，拖一下就醒；拖拽时软乎乎晃、带惯性</li>
+        </ul>
+      </div>
+      <div class="feat reveal">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/><circle cx="9" cy="12" r="1"/><circle cx="13" cy="12" r="1"/><circle cx="17" cy="12" r="1"/></svg></div>
+        <h3>AI 小助手 · 可接入你自己的 API</h3>
+        <ul>
+          <li>内置 DeepSeek，开箱即可流式对话，回复逐字蹦出来</li>
+          <li>说「打开网易云」就能按应用名帮你启动软件，不靠 AI 猜路径</li>
+          <li>Shell 能力执行前弹确认，危险命令一律拦截，15 秒自动超时</li>
+          <li>长期记忆你的偏好，每 20 分钟识别前台窗口主动打招呼，人格可自定义</li>
+        </ul>
+        <details class="api-note">
+          <summary>什么是 API？接入要花钱吗？</summary>
+          <p>API 就像软件和 AI 服务器之间的一条电话线。你填入自己的 API Key 后，对话由 AI 服务商（如 DeepSeek）直接响应，用量费用由服务商按你的实际消耗收取——<b>Petra 不经手、不分成、不额外收费</b>。所有带 AI 的软件都是这个模式，我们不靠这个赚你的钱；不填 Key 也能当普通桌宠玩。</p>
+        </details>
+      </div>
+      <div class="feat mint reveal">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+        <h3>桌面与音乐</h3>
+        <ul>
+          <li>WASAPI 回环捕获系统音频，驱动身体律动、嘴型、眉毛和发丝</li>
+          <li>BPM 节拍检测，跟着音乐节奏摇摆、打拍眨眼</li>
+          <li>托盘图标 + Alt+P 随时隐藏唤出，支持开机自启</li>
+          <li>启动自动检查更新；把文件拖到它身上，直接送进回收站</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 模型（预留 + 定制入口） ===== -->
+  <section class="block" id="models">
+    <div class="sec-head reveal">
+      <span class="tag">MODELS</span>
+      <h2>角色模型库</h2>
+      <p>更多角色模型正在整理中，稍后这里会放上可直接下载的 PSD / Live2D 文件。</p>
+    </div>
+    <div class="model-layout reveal">
+      <div class="placeholder">
+        <h3>模型下载列表即将上线</h3>
+        <p>现在你也可以把自己做好的分层 PSD 直接拖到桌宠身上换皮。</p>
+      </div>
+      <div class="custom-card">
+        <img src="assets/fish-interview.png" alt="大肥鱼同人" style="width:120px;border-radius:14px;border:3px solid #fff;box-shadow:var(--shadow);flex:none" />
+        <div class="txt">
+          <h3>没有想要的模型？来定制吧！</h3>
+          <p>加群主 QQ，直接描述你想要的角色形象、风格和动作。</p>
+        </div>
+        <div class="qq-contact">
+          <span class="qq-label">群主 QQ</span>
+          <span class="qq-num">3362516226</span>
+          <span class="qq-hint">添加时备注「Petra 定制」</span>
+        </div>
+      </div>
+      <div class="custom-note">
+        <b>限时福利：</b>前 <b>50</b> 个定制模型完全免费！这 50 个完成后会统一收录进模型库，供所有人免费下载使用。想定制要趁早哦～
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 更多项目（预留） ===== -->
+  <section class="block" id="more">
+    <div class="sec-head reveal">
+      <span class="tag">MORE</span>
+      <h2>其他好玩的项目</h2>
+    </div>
+    <div class="more-list reveal">
+      <a class="proj-card" href="https://virmii.com/" target="_blank" rel="noopener">
+        <img class="proj-thumb" src="assets/virmii-thumb.png" alt="Virmii 角色 wink" />
+        <div class="proj-body">
+          <div class="proj-head">
+            <h3>Virmii</h3>
+            <span class="proj-tag">AI VTuber 工作台</span>
+          </div>
+          <p>上传一张角色立绘，就能自动生成可动的 3D 形象：AI 帮你做出眨眼、微笑、说话等表情，摄像头实时驱动脸部动作，最后作为浏览器源直接接入 OBS 开播。和 Petra 正好互补——一个住在桌面陪你，一个上直播间陪观众。</p>
+          <span class="proj-link">前往 virmii.com →</span>
+        </div>
+      </a>
+      <p class="more-tip">更多有意思的项目持续收录中，先关注 QQ 群不迷路。</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>© 2026 Petra · 基于 MIT License 开源</div>
+    <div class="links">
+      <a href="https://github.com/Wumiu/Petra" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://www.bilibili.com/video/BV1Yt8g6fEuB/" target="_blank" rel="noopener">教程视频</a>
+      <a href="https://github.com/Wumiu/Petra/releases/latest" target="_blank" rel="noopener">下载</a>
+    </div>
+  </div>
+  <div class="wrap credit">站内 DeepSeek 蓝色大肥鱼相关插画为社区二创同人作品，版权归原作者所有，仅作展示。</div>
+</footer>
+
+<!-- 漫游小模型：随机缓慢移动，碰屏幕边缘反弹，纯装饰不可点 -->
+<img class="deco" src="assets/sway.gif" alt="" data-size="104" />
+<img class="deco" src="assets/wink.gif" alt="" data-size="110" />
+<img class="deco" src="assets/sleep.gif" alt="" data-size="92" />
+
+<script>
+(function(){
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  },{threshold:.12});
+  document.querySelectorAll('.reveal').forEach(function(el){ io.observe(el); });
+
+  var links = document.querySelectorAll('#menu a[href^="#"]');
+  ['home','features','models','more'].forEach(function(id){
+    var s = document.getElementById(id);
+    if(!s) return;
+    new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(l){ l.classList.toggle('active', l.getAttribute('href') === '#'+id); });
+        }
+      });
+    },{rootMargin:'-45% 0px -50% 0px'}).observe(s);
+  });
+
+  document.getElementById('qqBtn').addEventListener('click', function(){
+    alert('桌宠群 群号：908632095\n按钮悬停即可看到二维码，用 QQ 扫码加入。');
+  });
+
+  // 小模型：随机漫游 + 碰边反弹
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var decos = Array.prototype.slice.call(document.querySelectorAll('.deco')).map(function(el, i){
+    var size = parseInt(el.getAttribute('data-size'), 10);
+    el.style.width = size + 'px';
+    return {
+      el: el,
+      w: size,
+      x: Math.random() * (window.innerWidth - size),
+      y: Math.random() * (window.innerHeight - size),
+      rot: [-4, 3, -2][i % 3],
+      vx: (Math.random() < .5 ? -1 : 1) * (60 + Math.random() * 50),
+      vy: (Math.random() < .5 ? -1 : 1) * (45 + Math.random() * 35)
+    };
+  });
+  if (window.innerWidth > 1280) {
+    var last = performance.now();
+    function tick(now){
+      var dt = Math.min((now - last) / 1000, .05); last = now;
+      decos.forEach(function(d){
+        d.x += d.vx * dt; d.y += d.vy * dt;
+        if (d.x <= 0) { d.x = 0; d.vx = Math.abs(d.vx); }
+        if (d.x >= window.innerWidth - d.w) { d.x = window.innerWidth - d.w; d.vx = -Math.abs(d.vx); }
+        if (d.y <= 0) { d.y = 0; d.vy = Math.abs(d.vy); }
+        if (d.y >= window.innerHeight - d.w) { d.y = window.innerHeight - d.w; d.vy = -Math.abs(d.vy); }
+        d.el.style.transform = 'translate(' + d.x + 'px,' + d.y + 'px) rotate(' + d.rot + 'deg)';
+      });
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  } else {
+    decos.forEach(function(d){ d.el.style.transform = 'translate(' + d.x + 'px,' + d.y + 'px) rotate(' + d.rot + 'deg)'; });
+  }
+})();
+</script>
+</body>
+</html>

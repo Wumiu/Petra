@@ -2083,6 +2083,11 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => void checkUpdate(true),
     },
     {
+      id: "website",
+      label: "官网",
+      onPick: () => void invoke("open_url", { url: "https://wumiu.github.io/Petra/" }),
+    },
+    {
       id: "hide",
       label: "隐藏",
       state: topmostCache ? "取消置顶" : "置顶",
