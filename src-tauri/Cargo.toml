@@ -19,6 +19,18 @@ serde_json = "1"
 lettre = { version = "0.11", features = ["smtp-transport", "builder", "native-tls"] }
 raw-window-handle = "0.6"
 
+# macOS 专属依赖（版本与 Cargo.lock 里已有的对齐，不引入新的编译负担）：
+#   reqwest   —— 取在线歌词（LRCLIB）。**用 native-tls 而不是 rustls**：
+#                rustls 会拉进 aws-lc-rs（要 cmake + 编译大量 C 代码），
+#                native-tls 在 macOS 上走系统 Security.framework，和本项目的 lettre 共用同一套，
+#                不新增任何 C 依赖，mac 上也不需要额外装 cmake。
+#   objc2-*   —— NSWorkspace 读"前台是哪个软件"，公开 API、不需要辅助功能权限
+[target.'cfg(target_os = "macos")'.dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+
 # Windows 专属：WASAPI 回环、SMTC 媒体会话、注册表代理、Win32 窗口操作、回收站
 # （必须放在 cfgs 里，否则 macOS 上根本编不过）
 [target.'cfg(windows)'.dependencies]

@@ -857,13 +857,21 @@ fn active_window_title() -> String {
 /// 小助手主动问候：取当前前台窗口标题。
 ///
 /// macOS 版暂时返回空串：读取前台 App / 窗口标题要走
-/// NSWorkspace.frontmostApplication + AXUIElement（辅助功能权限），
-/// 首次调用会弹权限申请，用户拒绝后返回值恒为空——收益不明确，
-/// 所以先不做降级实现，让小助手少一个信息源（前端本来就有兜底）。
+/// macOS 版"当前在用什么软件"：NSWorkspace.frontmostApplication。
+///
+/// 关键点：这是**公开 API，不需要辅助功能权限**（拿窗口标题才需要，所以这里只取 app 名）。
+/// 日记的「常用软件」时间线、小助手回答"你现在在用什么"用的正是 app 名，够用。
+/// Windows 那边是 GetForegroundWindow + GetWindowText，能拿到完整窗口标题。
 #[cfg(not(windows))]
 #[tauri::command]
 fn active_window_title() -> String {
-    String::new()
+    use objc2_app_kit::NSWorkspace;
+    // NSWorkspace 的信息类查询在任意线程调用都安全（不涉及 UI 更新）
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .and_then(|app| app.localizedName())
+        .map(|name| name.to_string())
+        .unwrap_or_default()
 }
 
 /// 读取 updater 可用的系统代理 URL（只读，不修改系统代理，不记录凭据）。
@@ -1763,8 +1771,7 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
 }
 
 /// 查询参数百分号编码（避免引入额外依赖；只用于歌词接口的 query string）
-/// macOS 上取歌词暂未实现，这个函数只在 Windows 编译，避免 mac 上的 dead_code 警告。
-#[cfg(windows)]
+/// Windows 的 PowerShell 链路和 macOS 的 LRCLIB 直连都要用，两个平台都编译。
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.as_bytes() {
@@ -2143,6 +2150,16 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
 /// （四个来源的响应结构各不相同，工作量与回归风险都不小），
 /// 或者要求用户自装第三方库。本轮先如实返回「暂不支持」——
 /// 前端对 Err 本来就有兜底（不显示歌词气泡），不会卡住其它功能。
+/// macOS 版在线歌词：直接查 LRCLIB（https://lrclib.net）。
+///
+/// 为什么这样最划算：前端 `src/music/Lyrics.ts` 本来就是按 **LRCLIB 的 JSON 结构**解析的
+/// （syncedLyrics / instrumental / trackName / duration），Windows 的 PowerShell 链路也是把
+/// 四个来源统一成这个格式返回。所以 mac 只要把 LRCLIB 的原始响应原样返回，
+/// 取最佳匹配、解析 LRC、本地缓存与负缓存这些逻辑一行都不用动。
+///
+/// 已知差别：LRCLIB 不提供译文，所以 mac 上「歌词翻译」拿不到中文翻译
+/// （Windows 是额外合并了网易云的 tlyric）；另外查不到时返回空数组，
+/// 前端会记成 miss（负缓存），不会反复打接口。
 #[cfg(not(windows))]
 #[tauri::command]
 async fn fetch_lyrics(
@@ -2150,9 +2167,68 @@ async fn fetch_lyrics(
     artist: String,
     album: Option<String>,
 ) -> Result<String, String> {
-    // 参数名必须与前端传的一致（Tauri 按名反序列化），这里只是不使用它们。
-    let _ = (title, artist, album);
-    Err("macOS 暂不支持在线歌词".to_string())
+    let t = title.trim();
+    let a = artist.trim();
+    if t.is_empty() {
+        return Err("缺少歌名".to_string());
+    }
+    // 参数名必须与前端传的一致（Tauri 按名反序列化）；LRCLIB 只按歌名+歌手搜索
+    let _ = album;
+
+    let url = format!(
+        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        url_encode(t),
+        url_encode(a)
+    );
+    // LRCLIB 明确要求带上可识别的 User-Agent
+    const UA: &str = concat!(
+        "Petra/",
+        env!("CARGO_PKG_VERSION"),
+        " (+https://github.com/Wumiu/Petra)"
+    );
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+    let direct = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(UA)
+        .build()
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+
+    let body = match direct.get(&url).send().await {
+        Ok(resp) => resp
+            .text()
+            .await
+            .map_err(|e| format!("读取歌词响应失败: {e}"))?,
+        Err(direct_err) => {
+            // 直连失败：配了系统代理就再试一次（与 updater / 天气的策略一致）
+            match crate::proxy::get_system_proxy().and_then(|p| reqwest::Proxy::all(&p).ok()) {
+                Some(proxy) => {
+                    let via_proxy = reqwest::Client::builder()
+                        .timeout(TIMEOUT)
+                        .user_agent(UA)
+                        .proxy(proxy)
+                        .build()
+                        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+                    via_proxy
+                        .get(&url)
+                        .send()
+                        .await
+                        .map_err(|e| format!("歌词接口请求失败（直连与代理都不通）: {e}"))?
+                        .text()
+                        .await
+                        .map_err(|e| format!("读取歌词响应失败: {e}"))?
+                }
+                None => return Err(format!("歌词接口请求失败: {direct_err}")),
+            }
+        }
+    };
+
+    // 查不到时 LRCLIB 返回 []（HTTP 200），这里做一次 JSON 校验，
+    // 免得把运营商劫持页 / 错误页当成歌词丢给前端
+    if serde_json::from_str::<serde_json::Value>(body.trim()).is_err() {
+        return Err("歌词接口返回了非 JSON 内容（可能被网络劫持）".to_string());
+    }
+    Ok(body)
 }
 
 /// 列出开始菜单里可启动的软件（供小助手回答"你能打开什么"并按正确名称调用）
@@ -2225,14 +2301,21 @@ fn lock_screen() -> Result<String, String> {
     Ok("已锁屏".to_string())
 }
 
-/// 锁定屏幕。macOS 用 System Events 发送系统自带的"锁定屏幕"快捷键 ⌃⌘Q。
+/// 锁定屏幕（macOS）。
 ///
-/// 注意：首次调用会要求「辅助功能」权限；用户拒绝时 osascript 会失败，
-/// 这里如实把错误回给前端，不假装成功（Windows 版是 fire-and-forget，
-/// 但 rundll32 那条路没有权限门槛，所以行为不需要对齐）。
+/// 首选 **CGSession -suspend**：macOS 自带的锁屏入口，**不需要辅助功能权限**。
+/// 失败时才退回 System Events 发 ⌃⌘Q（那条要辅助功能权限，但作为兜底总比直接失败好）。
 #[cfg(not(windows))]
 #[tauri::command]
 fn lock_screen() -> Result<String, String> {
+    const CGSESSION: &str =
+        "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession";
+    if std::path::Path::new(CGSESSION).exists() {
+        match hidden_command(CGSESSION).arg("-suspend").status() {
+            Ok(_) => return Ok("已锁屏".to_string()),
+            Err(e) => log_verbose(&format!("[lock] CGSession 不可用，退回 osascript: {e}")),
+        }
+    }
     let script =
         r#"tell application "System Events" to keystroke "q" using {command down, control down}"#;
     let out = hidden_command("/usr/bin/osascript")
@@ -2244,7 +2327,7 @@ fn lock_screen() -> Result<String, String> {
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         Err(if err.is_empty() {
-            "锁屏失败（可能缺少「辅助功能」权限）".to_string()
+            "锁屏失败".to_string()
         } else {
             format!("锁屏失败: {err}")
         })
@@ -2287,23 +2370,56 @@ fn cancel_shutdown() -> Result<String, String> {
     }
 }
 
-/// 定时关机：macOS 暂不支持。
+/// mac 上"待执行的关机"用代数标记：每次设定/取消都自增，
+/// 定时线程醒来时代数变了就放弃执行（比 Windows 的 shutdown /a 更直接）。
+#[cfg(not(windows))]
+static SHUTDOWN_GENERATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// 定时关机（macOS）：**应用内定时器 + AppleScript**。
 ///
-/// 系统自带的 shutdown(8) 需要 root，而桌宠不应该静默提权；
-/// 用 osascript 的 with administrator privileges 会弹系统密码框，
-/// 体验和安全性都不可接受。所以如实返回不支持，让用户走系统「节能」设置。
+/// 为什么不用 shutdown(8)：它要 root，提权会弹系统密码框，桌宠不该这么干。
+/// 改成应用内计时，到点让 System Events 执行"关机"（免 root、免权限）。
+/// 代价：**要求 Petra 在到点前保持运行**（Windows 的 shutdown /t 是系统级的，
+/// 关掉应用也会执行），这点如实写进提示语里，不假装等价。
 #[cfg(not(windows))]
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
-    let _ = minutes;
-    Err("macOS 暂不支持定时关机".into())
+    use std::sync::atomic::Ordering;
+
+    if minutes == 0 || minutes > 1440 {
+        return Err("时间范围：1~1440 分钟".into());
+    }
+    let generation = SHUTDOWN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let delay = std::time::Duration::from_secs(minutes as u64 * 60);
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        // 期间用户取消过（代数变了）就不再执行
+        if SHUTDOWN_GENERATION.load(Ordering::SeqCst) != generation {
+            log_line("schedule_shutdown: 已被取消，不执行");
+            return;
+        }
+        log_line("schedule_shutdown: 到点，执行关机");
+        let script = r#"tell application "System Events" to shut down"#;
+        match hidden_command("/usr/bin/osascript").args(["-e", script]).status() {
+            Ok(s) if s.success() => log_line("schedule_shutdown: 关机指令已发出"),
+            Ok(s) => log_line(&format!("schedule_shutdown: osascript 退出码 {s}")),
+            Err(e) => log_line(&format!("schedule_shutdown: 执行失败 {e}")),
+        }
+    });
+
+    log_line(&format!("schedule_shutdown: {minutes} 分钟后关机（应用内定时器）"));
+    Ok(format!(
+        "已设定 {minutes} 分钟后关机（需要 Petra 保持运行），说「取消关机」可以取消"
+    ))
 }
 
-/// 取消定时关机：macOS 暂不支持（原因同上）。
+/// 取消定时关机（macOS）：自增代数即让定时线程放弃。
 #[cfg(not(windows))]
 #[tauri::command]
 fn cancel_shutdown() -> Result<String, String> {
-    Err("macOS 暂不支持定时关机".into())
+    SHUTDOWN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    log_line("cancel_shutdown: 已取消");
+    Ok("已取消定时关机".into())
 }
 
 /// 命令安全校验：白名单模式，只允许已知安全的查询类命令。

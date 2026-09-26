@@ -28,6 +28,13 @@ jobs:
       # createUpdaterArtifacts=true 需要签名密钥才能产出更新包，缺失会直接构建失败
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # ── 可选：ad-hoc 签名（不需要 Apple 开发者账号）────────────────────────
+      # 启用后 Tauri 会给 .app 打本机自签名，能把用户看到的
+      #   「"Petra.app"已损坏，无法打开」 变成 「Apple 无法验证…」
+      # 后者只需在 系统设置 → 隐私与安全性 点「仍要打开」，不用开终端输密码，对小白友好得多。
+      # 因为没有开发者证书，仍然过不了公证，还会弹一次提示，但措辞和操作都更温和。
+      # 待第一次 CI 跑通后取消注释启用（"-" 是 codesign 的 ad-hoc 身份写法）。
+      # APPLE_SIGNING_IDENTITY: "-"
 
     steps:
       - uses: actions/checkout@v4

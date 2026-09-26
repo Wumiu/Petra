@@ -1854,22 +1854,25 @@ function buildMenu(engine: BehaviorEngine) {
       id: "interact",
       label: "交互",
       submenu: [
-        // 跟随音乐 / 歌词气泡 / 歌词翻译都依赖 Windows 的系统回环录音（WASAPI）与媒体会话（SMTC），
-        // macOS 上这两个能力都没有，直接不显示，免得用户以为是坏了。
-        ...(IS_MAC
-          ? []
-          : [
         {
+          // mac 上入口改名：这里只剩歌词相关设置（回环跟唱那项在 mac 不存在）
           id: "audio",
-          label: "跟随音乐",
-          state: settings.audioEnabled ? "开" : "关",
+          label: IS_MAC ? "音乐与歌词" : "跟随音乐",
+          state: IS_MAC ? undefined : settings.audioEnabled ? "开" : "关",
           submenu: [
+            // "跟随音乐"靠 Windows 的系统回环录音（WASAPI）跟节拍/跟唱，
+            // mac 上没有等价能力（要装 BlackHole 或写 CoreAudio Tap），所以只在 Windows 显示。
+            // 但歌词气泡/翻译在 mac 上走 AppleScript 读播放器 + LRCLIB，是可用的，保留。
+            ...(IS_MAC
+              ? []
+              : [
             {
               id: "audio-follow",
               label: "跟随音乐（未完善）",
               state: settings.audioEnabled ? "开" : "关",
               onPick: () => toggleAudio(!settings.audioEnabled),
             },
+                ]),
             {
               id: "lyrics-bubble",
               label: "歌词气泡",
@@ -1886,6 +1889,11 @@ function buildMenu(engine: BehaviorEngine) {
                 }
               },
             },
+            // 歌词翻译依赖"另一份译文数据"：Windows 是从网易云拿 tlyric 合并进 LRCLIB 结果的，
+            // mac 上只查 LRCLIB（它没有译文），留着这个开关就是个按了没反应的假开关，所以隐藏。
+            ...(IS_MAC
+              ? []
+              : [
             {
               id: "lyrics-translate",
               label: "歌词翻译",
@@ -1897,9 +1905,9 @@ function buildMenu(engine: BehaviorEngine) {
                 toast(settings.lyricsTranslate ? "歌词显示中文翻译" : "歌词不再显示翻译");
               },
             },
+                ]),
           ],
         },
-            ]),
         {
           id: "activity",
           label: "活动频率",
