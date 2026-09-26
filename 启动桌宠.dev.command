@@ -18,6 +18,23 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+# Rust 工具链：rustup 装在 ~/.cargo/bin，但双击运行的 bash 是非交互 shell，
+# 不会读 ~/.zshrc / ~/.bash_profile，所以这里必须主动补 PATH —— 否则即使装了 Rust
+# 也会报 "failed to run 'cargo metadata' ... No such file or directory"。
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+export PATH="$HOME/.cargo/bin:$PATH"
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "[!] 没找到 cargo：mac 上还没装 Rust 工具链（这是 ./启动桌宠.dev.command 最常见的失败原因）"
+  echo
+  echo "    安装（约 1 分钟，装完重开终端或再双击本文件即可）："
+  echo "      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+  echo
+  echo "    装完验证：cargo --version"
+  read -r -p "按回车关闭……" _
+  exit 1
+fi
+
 # 首次运行自动装依赖（对应 Windows 版直接 npm run tauri dev 前的 npm ci）
 if [ ! -d node_modules ]; then
   echo "[*] 首次运行：正在安装前端依赖（npm ci）……"
