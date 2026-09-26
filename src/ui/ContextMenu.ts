@@ -129,7 +129,9 @@ export function setupContextMenu(
             return;
           }
           closeSiblings();
-          sub.classList.remove("hidden");
+          sub.classList.remove("opening", "hidden");
+          void sub.offsetWidth; // 强制重排，保证展开动画每次都播
+          sub.classList.add("opening");
           // 展开后内容变高：重算高度（超出即滚动），并把新展开的子菜单滚进可视区
           fitMenu();
           sub.scrollIntoView({ block: "nearest" });
@@ -165,7 +167,15 @@ export function setupContextMenu(
     // 等待期间用户可能已经左键关闭菜单，这里不要再弹出来
     if (!visible) return;
     render();
+    // 重开时取消未完成的收起动画，并强制重排让弹出动画能重新播放
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    menu.classList.remove("closing", "opening");
     menu.classList.remove("hidden");
+    void menu.offsetWidth;
+    menu.classList.add("opening");
     const w = menu.offsetWidth;
     const h = menu.offsetHeight;
 
@@ -179,16 +189,28 @@ export function setupContextMenu(
     if (top < vr.top) top = vr.top;
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
+    // 从"光标那一角"放大：位置翻到左边/上边时，原点也跟着换到对应角
+    menu.style.transformOrigin = `${left > x ? "left" : "right"} ${top > y ? "top" : "bottom"}`;
     fitMenu();
   };
 
+  /** 收起动画没播完之前不要 display:none，否则看不到动画 */
+  let hideTimer: number | null = null;
+
   const hide = (src = "?") => {
     if (!visible) return;
-    menu.classList.add("hidden");
     visible = false;
-    // 通知 main.ts 立即移除 menuRect。
+    // 交互区域 / 菜单态要立刻撤掉（不能等动画），视觉上再慢慢收
     document.dispatchEvent(new CustomEvent("menu-closed"));
     void invoke("set_menu_open", { open: false }).catch(() => {});
+    menu.classList.add("closing");
+    if (hideTimer !== null) clearTimeout(hideTimer);
+    hideTimer = window.setTimeout(() => {
+      hideTimer = null;
+      menu.classList.remove("closing");
+      menu.classList.add("hidden");
+    }, 110);
+    void src;
   };
 
   document.addEventListener("contextmenu", (e) => {
