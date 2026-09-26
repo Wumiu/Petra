@@ -70,22 +70,30 @@ export const ACTIONS: ActionDef[] = [
     ],
   },
   {
-    id: "wave", label: "挥手", duration: 1.6, pool: "mid",
+    // 挥手：模型向一侧轻倾（angleZ），外侧的手上下摆动。
+    // 关键帧按"向右倾 + 右手挥"定义；播放时随机镜像（向左倾 + 左手挥）。
+    id: "wave", label: "挥手", duration: 1.8, pool: "mid",
     keys: [
-      { t: 0, params: { armY: 0, armPos: 0 } },
-      { t: 0.25, params: { armY: 1.2, armPos: 0.5 } },
-      { t: 0.5, params: { armY: 0, armPos: 0 } },
-      { t: 0.75, params: { armY: 1.2, armPos: 0.5 } },
-      { t: 1, params: { armY: 0, armPos: 0 } },
+      { t: 0, params: { angleZ: 0, armL: 0, armR: 0 } },
+      { t: 0.15, params: { angleZ: 0.4, armL: 0, armR: 0.25 } },
+      { t: 0.35, params: { angleZ: 0.4, armL: 0, armR: 0 } },
+      { t: 0.5, params: { angleZ: 0.4, armL: 0, armR: 0.8 } },
+      { t: 0.65, params: { angleZ: 0.4, armL: 0, armR: 0.2 } },
+      { t: 0.8, params: { angleZ: 0.4, armL: 0, armR: 0.8 } },
+      { t: 0.95, params: { angleZ: 0.15, armL: 0, armR: 0 } },
+      { t: 1, params: { angleZ: 0, armL: 0, armR: 0 } },
     ],
   },
   {
-    id: "raiseHand", label: "举手", duration: 1.3, pool: "mid",
+    // 举手：模型不动，手在 2D 平面内绕肩向上转一定角度后回位。
+    // 双手同起同落（armL/armR 始终相同）；播放时随机选双手齐举或单手上举。
+    id: "raiseHand", label: "举手", duration: 1.4, pool: "mid",
     keys: [
-      { t: 0, params: { armY: 0, armPos: 0 } },
-      { t: 0.5, params: { armY: 1.2, armPos: 0.6 } },
-      { t: 0.75, params: { armY: 1.2, armPos: 0.6 } },
-      { t: 1, params: { armY: 0, armPos: 0 } },
+      { t: 0, params: { armL: 0, armR: 0 } },
+      { t: 0.25, params: { armL: 0.8, armR: 0.8 } },
+      { t: 0.6, params: { armL: 0.8, armR: 0.8 } },
+      { t: 0.9, params: { armL: 0.25, armR: 0.25 } },
+      { t: 1, params: { armL: 0, armR: 0 } },
     ],
   },
   {

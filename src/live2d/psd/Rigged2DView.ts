@@ -70,6 +70,10 @@ export class Rigged2DView implements PetView {
   private actionT = 0;
   private actionLoop = false;
   private winkRight = false;
+  // 挥手/举手：随机侧别。armMirror=true 时把关键帧里的左右手互换、倾角反向；
+  // raiseBoth=false 时举手只抬一只手（侧别由 armMirror 决定）。
+  private armMirror = false;
+  private raiseBoth = false;
 
   // 动作池
   private actionPoolNext = performance.now() + 8000;
@@ -330,6 +334,8 @@ export class Rigged2DView implements PetView {
       // 手臂
       armY: clamp(d.vx * 0.6, -1, 1),
       armPos: clamp(d.bass * 0.2 * sway * moodMul * Math.sin(this.musicPhase * 1.7 + po.armPos), -0.5, 0.5),
+      armL: 0,
+      armR: 0,
 
       // 拖拽 → 下半身摆动
       bodySwing: clamp(this.swing, -1.5, 1.5),
@@ -367,6 +373,18 @@ export class Rigged2DView implements PetView {
         const r = ap.eyeOpenR;
         if (r !== undefined) ap.eyeOpenL = r;
         if (l !== undefined) ap.eyeOpenR = l;
+      }
+      // 挥手/举手：关键帧按固定侧别写，播放时随机镜像，使动的手 = 倾斜方向外侧的手
+      if (this.action.id === "wave" || this.action.id === "raiseHand") {
+        if (this.armMirror) {
+          const l = ap.armL ?? 0, r = ap.armR ?? 0;
+          ap.armL = r; ap.armR = l;
+          if (ap.angleZ !== undefined) ap.angleZ = -ap.angleZ;
+        }
+        // 举手：随机只抬一只手（侧别由 armMirror 决定），且双手时保持同起同落
+        if (this.action.id === "raiseHand" && !this.raiseBoth) {
+          if (this.armMirror) ap.armR = 0; else ap.armL = 0;
+        }
       }
       const FADE = 0.2;
       let w = 1;
@@ -431,6 +449,13 @@ export class Rigged2DView implements PetView {
       this.actionT = 0;
       this.actionLoop = loop;
       if (def.randomEye) this.winkRight = Math.random() < 0.5;
+      // 挥手：随机向左/向右倾，动的手始终是倾斜方向外侧的手
+      if (id === "wave") this.armMirror = Math.random() < 0.5;
+      // 举手：随机双手齐举或单手上举
+      if (id === "raiseHand") {
+        this.armMirror = Math.random() < 0.5;
+        this.raiseBoth = Math.random() < 0.5;
+      }
       this.setAuto(false);
     }
   }
