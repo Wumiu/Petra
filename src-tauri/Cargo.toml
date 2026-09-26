@@ -9,7 +9,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
@@ -17,6 +17,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lettre = { version = "0.11", features = ["smtp-transport", "builder", "native-tls"] }
+raw-window-handle = "0.6"
+
+# Windows 专属：WASAPI 回环、SMTC 媒体会话、注册表代理、Win32 窗口操作、回收站
+# （必须放在 cfgs 里，否则 macOS 上根本编不过）
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Foundation",
     "Foundation_Collections",
@@ -33,6 +38,5 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-raw-window-handle = "0.6"
 
 

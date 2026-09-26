@@ -1,0 +1,78 @@
+# macOS 构建（手动触发，只产出构建产物，不发 Release、不改 latest.json）
+#
+# 为什么不并进 release.yml：Windows 的发版流程已经稳定，mac 还在适配阶段。
+# 这里只负责"能不能在 macOS 上编出来"，产物放在 Actions artifacts 里手工下载试用。
+#
+# 不签名 / 不公证（用户首次打开需要放行，见 README「macOS」一节）
+name: Build macOS (unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "构建目标"
+        type: choice
+        default: aarch64-apple-darwin
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - universal-apple-darwin
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      # createUpdaterArtifacts=true 需要签名密钥才能产出更新包，缺失会直接构建失败
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust（两个 mac 目标都装，通用包需要）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: Rust 单测（仅信息，不阻塞构建）
+        continue-on-error: true
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: 构建 macOS 包（dmg + app）
+        run: npx tauri build --target ${{ inputs.target }}
+
+      - name: 列出产物
+        run: |
+          find src-tauri/target -maxdepth 5 -type f \( -name "*.dmg" -o -name "*.app.tar.gz" -o -name "*.zip" \) -print
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: petra-macos-${{ inputs.target }}
+          path: |
+            src-tauri/target/**/release/bundle/dmg/*.dmg
+            src-tauri/target/**/release/bundle/macos/*.app.tar.gz
+          if-no-files-found: warn
+          retention-days: 14

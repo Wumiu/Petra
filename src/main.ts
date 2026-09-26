@@ -48,6 +48,12 @@ import {
 } from "./input/regions";
 
 
+/**
+ * 当前是不是 macOS。用途：隐藏只有 Windows 才有的能力（系统回环录音、SMTC 媒体会话）。
+ * Tauri 没有装 os 插件，直接用 WebView 的 UA（macOS 上是 WKWebView，UA 含 "Macintosh"）。
+ */
+const IS_MAC = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+
 // ---------- 性能优化工具函数 ----------
 /** 防抖函数：在指定时间内多次调用只执行最后一次 */
 function debounce<T extends (...args: any[]) => any>(
@@ -1848,6 +1854,11 @@ function buildMenu(engine: BehaviorEngine) {
       id: "interact",
       label: "交互",
       submenu: [
+        // 跟随音乐 / 歌词气泡 / 歌词翻译都依赖 Windows 的系统回环录音（WASAPI）与媒体会话（SMTC），
+        // macOS 上这两个能力都没有，直接不显示，免得用户以为是坏了。
+        ...(IS_MAC
+          ? []
+          : [
         {
           id: "audio",
           label: "跟随音乐",
@@ -1888,6 +1899,7 @@ function buildMenu(engine: BehaviorEngine) {
             },
           ],
         },
+            ]),
         {
           id: "activity",
           label: "活动频率",

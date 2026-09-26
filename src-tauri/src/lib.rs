@@ -1,13 +1,43 @@
+// 平台专属模块：Windows 走 Win32 / WASAPI / SMTC，macOS 走 *_mac.rs 里的等价实现。
+// 两边的公开 API 保持一致，lib.rs 里的调用点不需要逐处 cfg。
+#[cfg(windows)]
 mod audio;
+#[cfg(not(windows))]
+#[path = "audio_mac.rs"]
+mod audio;
+
+#[cfg(windows)]
 mod launch;
+#[cfg(not(windows))]
+#[path = "launch_mac.rs"]
+mod launch;
+
+#[cfg(windows)]
 mod media;
+#[cfg(not(windows))]
+#[path = "media_mac.rs"]
+mod media;
+
+#[cfg(windows)]
 mod proxy;
+#[cfg(not(windows))]
+#[path = "proxy_mac.rs"]
+mod proxy;
+
+#[cfg(windows)]
 mod screen;
+#[cfg(not(windows))]
+#[path = "screen_mac.rs"]
+mod screen;
+
+#[cfg(windows)]
+mod trash;
+#[cfg(not(windows))]
+#[path = "trash_mac.rs"]
 mod trash;
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
@@ -18,12 +48,22 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Windows GUI 子系统中启动控制台程序（powershell/cmd/reg/shutdown）时，
 /// 默认会弹出一个新的控制台窗口。加 CREATE_NO_WINDOW 避免窗口闪现。
+#[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 
+/// 启动子进程：Windows 上加 CREATE_NO_WINDOW 防止控制台窗口闪现。
+#[cfg(windows)]
 fn hidden_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
     let mut cmd = std::process::Command::new(program);
     cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
     cmd
+}
+
+/// macOS 没有"控制台窗口闪现"的问题，等价于普通 Command。
+#[cfg(not(windows))]
+fn hidden_command(program: &str) -> std::process::Command {
+    std::process::Command::new(program)
 }
 
 pub struct AudioState {
@@ -243,6 +283,16 @@ mod log_tests {
     }
 }
 
+/// 系统名（诊断日志 / 反馈里用）。Windows 读 OS 环境变量，macOS 用编译期常量。
+fn os_description() -> String {
+    #[cfg(windows)]
+    let v = std::env::var("OS").unwrap_or_default();
+    #[cfg(not(windows))]
+    let v = std::env::consts::OS.to_string();
+    v
+}
+
+#[cfg(windows)]
 fn read_reg_value(subkey: &str, value: &str) -> String {
     hidden_command("reg")
         .args(["query", subkey, "/v", value])
@@ -260,9 +310,18 @@ fn read_reg_value(subkey: &str, value: &str) -> String {
         .unwrap_or_else(|_| String::new())
 }
 
+/// macOS 没有注册表。这里的调用点（WebView2 版本、WinINET ProxyEnable、
+/// 系统区域 LocaleName）全是 Windows 专属信息，统一返回空串即可。
+#[cfg(not(windows))]
+fn read_reg_value(_subkey: &str, _value: &str) -> String {
+    String::new()
+}
+
 /// 启动时打印环境信息，帮助定位 WebView2 加载问题。
 fn log_environment() {
-    log_line(&format!("OS_VAR: {}", std::env::var("OS").unwrap_or_default()));
+    log_line(&format!("OS_VAR: {}", os_description()));
+    // WebView2 是 Windows 专有运行时，mac 上打了也是空值
+    #[cfg(windows)]
     log_line(&format!(
         "WebView2(64): {}",
         read_reg_value(
@@ -741,6 +800,7 @@ fn spawn_drag_follower(app: AppHandle) {
 }
 
 /// 小助手主动问候：取当前前台窗口标题 + 进程名，供 AI 判断用户在做什么。
+#[cfg(windows)]
 #[tauri::command]
 fn active_window_title() -> String {
     use windows::Win32::Foundation::CloseHandle;
@@ -794,6 +854,18 @@ fn active_window_title() -> String {
     }
 }
 
+/// 小助手主动问候：取当前前台窗口标题。
+///
+/// macOS 版暂时返回空串：读取前台 App / 窗口标题要走
+/// NSWorkspace.frontmostApplication + AXUIElement（辅助功能权限），
+/// 首次调用会弹权限申请，用户拒绝后返回值恒为空——收益不明确，
+/// 所以先不做降级实现，让小助手少一个信息源（前端本来就有兜底）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn active_window_title() -> String {
+    String::new()
+}
+
 /// 读取 updater 可用的系统代理 URL（只读，不修改系统代理，不记录凭据）。
 /// 优先环境变量 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY，其次 WinINET 系统代理。
 /// 无代理或失败返回 None，绝不导致启动失败。
@@ -804,6 +876,7 @@ fn get_system_proxy() -> Option<String> {
 
 /// 返回用户空闲秒数（鼠标键盘无输入的时间）。
 /// 主动问候场景触发用：空闲太久回来时打招呼、久坐提醒等。
+#[cfg(windows)]
 #[tauri::command]
 fn get_idle_seconds() -> u64 {
     // 使用 raw FFI 调用 GetLastInputInfo，避免 windows crate feature 依赖问题
@@ -827,7 +900,37 @@ fn get_idle_seconds() -> u64 {
     0
 }
 
+/// 返回用户空闲秒数（鼠标键盘无输入的时间）。
+///
+/// macOS 走 ioreg 读 IOHIDSystem 的 HIDIdleTime（"距上次输入"的纳秒数）。
+/// 这是唯一不需要辅助功能权限、也不用引 CoreGraphics 依赖的做法。
+/// 读不到就返回 0（等同于"刚刚有输入"，不会误触发久坐提醒）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_idle_seconds() -> u64 {
+    let out = match hidden_command("/usr/sbin/ioreg")
+        .args(["-c", "IOHIDSystem"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return 0,
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    // 输出形如：    "HIDIdleTime" = 12345678900
+    for line in text.lines() {
+        let Some(rest) = line.split("HIDIdleTime").nth(1) else {
+            continue;
+        };
+        let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+        if let Ok(ns) = digits.parse::<u64>() {
+            return ns / 1_000_000_000;
+        }
+    }
+    0
+}
+
 /// 用 Windows DPAPI 加密数据（绑定当前用户，无需额外密钥）。
+#[cfg(windows)]
 fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
     use windows::Win32::Foundation::LocalFree;
     use windows::Win32::Security::Cryptography::{
@@ -859,6 +962,7 @@ fn dpapi_protect(data: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// 用 Windows DPAPI 解密数据。
+#[cfg(windows)]
 fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     use windows::Win32::Foundation::LocalFree;
     use windows::Win32::Security::Cryptography::{
@@ -889,6 +993,7 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
+#[cfg(windows)]
 fn api_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
@@ -898,6 +1003,7 @@ fn api_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 /// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
+#[cfg(windows)]
 #[tauri::command]
 fn set_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
     let enc = dpapi_protect(api_key.as_bytes())?;
@@ -905,12 +1011,72 @@ fn set_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
 }
 
 /// 读取 API Key（DPAPI 解密）。
+#[cfg(windows)]
 #[tauri::command]
 fn get_api_key(app: AppHandle) -> Result<String, String> {
     let path = api_key_path(&app)?;
     let enc = std::fs::read(&path).map_err(|_| "未设置 API Key".to_string())?;
     let dec = dpapi_unprotect(&enc)?;
     String::from_utf8(dec).map_err(|e| e.to_string())
+}
+
+/// macOS 上 API Key 存 Keychain（通用密码项），不落盘、也不写 localStorage。
+/// 服务名用应用的 bundle identifier，与 tauri.conf.json 的 identifier 对齐。
+#[cfg(not(windows))]
+const KEYCHAIN_SERVICE: &str = "com.wumiu.petra.apikey";
+#[cfg(not(windows))]
+const KEYCHAIN_ACCOUNT: &str = "petra";
+
+/// 存储 API Key 到 Keychain（-U 表示已存在就更新，避免堆出重复项）。
+///
+/// 参数以数组传给 security，不经过 shell，key 里的特殊字符不会被展开；
+/// 全程不把 key 写进日志。
+#[cfg(not(windows))]
+#[tauri::command]
+fn set_api_key(api_key: String) -> Result<(), String> {
+    let status = hidden_command("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-w",
+            api_key.as_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("写入钥匙串失败: {e}"))?;
+    if status.success() {
+        log_line("set_api_key: 已写入 Keychain");
+        Ok(())
+    } else {
+        Err(format!("写入钥匙串失败（security 退出码 {status}）"))
+    }
+}
+
+/// 从 Keychain 读取 API Key（-w 只输出密码本身，不带其它字段）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_api_key() -> Result<String, String> {
+    let out = hidden_command("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-w",
+        ])
+        .output()
+        .map_err(|e| format!("读取钥匙串失败: {e}"))?;
+    if !out.status.success() {
+        return Err("未设置 API Key".to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// 本次启动日志的起始偏移（setup 时记录 pet.log 现有大小，反馈只取本次启动后的日志）。
@@ -920,7 +1086,8 @@ static LOG_START_OFFSET: OnceLock<u64> = OnceLock::new();
 fn collect_env_info(app: &AppHandle) -> String {
     let mut out = String::new();
     out.push_str(&format!("时间: {}\n", chrono_now()));
-    out.push_str(&format!("OS: {}\n", std::env::var("OS").unwrap_or_default()));
+    out.push_str(&format!("OS: {}\n", os_description()));
+    #[cfg(windows)]
     out.push_str(&format!(
         "WebView2: {}\n",
         read_reg_value(
@@ -1138,6 +1305,18 @@ fn chrono_now() -> String {
     format!("ts{ms}")
 }
 
+/// 桌面目录：Windows 是 %USERPROFILE%\Desktop，macOS/Linux 是 $HOME/Desktop。
+/// 取不到时退回临时目录，保证导出不会因为环境异常而失败。
+fn desktop_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.map(std::path::PathBuf::from)
+        .map(|p| p.join("Desktop"))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 /// 把一段文本写到桌面的文件里（目前用于日记导出），返回文件路径。
 /// 只取文件名并过滤掉路径分隔符/非法字符，避免写到桌面以外的地方。
 #[tauri::command]
@@ -1154,9 +1333,7 @@ fn export_text_to_desktop(file_name: String, text: String) -> Result<String, Str
     if safe.is_empty() || safe.starts_with('.') || safe == "." || safe == ".." {
         safe = format!("petra-导出-{}.txt", chrono_now());
     }
-    let desktop = std::env::var("USERPROFILE")
-        .map(|p| std::path::PathBuf::from(p).join("Desktop"))
-        .unwrap_or_else(|_| std::env::temp_dir());
+    let desktop = desktop_dir();
     let path = desktop.join(&safe);
     log_line(&format!("导出到桌面: {}", path.display()));
     std::fs::write(&path, text).map_err(|e| format!("写入失败: {e}"))?;
@@ -1167,9 +1344,7 @@ fn export_text_to_desktop(file_name: String, text: String) -> Result<String, Str
 #[tauri::command]
 fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
     let text = compose_feedback_text(&app, &message);
-    let desktop = std::env::var("USERPROFILE")
-        .map(|p| std::path::PathBuf::from(p).join("Desktop"))
-        .unwrap_or_else(|_| std::env::temp_dir());
+    let desktop = desktop_dir();
     let name = format!("live2d-pet-反馈_{}.txt", chrono_now());
     let path = desktop.join(&name);
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
@@ -1181,6 +1356,7 @@ fn export_feedback(app: AppHandle, message: String) -> Result<String, String> {
 /// 设置系统音量（0-100），或静音/取消静音。
 /// mute=true 设音量为 0（静音），mute=false 恢复到 level（默认 50）。
 /// level 和 mute 可同时使用（如 level=30, mute=true → 静音，记住 30）。
+#[cfg(windows)]
 #[tauri::command]
 fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
     let target = match mute {
@@ -1208,8 +1384,43 @@ public class Vol {{ [DllImport("winmm.dll")] public static extern int waveOutSet
     }
 }
 
+/// 设置系统音量（0-100），或静音/取消静音。macOS 走 osascript 的 set volume。
+/// macOS 的「音量」和「是否静音」是两个独立开关，所以静音/取消静音要分别设置。
+#[cfg(not(windows))]
+#[tauri::command]
+fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
+    let target = match mute {
+        Some(true) => 0u8,                            // 静音：强制 0
+        Some(false) => level.unwrap_or(50).min(100),  // 取消静音：恢复到 level
+        None => level.unwrap_or(50).min(100),         // 纯设音量
+    };
+    let script = match mute {
+        Some(true) => "set volume output muted true".to_string(),
+        Some(false) => format!("set volume output muted false\nset volume output volume {target}"),
+        None => format!("set volume output volume {target}"),
+    };
+    let output = hidden_command("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| format!("调节音量失败: {e}"))?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "调节音量失败".to_string()
+        } else {
+            format!("调节音量失败: {err}")
+        });
+    }
+    match mute {
+        Some(true) => Ok("已静音".into()),
+        Some(false) => Ok(format!("已恢复音量 {target}%")),
+        None => Ok(format!("音量已设为 {target}%")),
+    }
+}
+
 /// 获取当前天气信息（调用 wttr.in 纯文本接口，无需 API Key）。
 /// 发送 Windows 托盘通知（用 NotifyIcon 气泡，不依赖 WinRT AUMID）
+#[cfg(windows)]
 #[tauri::command]
 fn send_notification(title: String, body: String) {
     // 自定义美化弹窗（Windows Forms）：浅粉圆角、标题+内容、6 秒自动关闭
@@ -1248,9 +1459,34 @@ fn send_notification(title: String, body: String) {
     crate::log_line(&format!("send_notification: {title} | {body}"));
 }
 
+/// 发送系统通知。macOS 用 osascript 的 display notification，走系统通知中心。
+///
+/// 与 Windows 版刻意绕开系统 Toast 的取舍不同：macOS 上通知中心是唯一入口，
+/// 没有等价的免打扰旁路，用户可在「专注模式」里自行屏蔽。
+#[cfg(not(windows))]
+#[tauri::command]
+fn send_notification(title: String, body: String) {
+    // 先转义反斜杠再转义双引号，避免 AppleScript 字符串被截断；
+    // 参数以数组传给 osascript，不经过 shell。
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        esc(&body),
+        esc(&title)
+    );
+    let _ = hidden_command("/usr/bin/osascript")
+        .args(["-e", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    crate::log_line(&format!("send_notification: {title} | {body}"));
+}
+
 /// 天气查询脚本。`@PROXY@=0` 时绕过系统代理直连。
 /// 为什么要直连：开着梯子（系统代理）时 wttr.in 按**出口 IP** 定位，
 /// 实测出口在日本时返回的是 Tokyo/Sarugakcho —— 信息板就会显示梯子地区的天气。
+#[cfg(windows)]
 const WEATHER_PS: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 if ('@PROXY@' -eq '0') { [System.Net.WebRequest]::DefaultWebProxy = $null }
 try {
@@ -1309,6 +1545,7 @@ fn weather_location_suspect(locale: &str, country: &str) -> bool {
 /// 取天气：优先用户指定的城市，否则先试 Windows 位置 API，再按 IP 定位。
 /// 网络请求一律**直连优先**，直连失败且有系统代理时才回退代理；
 /// 最后附一个"定位可疑"标记（系统区域与定位国家不符时），前端据此提示用户指定城市。
+#[cfg(windows)]
 #[tauri::command]
 async fn get_weather(city: Option<String>) -> Result<String, String> {
     let city_arg = city.unwrap_or_default();
@@ -1390,7 +1627,144 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
     .map_err(|e| format!("天气任务异常: {e}"))?
 }
 
+/// 系统区域（形如 zh-CN）：macOS 从 AppleLocale 读，读不到退回 LANG 环境变量。
+/// 用来判断 wttr.in 按出口 IP 定位到的国家与用户所在区域是否一致。
+#[cfg(not(windows))]
+fn system_locale() -> String {
+    if let Ok(out) = hidden_command("/usr/bin/defaults")
+        .args(["read", "-g", "AppleLocale"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s.replace('_', "-");
+            }
+        }
+    }
+    std::env::var("LANG")
+        .unwrap_or_default()
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .replace('_', "-")
+}
+
+/// 从 wttr.in 的 j1 JSON 里抽出与 PowerShell 版逐字段一致的
+/// 「区域|天气描述|温度|最高|最低|降雨概率|国家」。
+/// 任何字段缺失都算失败（返回 None），等价于 PS 脚本里 ConvertFrom-Json 抛错。
+#[cfg(not(windows))]
+fn parse_weather_json(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let cur = v.get("current_condition")?.get(0)?;
+    let day = v.get("weather")?.get(0)?;
+    let area = v.get("nearest_area")?.get(0)?;
+    let desc = cur.get("weatherDesc")?.get(0)?.get("value")?.as_str()?;
+    let temp = cur.get("temp_C")?.as_str()?;
+    let max = day.get("maxtempC")?.as_str()?;
+    let min = day.get("mintempC")?.as_str()?;
+    // hourly[4] 对应 PowerShell 里的 $w.hourly[4].chanceofrain
+    let rain = day.get("hourly")?.get(4)?.get("chanceofrain")?.as_str()?;
+    let name = area.get("areaName")?.get(0)?.get("value")?.as_str()?;
+    let country = area.get("country")?.get(0)?.get("value")?.as_str()?;
+    Some(format!("{name}|{desc}|{temp}|{max}|{min}|{rain}|{country}"))
+}
+
+/// 取天气：优先用户指定的城市，否则按 IP 定位。
+///
+/// macOS 版用系统自带的 curl 取 wttr.in 的 j1 JSON（Windows 版是 PowerShell 的
+/// Invoke-WebRequest），JSON 用 serde_json 解析（已在依赖里）。
+/// 输出格式、以及「直连优先、失败再用系统代理」的取舍都和 Windows 版保持一致，
+/// 前端无需改动。
+///
+/// 区别：macOS 上不查「位置 API」（那要 CoreLocation 权限弹窗），
+/// 所以没有城市时直接用 IP 定位；定位国家与系统区域不符时照常打「定位可疑」标记。
+#[cfg(not(windows))]
+#[tauri::command]
+async fn get_weather(city: Option<String>) -> Result<String, String> {
+    let city_arg = city.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let url = if city_arg.trim().is_empty() {
+            "https://wttr.in/?format=j1&lang=zh".to_string()
+        } else {
+            format!("https://wttr.in/{}?format=j1&lang=zh", city_arg.trim())
+        };
+
+        let run_pass = |use_proxy: bool| -> Result<String, String> {
+            let mut cmd = hidden_command("/usr/bin/curl");
+            // --fail：HTTP 4xx/5xx 直接当失败，避免把错误页当成天气 JSON
+            cmd.args(["--silent", "--show-error", "--fail", "--max-time", "10"]);
+            if use_proxy {
+                // 走系统代理（与 Windows 版的第二遍等价）
+                if let Some(p) = crate::proxy::get_system_proxy() {
+                    cmd.arg("--proxy").arg(p);
+                }
+            } else {
+                // 直连：显式忽略环境变量里的代理
+                cmd.arg("--noproxy").arg("*");
+            }
+            let out = cmd
+                .arg(&url)
+                .output()
+                .map_err(|e| format!("启动失败: {e}"))?;
+            if !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return Err(if err.is_empty() {
+                    "天气请求失败".to_string()
+                } else {
+                    err
+                });
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        };
+
+        // 直连优先（拿真实的本地出口 IP）；只有直连真的没拿到才走系统代理
+        let mut raw = run_pass(false).unwrap_or_default();
+        if parse_weather_json(&raw).is_none() && crate::proxy::get_system_proxy().is_some() {
+            crate::log_line("[weather] 直连取天气失败，改用系统代理重试");
+            if let Ok(via_proxy) = run_pass(true) {
+                raw = via_proxy;
+            }
+        }
+
+        let Some(fields) = parse_weather_json(&raw) else {
+            return Ok("获取失败|天气获取失败|—|—|—|—|".to_string());
+        };
+        let parts: Vec<String> = fields.split('|').map(|s| s.trim().to_string()).collect();
+        if parts.len() < 7 {
+            return Ok(fields);
+        }
+        let country = parts[6].clone();
+        let locale = system_locale();
+        let suspect = weather_location_suspect(&locale, &country);
+        if suspect {
+            crate::log_line(&format!(
+                "[weather] 定位 {}({country}) 与系统区域 {locale} 不符，疑似代理出口",
+                parts[0]
+            ));
+        }
+        crate::log_line(&format!(
+            "[weather] {} {}°C（{}）定位可疑={suspect}",
+            parts[0], parts[2], parts[1]
+        ));
+        Ok(format!(
+            "{}|{}|{}|{}|{}|{}|{}",
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3],
+            parts[4],
+            parts[5],
+            if suspect { 1 } else { 0 }
+        ))
+    })
+    .await
+    .map_err(|e| format!("天气任务异常: {e}"))?
+}
+
 /// 查询参数百分号编码（避免引入额外依赖；只用于歌词接口的 query string）
+/// macOS 上取歌词暂未实现，这个函数只在 Windows 编译，避免 mac 上的 dead_code 警告。
+#[cfg(windows)]
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.as_bytes() {
@@ -1407,6 +1781,7 @@ fn url_encode(s: &str) -> String {
 /// 取歌词的 PowerShell 脚本（多来源链：网易云 → QQ音乐 → 酷狗 → LRCLIB）。
 /// 用脚本文件而非 -Command，避免超长单行与转义地狱；占位符由 Rust 侧替换。
 /// 注意：脚本本身保持 ASCII，路径占位符可能含非 ASCII（用户名），写盘时带 UTF-8 BOM 供 PS 5.1 正确解析。
+#[cfg(windows)]
 const LYRICS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 $UA = 'Petra/0.2.4 (+https://github.com/Wumiu/Petra)'
@@ -1556,6 +1931,7 @@ if ($ok) { Write-Output ('OK_LRCLIB ' + $diag) } else { Write-Output ('ERR ' + $
 
 /// 解析取词脚本 stdout 里的诊断行（形如 `OK items=1 ne=1 qq=0 kg=0 enc=0 errs=0`）。
 /// items=这一遍真正查到几条歌词，enc=网易云是否返回了加密结果，errs=抛异常的来源数。
+#[cfg(windows)]
 fn parse_lyric_diag(stdout: &str) -> (usize, bool, usize) {
     let mut items = 0usize;
     let mut enc = false;
@@ -1573,6 +1949,7 @@ fn parse_lyric_diag(stdout: &str) -> (usize, bool, usize) {
 }
 
 /// 取词脚本单遍执行的结果
+#[cfg(windows)]
 struct LyricsPass {
     /// 脚本写出的 JSON（可能是 LRCLIB 的单条对象或搜索结果数组；全失败时为空）
     body: String,
@@ -1587,6 +1964,7 @@ struct LyricsPass {
 }
 
 /// 在线获取歌词：多来源链（网易云 → QQ音乐 → 酷狗 → LRCLIB），均返回带时间戳的 LRC。
+#[cfg(windows)]
 #[tauri::command]
 async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1757,7 +2135,28 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
     .await
     .map_err(|e| format!("歌词任务异常: {e}"))?
 }
+
+/// 在线获取歌词：macOS 暂未实现。
+///
+/// Windows 版的取词链是一个 140 行的 PowerShell 脚本（网易云 / QQ音乐 /
+/// 酷狗 / LRCLIB）。迁到 mac 上有两条路：用 curl + serde_json 重写整条链
+/// （四个来源的响应结构各不相同，工作量与回归风险都不小），
+/// 或者要求用户自装第三方库。本轮先如实返回「暂不支持」——
+/// 前端对 Err 本来就有兜底（不显示歌词气泡），不会卡住其它功能。
+#[cfg(not(windows))]
+#[tauri::command]
+async fn fetch_lyrics(
+    title: String,
+    artist: String,
+    album: Option<String>,
+) -> Result<String, String> {
+    // 参数名必须与前端传的一致（Tauri 按名反序列化），这里只是不使用它们。
+    let _ = (title, artist, album);
+    Err("macOS 暂不支持在线歌词".to_string())
+}
+
 /// 列出开始菜单里可启动的软件（供小助手回答"你能打开什么"并按正确名称调用）
+#[cfg(windows)]
 #[tauri::command]
 fn list_installed_apps() -> String {
     let mut names = launch::list_applications();
@@ -1770,7 +2169,22 @@ fn list_installed_apps() -> String {
     format!("开始菜单里可启动的软件共 {total} 个{tail}：{}", names.join("、"))
 }
 
+/// 列出 /Applications 等目录里可启动的应用（macOS）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn list_installed_apps() -> String {
+    let mut names = launch::list_applications();
+    let total = names.len();
+    names.truncate(60);
+    if total == 0 {
+        return "没有找到已安装的应用".to_string();
+    }
+    let tail = if total > names.len() { "（仅列出前 60 个）" } else { "" };
+    format!("可启动的应用共 {total} 个{tail}：{}", names.join("、"))
+}
+
 /// 用系统默认程序打开文件或文件夹（路径必须存在，避免误开未知目标）
+#[cfg(windows)]
 #[tauri::command]
 fn open_path(path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
@@ -1784,7 +2198,24 @@ fn open_path(path: String) -> Result<String, String> {
     Ok(format!("已打开 {path}"))
 }
 
+/// 用系统默认程序打开文件或文件夹（macOS 用 open，等价于 Finder 里双击）
+/// 路径必须存在，避免误开未知目标；参数以数组传给 open，不经过 shell。
+#[cfg(not(windows))]
+#[tauri::command]
+fn open_path(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    hidden_command("/usr/bin/open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开失败: {e}"))?;
+    Ok(format!("已打开 {path}"))
+}
+
 /// 锁定屏幕
+#[cfg(windows)]
 #[tauri::command]
 fn lock_screen() -> Result<String, String> {
     hidden_command("rundll32.exe")
@@ -1794,7 +2225,34 @@ fn lock_screen() -> Result<String, String> {
     Ok("已锁屏".to_string())
 }
 
+/// 锁定屏幕。macOS 用 System Events 发送系统自带的"锁定屏幕"快捷键 ⌃⌘Q。
+///
+/// 注意：首次调用会要求「辅助功能」权限；用户拒绝时 osascript 会失败，
+/// 这里如实把错误回给前端，不假装成功（Windows 版是 fire-and-forget，
+/// 但 rundll32 那条路没有权限门槛，所以行为不需要对齐）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn lock_screen() -> Result<String, String> {
+    let script =
+        r#"tell application "System Events" to keystroke "q" using {command down, control down}"#;
+    let out = hidden_command("/usr/bin/osascript")
+        .args(["-e", script])
+        .output()
+        .map_err(|e| format!("锁屏失败: {e}"))?;
+    if out.status.success() {
+        Ok("已锁屏".to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() {
+            "锁屏失败（可能缺少「辅助功能」权限）".to_string()
+        } else {
+            format!("锁屏失败: {err}")
+        })
+    }
+}
+
 /// 定时关机（分钟后）。
+#[cfg(windows)]
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
     if minutes == 0 || minutes > 1440 {
@@ -1814,6 +2272,7 @@ fn schedule_shutdown(minutes: u32) -> Result<String, String> {
 }
 
 /// 取消定时关机。
+#[cfg(windows)]
 #[tauri::command]
 fn cancel_shutdown() -> Result<String, String> {
     let output = hidden_command("shutdown")
@@ -1828,8 +2287,28 @@ fn cancel_shutdown() -> Result<String, String> {
     }
 }
 
+/// 定时关机：macOS 暂不支持。
+///
+/// 系统自带的 shutdown(8) 需要 root，而桌宠不应该静默提权；
+/// 用 osascript 的 with administrator privileges 会弹系统密码框，
+/// 体验和安全性都不可接受。所以如实返回不支持，让用户走系统「节能」设置。
+#[cfg(not(windows))]
+#[tauri::command]
+fn schedule_shutdown(minutes: u32) -> Result<String, String> {
+    let _ = minutes;
+    Err("macOS 暂不支持定时关机".into())
+}
+
+/// 取消定时关机：macOS 暂不支持（原因同上）。
+#[cfg(not(windows))]
+#[tauri::command]
+fn cancel_shutdown() -> Result<String, String> {
+    Err("macOS 暂不支持定时关机".into())
+}
+
 /// 命令安全校验：白名单模式，只允许已知安全的查询类命令。
 /// 打开软件请走 `launch_application`，不需要 shell。
+#[cfg(windows)]
 fn validate_shell_command(command: &str) -> Result<(), String> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -1877,6 +2356,60 @@ fn validate_shell_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 命令安全校验（macOS）：白名单换成 macOS 上常见的只读查询命令。
+/// 注入防护与 Windows 版思路一致：控制字符、% ^ ; 与链式/重定向/反引号一律拦截。
+///
+/// 白名单刻意收得很窄：凡是既能读又能改的（ifconfig / networksetup / pmset /
+/// sysctl / launchctl / route / find -exec）都不放进来，避免"只读命令"被用成写命令。
+#[cfg(not(windows))]
+fn validate_shell_command(command: &str) -> Result<(), String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("命令为空".into());
+    }
+    // 控制字符含换行/回车：sh 会把内嵌换行当作语句分隔符执行。
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() || c == '%' || c == '^' || c == ';')
+    {
+        return Err("命令被拦截（不允许控制字符 / % / ^ / ;）".into());
+    }
+    // 链式/重定向/变量展开/子 shell 一律拦截
+    if trimmed.contains('&')
+        || trimmed.contains('|')
+        || trimmed.contains('>')
+        || trimmed.contains('<')
+        || trimmed.contains('\u{60}')
+        || trimmed.contains('$')
+        || trimmed.contains('(')
+        || trimmed.contains(')')
+    {
+        return Err("命令被拦截（不允许链式/重定向/变量展开/子 shell）".into());
+    }
+    // 提取首个 token（命令名），支持 /usr/bin/xxx 这种带路径的调用
+    let first = trimmed.split_whitespace().next().unwrap_or("");
+    let cmd = first.rsplit('/').next().unwrap_or(first).to_lowercase();
+    // 白名单：仅允许只读的查询/信息类命令
+    const ALLOWED: &[&str] = &[
+        // 网络（只读探测）
+        "ping", "traceroute", "nslookup", "dig", "host", "netstat",
+        // 系统信息（只读）
+        "sw_vers", "hostname", "whoami", "id", "uname", "uptime", "date", "df", "du",
+        // 进程（只读查询）
+        "ps", "lsof",
+        // 文件/目录（只读）
+        "ls", "pwd", "cat", "head", "tail", "wc", "file", "stat",
+        // 其他安全
+        "echo", "which", "whereis",
+    ];
+    if !ALLOWED.iter().any(|a| cmd == *a) {
+        return Err(format!(
+            "命令被拦截（不在白名单内：{cmd}）。小助手仅支持查询类命令，打开软件请直接说"
+        ));
+    }
+    Ok(())
+}
+
 /// 小助手 shell 调用：执行命令（chcp 65001 切 UTF-8 避免中文乱码），返回输出；
 /// 15s 超时并强制终止子进程。仅由前端在用户确认气泡允许后调用。
 /// 注意：普通“打开软件”请求应走 launch_application，不要用本命令。
@@ -1887,10 +2420,23 @@ fn run_shell(command: String) -> Result<String, String> {
 
     validate_shell_command(&command)?;
     log_line(&format!("run_shell: {command}"));
-    // chcp 65001 切 UTF-8 代码页，避免 cmd 内置命令 GBK 输出乱码
+    // Windows：chcp 65001 切 UTF-8 代码页，避免 cmd 内置命令 GBK 输出乱码
+    #[cfg(windows)]
     let full = format!("chcp 65001>nul & {command}");
-    let mut child = hidden_command("cmd")
-        .args(["/C", &full])
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = hidden_command("cmd");
+        c.args(["/C", &full]);
+        c
+    };
+    // macOS：交给 /bin/sh -c（白名单与注入防护已在 validate_shell_command 里做过）
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = hidden_command("/bin/sh");
+        c.args(["-c", &command]);
+        c
+    };
+    let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -2408,6 +2954,11 @@ pub fn run() {
             ));
             log_environment();
 
+            // macOS：work_area_at 这个命令只有坐标、没有窗口句柄，需要一个
+            // AppHandle 才能查显示器工作区，这里先登记一份。
+            #[cfg(not(windows))]
+            screen::remember_app(app.handle().clone());
+
             let handle = app.handle().clone();
             setup_tray(app)?;
             spawn_clickthrough_watcher(handle.clone());
@@ -2583,6 +3134,8 @@ mod tests {
 
     /// run_shell 白名单校验：换行/控制字符/% /^/; 及链式重定向必须拦截；
     /// 正常查询命令放行（防止 cmd /C 把内嵌换行当语句分隔符执行）。
+    /// 这条用 Windows 命令行（ipconfig / dir / type）验证白名单，只在 Windows 上跑。
+    #[cfg(windows)]
     #[test]
     fn shell_validation_blocks_newline_and_metachars() {
         assert!(validate_shell_command("ipconfig").is_ok());

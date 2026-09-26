@@ -31,6 +31,34 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 3. 启动后右键桌宠可打开菜单，调节各项功能
 4. （可选）右键 → 小助手设置，填入自己的 AI API Key 即可使用 AI 对话功能；不填写也可以作为普通桌宠使用
 
+### macOS（实验性，暂无正式发布）
+
+mac 版目前**没有签名/公证**（省掉 Apple 开发者账号），所以首次打开会被 Gatekeeper 拦下，属正常现象。放行方式二选一：
+
+- **系统设置**：打开 `.dmg` 把 `Petra.app` 拖进「应用程序」后，双击（会被拦一次）→ 系统设置 → 隐私与安全性 → 拉到底点「仍要打开」
+- **终端命令**（更快）：
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Petra.app
+  ```
+
+mac 版当前**功能不完整**（在逐步补齐）：
+
+| 功能 | macOS 状态 |
+|---|---|
+| PSD 模型装配 / 待机 / 摸头 / 桌面漫游 | ✅ 可用 |
+| 小助手对话、日记、抽卡、整点播报 | ✅ 可用 |
+| 打开软件 / 打开文件 / 锁屏 / 调音量 / 系统通知 | ✅ 可用 |
+| 跟随音乐（歌词气泡、跟唱） | ❌ 未实现（macOS 没有系统级回环录音） |
+| 读取"当前在用什么软件" | ❌ 未实现（需要辅助功能权限） |
+| 天气 | ❌ 暂时不可用，开发中 |
+| 定时关机 | ❌ 不支持 |
+
+**在 mac 上跑开发版**（推荐先这样试，不需要签名）：Finder 里双击仓库根目录的 `启动桌宠.dev.command`
+（等价于 Windows 的 `启动桌宠.dev*.bat`；它会检查 node/xcode 命令行工具、首次自动 `npm ci`，然后 `npm run tauri dev`）。
+
+想自己编译：`npm ci` 后 `npx tauri build --target aarch64-apple-darwin`（Apple Silicon）；
+也可以直接在 GitHub 的 Actions 页面手动跑 **Build macOS (unsigned)** 工作流，产物在 artifacts 里下载。
+
 ## 功能
 
 **角色与模型**
