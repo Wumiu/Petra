@@ -19,6 +19,10 @@ export class AudioAnalyzer {
   private pcmCount = 0;
   private beatTimes: number[] = [];
   private lastBpmAt = 0;
+  // 性能优化：标记 Rust 是否推来了新 PCM；没有新数据时不重建 AudioNode。
+  private pcmDirty = false;
+  // 性能优化：FFT 分析降频到约 30Hz（每 2 帧一次），能量/节拍本身有平滑低通，听感/驱动无感。
+  private frameCount = 0;
 
   bass = 0;
   mid = 0;
@@ -49,6 +53,7 @@ export class AudioAnalyzer {
       this.available = true;
       const arr = e.payload;
       this.pcmCount++;
+      this.pcmDirty = true;
       if (DEV && this.pcmCount % 50 === 1) {
         const min = Math.min(...arr);
         const max = Math.max(...arr);
@@ -70,6 +75,20 @@ export class AudioAnalyzer {
   /** 每帧调用：把最近一段音频喂给 AnalyserNode 并取频谱 */
   tick() {
     if (!this.available || !this.analyserReady()) return;
+    this.frameCount++;
+
+    // 性能优化：没有新 PCM 数据，或尚未到分析帧（每 2 帧一次 ≈30Hz）时，
+    // 只做廉价的指数衰减让 bass/mid/treble/beat 平滑归零，
+    // 不再创建 BufferSourceNode（原实现每帧新建/销毁一个 AudioNode，GC 压力大）。
+    if (!this.pcmDirty || this.frameCount % 2 !== 0) {
+      this.bass *= 0.82;
+      this.mid *= 0.82;
+      this.treble *= 0.82;
+      this.beat *= 0.9;
+      this.lastBeat = Math.max(0, this.lastBeat - 0.06);
+      return;
+    }
+    this.pcmDirty = false;
 
     const n = 1024;
     const start = (this.writePos - n + this.ring.length) % this.ring.length;

@@ -209,8 +209,12 @@ class PIXIApp {
       antialias: true,
       resolution: Math.min(2, window.devicePixelRatio || 1),
       autoDensity: true,
-      powerPreference: "high-performance",
+      // 性能优化：小桌宠无需强制高性能 GPU，交由系统按需调度，避免独显持续占用
+      powerPreference: "default",
     });
+    // 性能优化：桌宠动画 30fps 已足够流畅；回调内用真实 dt 驱动，
+    // 降帧不改变动作速度，仅降低合成/重绘频率，CPU/GPU 占用约减半。
+    this.app.ticker.maxFPS = 30;
     document.getElementById("stage")!.appendChild(this.app.view as unknown as Node);
   }
 }
