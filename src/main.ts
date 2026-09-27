@@ -2141,7 +2141,7 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "website",
       label: "官网",
-      onPick: () => void invoke("open_url", { url: "https://wumiu.github.io/Petra/" }),
+      onPick: () => void invoke("open_url", { url: "https://petra.xin/" }),
     },
     {
       id: "hide",
