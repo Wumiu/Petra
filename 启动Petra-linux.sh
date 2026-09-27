@@ -14,6 +14,18 @@
 set -u
 cd "$(dirname "$0")" || exit 1
 
+# 全程留痕：无论走到哪一步（包括"没找到 AppImage"直接退出），输出都同时写进 petra-run.log，
+# 这样"起不来又找不到报错"的情况不会再发生。
+LOG="$(pwd)/petra-run.log"
+exec > >(tee "$LOG") 2>&1
+echo "=== Petra 启动诊断 ==="
+echo "时间   : $(date '+%F %T')"
+echo "脚本   : $0"
+echo "工作目录: $(pwd)"
+echo "目录内容:"
+ls -lah . 2>/dev/null | sed 's/^/    /'
+echo
+
 APP="${1:-}"
 if [ -n "$APP" ]; then shift; fi
 if [ -z "$APP" ]; then
@@ -27,10 +39,17 @@ echo "架构   : $(uname -m)"
 echo
 
 if [ -z "$APP" ] || [ ! -f "$APP" ]; then
-  echo "[!] 没找到 .AppImage。请把本脚本和 AppImage 放同一目录，或：bash 启动Petra-linux.sh 路径/xxx.AppImage"
+  echo "[!] 没找到 .AppImage（脚本没有启动任何程序，所以不会有应用报错）"
+  echo "    你下载的压缩包里，AppImage 通常在 src-tauri/target/release/bundle/appimage/ 下面，"
+  echo "    把它和本脚本放到同一目录，或者： bash 启动Petra-linux.sh 路径/xxx.AppImage"
+  echo
+  echo "    先用这条命令找一下它藏在哪："
+  echo "      find ~ -name '*.AppImage' 2>/dev/null"
   if ls -1 ./*.deb >/dev/null 2>&1; then
-    echo "    另外这个目录里有 .deb —— 那个其实更省事：sudo apt install ./*.deb"
+    echo "    （注意：这个目录里有 .deb，但 .deb 只有 Debian/Ubuntu 系能装，Arch 系用不了）"
   fi
+  echo
+  echo "[i] 本次诊断已写入：$LOG"
   read -r -p "按回车退出……" _ || true
   exit 1
 fi
