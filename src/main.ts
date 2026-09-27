@@ -49,10 +49,24 @@ import {
 
 
 /**
- * 当前是不是 macOS。用途：隐藏只有 Windows 才有的能力（系统回环录音、SMTC 媒体会话）。
- * Tauri 没有装 os 插件，直接用 WebView 的 UA（macOS 上是 WKWebView，UA 含 "Macintosh"）。
+ * 当前运行平台。用途：裁剪只有部分平台才有的能力（系统回环录音、媒体会话、歌词翻译）。
+ * Tauri 没有装 os 插件，直接读 WebView 的 UA：
+ *   macOS → WKWebView，UA 含 "Macintosh" / "Mac OS X"
+ *   Linux → WebKitGTK，UA 含 "Linux"（X11 与 Wayland 会话的 UA 看不出区别）
+ *   其余  → Windows WebView2
+ * 判断顺序必须先 mac 再 linux：有些 Linux UA 里也可能出现 "X11"，不能作为区分依据。
  */
-const IS_MAC = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+const PLATFORM: "win" | "mac" | "linux" = /Macintosh|Mac OS X/i.test(navigator.userAgent)
+  ? "mac"
+  : /Linux/i.test(navigator.userAgent)
+    ? "linux"
+    : "win";
+
+/**
+ * 只有 Windows 才有系统回环录音（WASAPI）与覆盖面最全的媒体会话（SMTC）。
+ * mac 读 Apple Music/Spotify，Linux 走 MPRIS，都能提供歌词气泡所需的曲目信息。
+ */
+const IS_WINDOWS = PLATFORM === "win";
 
 // ---------- 性能优化工具函数 ----------
 /** 防抖函数：在指定时间内多次调用只执行最后一次 */
@@ -1855,15 +1869,17 @@ function buildMenu(engine: BehaviorEngine) {
       label: "交互",
       submenu: [
         {
-          // mac 上入口改名：这里只剩歌词相关设置（回环跟唱那项在 mac 不存在）
+          // 非 Windows 平台入口改名：这里只剩歌词相关设置（回环跟唱那项在 mac/Linux 不存在）
           id: "audio",
-          label: IS_MAC ? "音乐与歌词" : "跟随音乐",
-          state: IS_MAC ? undefined : settings.audioEnabled ? "开" : "关",
+          label: IS_WINDOWS ? "跟随音乐" : "音乐与歌词",
+          state: IS_WINDOWS ? (settings.audioEnabled ? "开" : "关") : undefined,
           submenu: [
-            // "跟随音乐"靠 Windows 的系统回环录音（WASAPI）跟节拍/跟唱，
-            // mac 上没有等价能力（要装 BlackHole 或写 CoreAudio Tap），所以只在 Windows 显示。
-            // 但歌词气泡/翻译在 mac 上走 AppleScript 读播放器 + LRCLIB，是可用的，保留。
-            ...(IS_MAC
+            // "跟随音乐"靠 Windows 的系统回环录音（WASAPI）跟节拍/跟唱：
+            // mac 没有等价能力（要装 BlackHole 或写 CoreAudio Tap）；
+            // Linux 虽然可以用 PipeWire/PulseAudio 的 monitor 源做回环，但本产品在 Linux 上
+            // 决定不做（见 src-tauri/src/audio_linux.rs），所以这一项同样只在 Windows 显示。
+            // 歌词气泡在 mac/Linux 都可用（mac 走 AppleScript，Linux 走 MPRIS），保留。
+            ...(IS_WINDOWS
               ? []
               : [
             {
@@ -1890,8 +1906,8 @@ function buildMenu(engine: BehaviorEngine) {
               },
             },
             // 歌词翻译依赖"另一份译文数据"：Windows 是从网易云拿 tlyric 合并进 LRCLIB 结果的，
-            // mac 上只查 LRCLIB（它没有译文），留着这个开关就是个按了没反应的假开关，所以隐藏。
-            ...(IS_MAC
+            // mac/Linux 上只查 LRCLIB（它没有译文），留着这个开关就是个按了没反应的假开关，所以隐藏。
+            ...(IS_WINDOWS
               ? []
               : [
             {

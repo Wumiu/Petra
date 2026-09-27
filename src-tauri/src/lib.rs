@@ -1,39 +1,58 @@
-// 平台专属模块：Windows 走 Win32 / WASAPI / SMTC，macOS 走 *_mac.rs 里的等价实现。
-// 两边的公开 API 保持一致，lib.rs 里的调用点不需要逐处 cfg。
+// 平台专属模块：Windows 走 Win32 / WASAPI / SMTC，macOS 走 *_mac.rs，
+// Linux 走 *_linux.rs 里的等价实现。三边的公开 API 保持一致，
+// lib.rs 里的调用点因此不需要逐处 cfg（只在 setup 之类的入口做极少量分叉）。
 #[cfg(windows)]
 mod audio;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "audio_mac.rs"]
+mod audio;
+#[cfg(target_os = "linux")]
+#[path = "audio_linux.rs"]
 mod audio;
 
 #[cfg(windows)]
 mod launch;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "launch_mac.rs"]
+mod launch;
+#[cfg(target_os = "linux")]
+#[path = "launch_linux.rs"]
 mod launch;
 
 #[cfg(windows)]
 mod media;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "media_mac.rs"]
+mod media;
+#[cfg(target_os = "linux")]
+#[path = "media_linux.rs"]
 mod media;
 
 #[cfg(windows)]
 mod proxy;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "proxy_mac.rs"]
+mod proxy;
+#[cfg(target_os = "linux")]
+#[path = "proxy_linux.rs"]
 mod proxy;
 
 #[cfg(windows)]
 mod screen;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "screen_mac.rs"]
+mod screen;
+#[cfg(target_os = "linux")]
+#[path = "screen_linux.rs"]
 mod screen;
 
 #[cfg(windows)]
 mod trash;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[path = "trash_mac.rs"]
+mod trash;
+#[cfg(target_os = "linux")]
+#[path = "trash_linux.rs"]
 mod trash;
 
 use serde::{Deserialize, Serialize};
@@ -60,8 +79,8 @@ fn hidden_command(program: &str) -> std::process::Command {
     cmd
 }
 
-/// macOS 没有"控制台窗口闪现"的问题，等价于普通 Command。
-#[cfg(not(windows))]
+/// macOS / Linux 没有"控制台窗口闪现"的问题，等价于普通 Command。
+#[cfg(unix)]
 fn hidden_command(program: &str) -> std::process::Command {
     std::process::Command::new(program)
 }
@@ -287,7 +306,7 @@ mod log_tests {
 fn os_description() -> String {
     #[cfg(windows)]
     let v = std::env::var("OS").unwrap_or_default();
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     let v = std::env::consts::OS.to_string();
     v
 }
@@ -310,9 +329,9 @@ fn read_reg_value(subkey: &str, value: &str) -> String {
         .unwrap_or_else(|_| String::new())
 }
 
-/// macOS 没有注册表。这里的调用点（WebView2 版本、WinINET ProxyEnable、
-/// 系统区域 LocaleName）全是 Windows 专属信息，统一返回空串即可。
-#[cfg(not(windows))]
+/// macOS / Linux 没有注册表。这里的调用点（WebView2 版本、WinINET ProxyEnable）
+/// 全是 Windows 专属信息，统一返回空串即可。
+#[cfg(unix)]
 fn read_reg_value(_subkey: &str, _value: &str) -> String {
     String::new()
 }
@@ -862,7 +881,7 @@ fn active_window_title() -> String {
 /// 关键点：这是**公开 API，不需要辅助功能权限**（拿窗口标题才需要，所以这里只取 app 名）。
 /// 日记的「常用软件」时间线、小助手回答"你现在在用什么"用的正是 app 名，够用。
 /// Windows 那边是 GetForegroundWindow + GetWindowText，能拿到完整窗口标题。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn active_window_title() -> String {
     use objc2_app_kit::NSWorkspace;
@@ -872,6 +891,20 @@ fn active_window_title() -> String {
         .and_then(|app| app.localizedName())
         .map(|name| name.to_string())
         .unwrap_or_default()
+}
+
+/// 小助手主动问候：取当前前台应用名（Linux）。
+///
+/// Wayland 下**拿不到**前台应用：合成器不向普通客户端暴露"谁拥有焦点"。
+/// X11 时代可以读根窗口的 _NET_ACTIVE_WINDOW（EWMH 属性）再看进程名，
+/// 但 Wayland 没有对应机制：能替代的只有合成器私有接口（如 GNOME Shell 的 Eval）
+/// 或 wlr-foreign-toplevel-management 这类协议，前者绑死某个桌面环境、
+/// 后者要引入新依赖。所以这里如实返回空串 —— 日记的「常用软件」时间线在 Linux 上
+/// 缺这一段，小助手问"我在用什么"会得到空答案；其它功能不受影响（前端对空串有兜底）。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn active_window_title() -> String {
+    String::new()
 }
 
 /// 读取 updater 可用的系统代理 URL（只读，不修改系统代理，不记录凭据）。
@@ -913,7 +946,7 @@ fn get_idle_seconds() -> u64 {
 /// macOS 走 ioreg 读 IOHIDSystem 的 HIDIdleTime（"距上次输入"的纳秒数）。
 /// 这是唯一不需要辅助功能权限、也不用引 CoreGraphics 依赖的做法。
 /// 读不到就返回 0（等同于"刚刚有输入"，不会误触发久坐提醒）。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn get_idle_seconds() -> u64 {
     let out = match hidden_command("/usr/sbin/ioreg")
@@ -932,6 +965,66 @@ fn get_idle_seconds() -> u64 {
         let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
         if let Ok(ns) = digits.parse::<u64>() {
             return ns / 1_000_000_000;
+        }
+    }
+    0
+}
+
+/// 返回用户空闲秒数（鼠标键盘无输入的时间）。
+///
+/// Linux 走 D-Bus：Wayland 下没有 XScreenSaver 那种"查询空闲"的 X11 扩展，
+/// 桌面环境通过 D-Bus 暴露空闲时间，这是公开接口，且与 X11/Wayland 会话类型无关：
+///   1. GNOME：org.gnome.Mutter.IdleMonitor.GetIdleTime → 微秒（类型签名 t）
+///   2. ScreenSaver 规范：GetSessionIdleTime → 秒（类型签名 u），
+///      KDE 在 /ScreenSaver、GNOME 在 /org/gnome/ScreenSaver 各有一份实现。
+/// 用 busctl --user 调用（systemd 自带），不引入 zbus/dbus 依赖。
+/// 全都取不到就返回 0（等同于"刚刚有输入"，不会误触发久坐提醒）。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn get_idle_seconds() -> u64 {
+    /// 跑一条 busctl 方法调用，成功返回 stdout 文本。
+    fn busctl_call(service: &str, path: &str, iface: &str, method: &str) -> Option<String> {
+        let out = hidden_command("busctl")
+            .args(["--user", "call", service, path, iface, method])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// busctl 输出形如 "t 123456789"（类型签名 + 值）；取最后一个空白分隔的 token 当数值。
+    fn last_number(text: &str) -> Option<u64> {
+        text.split_whitespace().last()?.parse::<u64>().ok()
+    }
+
+    if let Some(micros) = busctl_call(
+        "org.gnome.Mutter.IdleMonitor",
+        "/org/gnome/Mutter/IdleMonitor/Core",
+        "org.gnome.Mutter.IdleMonitor",
+        "GetIdleTime",
+    )
+    .and_then(|t| last_number(&t))
+    {
+        return micros / 1_000_000;
+    }
+    for (service, path, iface) in [
+        (
+            "org.freedesktop.ScreenSaver",
+            "/ScreenSaver",
+            "org.freedesktop.ScreenSaver",
+        ),
+        (
+            "org.gnome.ScreenSaver",
+            "/org/gnome/ScreenSaver",
+            "org.gnome.ScreenSaver",
+        ),
+    ] {
+        if let Some(secs) =
+            busctl_call(service, path, iface, "GetSessionIdleTime").and_then(|t| last_number(&t))
+        {
+            return secs;
         }
     }
     0
@@ -1030,16 +1123,16 @@ fn get_api_key(app: AppHandle) -> Result<String, String> {
 
 /// macOS 上 API Key 存 Keychain（通用密码项），不落盘、也不写 localStorage。
 /// 服务名用应用的 bundle identifier，与 tauri.conf.json 的 identifier 对齐。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "com.wumiu.petra.apikey";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "petra";
 
 /// 存储 API Key 到 Keychain（-U 表示已存在就更新，避免堆出重复项）。
 ///
 /// 参数以数组传给 security，不经过 shell，key 里的特殊字符不会被展开；
 /// 全程不把 key 写进日志。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_api_key(api_key: String) -> Result<(), String> {
     let status = hidden_command("/usr/bin/security")
@@ -1067,7 +1160,7 @@ fn set_api_key(api_key: String) -> Result<(), String> {
 }
 
 /// 从 Keychain 读取 API Key（-w 只输出密码本身，不带其它字段）。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn get_api_key() -> Result<String, String> {
     let out = hidden_command("/usr/bin/security")
@@ -1085,6 +1178,139 @@ fn get_api_key() -> Result<String, String> {
         return Err("未设置 API Key".to_string());
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Linux 上 API Key 的两条存储路径：
+///   1. 桌面 Secret Service（secret-tool 命令行）—— GNOME Keyring / KWallet 提供，
+///      按用户登录密钥环加密，语义上最接近 Windows DPAPI / macOS Keychain；
+///   2. 退化到 ~/.config/petra/api_key（权限 600）—— 明文，只是"不给同机其它用户读"。
+///
+/// 为什么必须留退路：Secret Service 依赖桌面组件在运行，纯 Wayland 合成器 + 自建会话、
+/// SSH 里启动、或根本没装 keyring 时都不可用。这正是 Linux 与 Windows/macOS 的实质差别：
+/// 前两者有操作系统级、必然存在的每用户密钥保护（DPAPI 绑定登录凭据、Keychain 由
+/// securityd 托管），Linux 没有等价的统一保证，所以只能"能加密就加密，不能就 600 明文"，
+/// 并如实写进日志。
+#[cfg(target_os = "linux")]
+const SECRET_TOOL_SERVICE: &str = "petra";
+#[cfg(target_os = "linux")]
+const SECRET_TOOL_ACCOUNT: &str = "api_key";
+
+/// API Key 的降级落盘位置：$XDG_CONFIG_HOME/petra/api_key（默认 ~/.config/petra/api_key）。
+#[cfg(target_os = "linux")]
+fn linux_api_key_file() -> Result<std::path::PathBuf, String> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| "无法确定配置目录（HOME 未设置）".to_string())?
+            .join(".config"),
+    };
+    Ok(base.join("petra").join("api_key"))
+}
+
+/// 从 Secret Service 读密码：键不存在、keyring 没运行、secret-tool 没装都返回 None。
+#[cfg(target_os = "linux")]
+fn secret_tool_lookup() -> Option<String> {
+    let out = hidden_command("secret-tool")
+        .args([
+            "lookup",
+            "service",
+            SECRET_TOOL_SERVICE,
+            "username",
+            SECRET_TOOL_ACCOUNT,
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+/// 把密码写进 Secret Service：值走 stdin，不经过 shell，也不会出现在进程命令行里。
+#[cfg(target_os = "linux")]
+fn secret_tool_store(api_key: &str) -> bool {
+    let spawned = hidden_command("secret-tool")
+        .args([
+            "store",
+            "--label=Petra API Key",
+            "service",
+            SECRET_TOOL_SERVICE,
+            "username",
+            SECRET_TOOL_ACCOUNT,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        return false;
+    };
+    if let Some(mut si) = child.stdin.take() {
+        // 写完就 drop，关掉管道；否则 secret-tool 会一直等 EOF
+        let _ = si.write_all(api_key.as_bytes());
+    }
+    matches!(child.wait(), Ok(s) if s.success())
+}
+
+/// 存储 API Key（Linux）：优先 Secret Service，失败落 600 权限文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn set_api_key(api_key: String) -> Result<(), String> {
+    if secret_tool_store(&api_key) {
+        // 成功写进 keyring 时顺手清掉旧的降级文件，避免留下两个不一致的副本
+        if let Ok(path) = linux_api_key_file() {
+            let _ = std::fs::remove_file(&path);
+        }
+        log_line("set_api_key: 已写入 Secret Service");
+        return Ok(());
+    }
+    let path = linux_api_key_file()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // mode(0o600) 让文件从出现的第一刻起就只有本用户可读写，
+        // 避免"先创建、再 chmod"之间那段可被同机其它用户读到的窗口。
+        // 注意：文件已存在时 open 的 mode 不生效，所以下面再补一次 set_permissions。
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("写入 API Key 失败: {e}"))?;
+        f.write_all(api_key.as_bytes())
+            .map_err(|e| format!("写入 API Key 失败: {e}"))?;
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    log_line("set_api_key: Secret Service 不可用，已写入 ~/.config/petra/api_key（权限 600）");
+    Ok(())
+}
+
+/// 读取 API Key（Linux）：先 Secret Service，再降级文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn get_api_key() -> Result<String, String> {
+    if let Some(v) = secret_tool_lookup() {
+        return Ok(v);
+    }
+    let path = linux_api_key_file()?;
+    let v = std::fs::read_to_string(&path).map_err(|_| "未设置 API Key".to_string())?;
+    let v = v.trim().to_string();
+    if v.is_empty() {
+        return Err("未设置 API Key".to_string());
+    }
+    Ok(v)
 }
 
 /// 本次启动日志的起始偏移（setup 时记录 pet.log 现有大小，反馈只取本次启动后的日志）。
@@ -1315,10 +1541,14 @@ fn chrono_now() -> String {
 
 /// 桌面目录：Windows 是 %USERPROFILE%\Desktop，macOS/Linux 是 $HOME/Desktop。
 /// 取不到时退回临时目录，保证导出不会因为环境异常而失败。
+///
+/// Linux 理论上应读 XDG user-dirs 的 XDG_DESKTOP_DIR（桌面目录可能被本地化成
+/// "桌面"或其它名字），但那要多解析一个配置文件；导出功能只在桌面上放一份文件，
+/// 退回 $HOME/Desktop 的收益/成本比更好，且与 macOS 版行为一致。
 fn desktop_dir() -> std::path::PathBuf {
     #[cfg(windows)]
     let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     let home = std::env::var_os("HOME");
     home.map(std::path::PathBuf::from)
         .map(|p| p.join("Desktop"))
@@ -1394,7 +1624,7 @@ public class Vol {{ [DllImport("winmm.dll")] public static extern int waveOutSet
 
 /// 设置系统音量（0-100），或静音/取消静音。macOS 走 osascript 的 set volume。
 /// macOS 的「音量」和「是否静音」是两个独立开关，所以静音/取消静音要分别设置。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
     let target = match mute {
@@ -1418,6 +1648,67 @@ fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
         } else {
             format!("调节音量失败: {err}")
         });
+    }
+    match mute {
+        Some(true) => Ok("已静音".into()),
+        Some(false) => Ok(format!("已恢复音量 {target}%")),
+        None => Ok(format!("音量已设为 {target}%")),
+    }
+}
+
+/// 设置系统音量（0-100），或静音/取消静音（Linux）。
+///
+/// 桌面音频栈有三种常见形态，按覆盖面从高到低探测，第一个"能起来且退出码为 0"的生效：
+///   1. wpctl（PipeWire，WirePlumber 提供）—— 现代发行版默认；
+///   2. pactl（PulseAudio / pipewire-pulse）—— 兼容层与老系统；
+///   3. amixer（ALSA）—— 没有声音服务器、纯 ALSA 的环境。
+/// 不引入 libpulse/libpipewire 链接依赖：这三个命令行工具覆盖面已经够，
+/// 也不需要目标机上装开发头文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn set_volume(level: Option<u8>, mute: Option<bool>) -> Result<String, String> {
+    let target = match mute {
+        Some(true) => 0u8,                           // 静音
+        Some(false) => level.unwrap_or(50).min(100), // 取消静音：恢复到 level
+        None => level.unwrap_or(50).min(100),        // 纯设音量
+    };
+
+    /// 跑一条命令，返回是否成功（起不来 = 这个后端不存在）。
+    fn run(program: &str, args: &[&str]) -> bool {
+        hidden_command(program)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    let pct = format!("{target}%");
+    let pct = pct.as_str();
+    let applied = match mute {
+        // 静音只动 mute 开关，不覆盖用户原来的音量（与 Windows / macOS 版语义一致）
+        Some(true) => {
+            run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "1"])
+                || run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "1"])
+                || run("amixer", &["-q", "sset", "Master", "mute"])
+        }
+        // 取消静音要先解 mute 再恢复音量，两个都成功才算这个后端生效
+        Some(false) => {
+            (run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+                && run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", pct]))
+                || (run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "0"])
+                    && run("pactl", &["set-sink-volume", "@DEFAULT_SINK@", pct]))
+                || (run("amixer", &["-q", "sset", "Master", "unmute"])
+                    && run("amixer", &["-q", "sset", "Master", pct]))
+        }
+        None => {
+            run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", pct])
+                || run("pactl", &["set-sink-volume", "@DEFAULT_SINK@", pct])
+                || run("amixer", &["-q", "sset", "Master", pct])
+        }
+    };
+
+    if !applied {
+        return Err("调节音量失败（wpctl / pactl / amixer 都不可用）".into());
     }
     match mute {
         Some(true) => Ok("已静音".into()),
@@ -1471,7 +1762,7 @@ fn send_notification(title: String, body: String) {
 ///
 /// 与 Windows 版刻意绕开系统 Toast 的取舍不同：macOS 上通知中心是唯一入口，
 /// 没有等价的免打扰旁路，用户可在「专注模式」里自行屏蔽。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn send_notification(title: String, body: String) {
     // 先转义反斜杠再转义双引号，避免 AppleScript 字符串被截断；
@@ -1488,6 +1779,29 @@ fn send_notification(title: String, body: String) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+    crate::log_line(&format!("send_notification: {title} | {body}"));
+}
+
+/// 发送系统通知（Linux）：notify-send → org.freedesktop.Notifications。
+///
+/// 与 Windows 版刻意绕开系统 Toast 不同：Linux 上通知守护进程是唯一入口，
+/// 是否显示由桌面环境的"勿扰"决定。参数以数组传给 notify-send，不经过 shell；
+/// 标题/正文前的 -- 防止以 - 开头的内容被当成选项。
+/// 失败只记日志不向上报错：通知是锦上添花，调用方不该为此处理错误（与 macOS 版一致）。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn send_notification(title: String, body: String) {
+    if let Err(e) = hidden_command("notify-send")
+        .arg("--")
+        .arg(&title)
+        .arg(&body)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        log_verbose(&format!("send_notification: notify-send 不可用: {e}"));
+    }
     crate::log_line(&format!("send_notification: {title} | {body}"));
 }
 
@@ -1637,7 +1951,7 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
 
 /// 系统区域（形如 zh-CN）：macOS 从 AppleLocale 读，读不到退回 LANG 环境变量。
 /// 用来判断 wttr.in 按出口 IP 定位到的国家与用户所在区域是否一致。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn system_locale() -> String {
     if let Ok(out) = hidden_command("/usr/bin/defaults")
         .args(["read", "-g", "AppleLocale"])
@@ -1658,10 +1972,34 @@ fn system_locale() -> String {
         .replace('_', "-")
 }
 
+/// 系统区域（形如 zh-CN）：Linux 按 GLib/GTK 的优先级读 LC_ALL → LC_MESSAGES → LANG。
+/// macOS 的 AppleLocale 在 Linux 上不存在，不能沿用那套（/usr/bin/defaults 也没有）。
+/// 用来判断 wttr.in 按出口 IP 定位到的国家与用户所在区域是否一致。
+#[cfg(target_os = "linux")]
+fn system_locale() -> String {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        let value = std::env::var(key).unwrap_or_default();
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        // 形如 zh_CN.UTF-8 或 sr_RS@latin → 取语言_地区并统一成 zh-CN
+        return value
+            .split('@')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .replace('_', "-");
+    }
+    String::new()
+}
+
 /// 从 wttr.in 的 j1 JSON 里抽出与 PowerShell 版逐字段一致的
 /// 「区域|天气描述|温度|最高|最低|降雨概率|国家」。
 /// 任何字段缺失都算失败（返回 None），等价于 PS 脚本里 ConvertFrom-Json 抛错。
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn parse_weather_json(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     let cur = v.get("current_condition")?.get(0)?;
@@ -1678,16 +2016,27 @@ fn parse_weather_json(body: &str) -> Option<String> {
     Some(format!("{name}|{desc}|{temp}|{max}|{min}|{rain}|{country}"))
 }
 
+/// curl 的可执行路径：macOS 自带 /usr/bin/curl；Linux 上 curl 可能装在
+/// /usr/local/bin 或 /bin（发行版差异），交给 PATH 解析更稳。
+#[cfg(target_os = "macos")]
+fn curl_program() -> &'static str {
+    "/usr/bin/curl"
+}
+#[cfg(target_os = "linux")]
+fn curl_program() -> &'static str {
+    "curl"
+}
+
 /// 取天气：优先用户指定的城市，否则按 IP 定位。
 ///
-/// macOS 版用系统自带的 curl 取 wttr.in 的 j1 JSON（Windows 版是 PowerShell 的
+/// macOS / Linux 共用：用 curl 取 wttr.in 的 j1 JSON（Windows 版是 PowerShell 的
 /// Invoke-WebRequest），JSON 用 serde_json 解析（已在依赖里）。
 /// 输出格式、以及「直连优先、失败再用系统代理」的取舍都和 Windows 版保持一致，
 /// 前端无需改动。
 ///
-/// 区别：macOS 上不查「位置 API」（那要 CoreLocation 权限弹窗），
+/// 区别：不查「位置 API」（macOS 要走 CoreLocation 权限弹窗、Linux 没有统一接口），
 /// 所以没有城市时直接用 IP 定位；定位国家与系统区域不符时照常打「定位可疑」标记。
-#[cfg(not(windows))]
+#[cfg(unix)]
 #[tauri::command]
 async fn get_weather(city: Option<String>) -> Result<String, String> {
     let city_arg = city.unwrap_or_default();
@@ -1699,7 +2048,7 @@ async fn get_weather(city: Option<String>) -> Result<String, String> {
         };
 
         let run_pass = |use_proxy: bool| -> Result<String, String> {
-            let mut cmd = hidden_command("/usr/bin/curl");
+            let mut cmd = hidden_command(curl_program());
             // --fail：HTTP 4xx/5xx 直接当失败，避免把错误页当成天气 JSON
             cmd.args(["--silent", "--show-error", "--fail", "--max-time", "10"]);
             if use_proxy {
@@ -2143,24 +2492,18 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
     .map_err(|e| format!("歌词任务异常: {e}"))?
 }
 
-/// 在线获取歌词：macOS 暂未实现。
+/// 在线获取歌词：macOS / Linux 共用，直接查 LRCLIB（https://lrclib.net）。
 ///
-/// Windows 版的取词链是一个 140 行的 PowerShell 脚本（网易云 / QQ音乐 /
-/// 酷狗 / LRCLIB）。迁到 mac 上有两条路：用 curl + serde_json 重写整条链
-/// （四个来源的响应结构各不相同，工作量与回归风险都不小），
-/// 或者要求用户自装第三方库。本轮先如实返回「暂不支持」——
-/// 前端对 Err 本来就有兜底（不显示歌词气泡），不会卡住其它功能。
-/// macOS 版在线歌词：直接查 LRCLIB（https://lrclib.net）。
-///
-/// 为什么这样最划算：前端 `src/music/Lyrics.ts` 本来就是按 **LRCLIB 的 JSON 结构**解析的
+/// 为什么这样最划算：前端 src/music/Lyrics.ts 本来就是按 **LRCLIB 的 JSON 结构**解析的
 /// （syncedLyrics / instrumental / trackName / duration），Windows 的 PowerShell 链路也是把
-/// 四个来源统一成这个格式返回。所以 mac 只要把 LRCLIB 的原始响应原样返回，
+/// 四个来源统一成这个格式返回。所以这里只要把 LRCLIB 的原始响应原样返回，
 /// 取最佳匹配、解析 LRC、本地缓存与负缓存这些逻辑一行都不用动。
+/// Linux 因此直接白拿歌词功能，不必为 MPRIS 之外再写一套取词链。
 ///
-/// 已知差别：LRCLIB 不提供译文，所以 mac 上「歌词翻译」拿不到中文翻译
-/// （Windows 是额外合并了网易云的 tlyric）；另外查不到时返回空数组，
-/// 前端会记成 miss（负缓存），不会反复打接口。
-#[cfg(not(windows))]
+/// 已知差别：LRCLIB 不提供译文，所以 mac / Linux 上「歌词翻译」拿不到中文翻译
+/// （Windows 额外合并了网易云的 tlyric，前端在非 Windows 平台隐藏了该开关）；
+/// 另外查不到时返回空数组，前端会记成 miss（负缓存），不会反复打接口。
+#[cfg(unix)]
 #[tauri::command]
 async fn fetch_lyrics(
     title: String,
@@ -2245,8 +2588,8 @@ fn list_installed_apps() -> String {
     format!("开始菜单里可启动的软件共 {total} 个{tail}：{}", names.join("、"))
 }
 
-/// 列出 /Applications 等目录里可启动的应用（macOS）。
-#[cfg(not(windows))]
+/// 列出可启动的应用（macOS 扫 /Applications，Linux 扫 freedesktop 的 .desktop）。
+#[cfg(unix)]
 #[tauri::command]
 fn list_installed_apps() -> String {
     let mut names = launch::list_applications();
@@ -2276,7 +2619,7 @@ fn open_path(path: String) -> Result<String, String> {
 
 /// 用系统默认程序打开文件或文件夹（macOS 用 open，等价于 Finder 里双击）
 /// 路径必须存在，避免误开未知目标；参数以数组传给 open，不经过 shell。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn open_path(path: String) -> Result<String, String> {
     let p = std::path::Path::new(&path);
@@ -2284,6 +2627,22 @@ fn open_path(path: String) -> Result<String, String> {
         return Err(format!("路径不存在：{path}"));
     }
     hidden_command("/usr/bin/open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("打开失败: {e}"))?;
+    Ok(format!("已打开 {path}"))
+}
+
+/// 用系统默认程序打开文件或文件夹（Linux 用 xdg-open，等价于文件管理器里双击）。
+/// 路径必须存在，避免误开未知目标；参数以数组传给 xdg-open，不经过 shell。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn open_path(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("路径不存在：{path}"));
+    }
+    hidden_command("xdg-open")
         .arg(&path)
         .spawn()
         .map_err(|e| format!("打开失败: {e}"))?;
@@ -2305,7 +2664,7 @@ fn lock_screen() -> Result<String, String> {
 ///
 /// 首选 **CGSession -suspend**：macOS 自带的锁屏入口，**不需要辅助功能权限**。
 /// 失败时才退回 System Events 发 ⌃⌘Q（那条要辅助功能权限，但作为兜底总比直接失败好）。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn lock_screen() -> Result<String, String> {
     const CGSESSION: &str =
@@ -2328,6 +2687,43 @@ fn lock_screen() -> Result<String, String> {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         Err(if err.is_empty() {
             "锁屏失败".to_string()
+        } else {
+            format!("锁屏失败: {err}")
+        })
+    }
+}
+
+/// 锁定屏幕（Linux）。
+///
+/// 首选 loginctl lock-session：这是 logind 的公开接口，由桌面环境自己决定怎么锁，
+/// 不需要提权，也不绑死 GNOME / KDE 任何一家。
+/// 环境里没有 systemd-logind（非 systemd 发行版、容器）时，退回 ScreenSaver 规范的
+/// org.freedesktop.ScreenSaver.Lock —— 同样是公开 D-Bus 接口。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn lock_screen() -> Result<String, String> {
+    match hidden_command("loginctl").arg("lock-session").status() {
+        Ok(s) if s.success() => return Ok("已锁屏".to_string()),
+        Ok(s) => log_verbose(&format!("[lock] loginctl lock-session 退出码 {s}，改用 D-Bus")),
+        Err(e) => log_verbose(&format!("[lock] loginctl 不可用，改用 D-Bus: {e}")),
+    }
+    let out = hidden_command("busctl")
+        .args([
+            "--user",
+            "call",
+            "org.freedesktop.ScreenSaver",
+            "/ScreenSaver",
+            "org.freedesktop.ScreenSaver",
+            "Lock",
+        ])
+        .output()
+        .map_err(|e| format!("锁屏失败: {e}"))?;
+    if out.status.success() {
+        Ok("已锁屏".to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() {
+            "锁屏失败（loginctl 与 D-Bus 都不可用）".to_string()
         } else {
             format!("锁屏失败: {err}")
         })
@@ -2370,9 +2766,9 @@ fn cancel_shutdown() -> Result<String, String> {
     }
 }
 
-/// mac 上"待执行的关机"用代数标记：每次设定/取消都自增，
+/// macOS / Linux 上"待执行的关机"用代数标记：每次设定/取消都自增，
 /// 定时线程醒来时代数变了就放弃执行（比 Windows 的 shutdown /a 更直接）。
-#[cfg(not(windows))]
+#[cfg(unix)]
 static SHUTDOWN_GENERATION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// 定时关机（macOS）：**应用内定时器 + AppleScript**。
@@ -2381,7 +2777,7 @@ static SHUTDOWN_GENERATION: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 /// 改成应用内计时，到点让 System Events 执行"关机"（免 root、免权限）。
 /// 代价：**要求 Petra 在到点前保持运行**（Windows 的 shutdown /t 是系统级的，
 /// 关掉应用也会执行），这点如实写进提示语里，不假装等价。
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 #[tauri::command]
 fn schedule_shutdown(minutes: u32) -> Result<String, String> {
     use std::sync::atomic::Ordering;
@@ -2413,8 +2809,66 @@ fn schedule_shutdown(minutes: u32) -> Result<String, String> {
     ))
 }
 
-/// 取消定时关机（macOS）：自增代数即让定时线程放弃。
-#[cfg(not(windows))]
+/// 定时关机（Linux）：**应用内定时器 + systemctl poweroff**。
+///
+/// 与 macOS 版同样不用 shutdown(8)：它要 root，会弹认证框。
+/// 到点先调 systemctl poweroff（走 logind，活跃会话用户通常被 polkit 允许关机），
+/// 失败再退到 org.freedesktop.login1.Manager.PowerOff 这条公开 D-Bus 方法
+/// （b true = 允许 polkit 交互）。
+/// 代价与 macOS 版相同：**要求 Petra 在到点前保持运行**（Windows 的 shutdown /t
+/// 是系统级的，关掉应用也会执行），这点如实写进提示语，不假装等价。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn schedule_shutdown(minutes: u32) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+
+    if minutes == 0 || minutes > 1440 {
+        return Err("时间范围：1~1440 分钟".into());
+    }
+    let generation = SHUTDOWN_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let delay = std::time::Duration::from_secs(minutes as u64 * 60);
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        // 期间用户取消过（代数变了）就不再执行
+        if SHUTDOWN_GENERATION.load(Ordering::SeqCst) != generation {
+            log_line("schedule_shutdown: 已被取消，不执行");
+            return;
+        }
+        log_line("schedule_shutdown: 到点，执行关机");
+        match hidden_command("systemctl").arg("poweroff").status() {
+            Ok(s) if s.success() => {
+                log_line("schedule_shutdown: 关机指令已发出");
+                return;
+            }
+            Ok(s) => log_line(&format!("schedule_shutdown: systemctl 退出码 {s}，改用 D-Bus")),
+            Err(e) => log_line(&format!("schedule_shutdown: systemctl 不可用，改用 D-Bus: {e}")),
+        }
+        match hidden_command("busctl")
+            .args([
+                "call",
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PowerOff",
+                "b",
+                "true",
+            ])
+            .status()
+        {
+            Ok(s) if s.success() => log_line("schedule_shutdown: 关机指令已发出（D-Bus）"),
+            Ok(s) => log_line(&format!("schedule_shutdown: D-Bus PowerOff 退出码 {s}")),
+            Err(e) => log_line(&format!("schedule_shutdown: D-Bus PowerOff 失败 {e}")),
+        }
+    });
+
+    log_line(&format!("schedule_shutdown: {minutes} 分钟后关机（应用内定时器）"));
+    Ok(format!(
+        "已设定 {minutes} 分钟后关机（需要 Petra 保持运行），说「取消关机」可以取消"
+    ))
+}
+
+/// 取消定时关机（macOS / Linux）：自增代数即让定时线程放弃。
+#[cfg(unix)]
 #[tauri::command]
 fn cancel_shutdown() -> Result<String, String> {
     SHUTDOWN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -2472,12 +2926,13 @@ fn validate_shell_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 命令安全校验（macOS）：白名单换成 macOS 上常见的只读查询命令。
-/// 注入防护与 Windows 版思路一致：控制字符、% ^ ; 与链式/重定向/反引号一律拦截。
+/// 命令安全校验（macOS / Linux）：白名单是这两个系统上常见的只读查询命令。
+/// 注入防护与 Windows 版思路一致：控制字符、% ^ ; 与链式/重定向/变量展开/子 shell 一律拦截。
 ///
 /// 白名单刻意收得很窄：凡是既能读又能改的（ifconfig / networksetup / pmset /
 /// sysctl / launchctl / route / find -exec）都不放进来，避免"只读命令"被用成写命令。
-#[cfg(not(windows))]
+/// 列表里少数 macOS 专属项（sw_vers）在 Linux 上只是"允许但执行会失败"，不放宽也不收紧。
+#[cfg(unix)]
 fn validate_shell_command(command: &str) -> Result<(), String> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -2545,8 +3000,8 @@ fn run_shell(command: String) -> Result<String, String> {
         c.args(["/C", &full]);
         c
     };
-    // macOS：交给 /bin/sh -c（白名单与注入防护已在 validate_shell_command 里做过）
-    #[cfg(not(windows))]
+    // macOS / Linux：交给 /bin/sh -c（白名单与注入防护已在 validate_shell_command 里做过）
+    #[cfg(unix)]
     let mut cmd = {
         let mut c = hidden_command("/bin/sh");
         c.args(["-c", &command]);
@@ -3070,9 +3525,9 @@ pub fn run() {
             ));
             log_environment();
 
-            // macOS：work_area_at 这个命令只有坐标、没有窗口句柄，需要一个
+            // macOS / Linux：work_area_at 这个命令只有坐标、没有窗口句柄，需要一个
             // AppHandle 才能查显示器工作区，这里先登记一份。
-            #[cfg(not(windows))]
+            #[cfg(unix)]
             screen::remember_app(app.handle().clone());
 
             let handle = app.handle().clone();

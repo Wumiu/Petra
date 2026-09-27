@@ -1,0 +1,84 @@
+# Linux 构建（手动触发，只产出构建产物，不发 Release、不改 latest.json、不动版本号）
+#
+# 为什么不并进 release.yml：Windows 的发版流程已经稳定，Linux 还在适配阶段。
+# 这里只负责"能不能在 Linux 上编出来 / 打成包"，产物放在 Actions artifacts 里手工下载试用。
+#
+# 目标会话是 Wayland：本 workflow 只覆盖"编译 + 打包"，
+# 输入区域、窗口绝对定位、全局光标这三件 Wayland 运行时问题见
+# src-tauri/src/screen_linux.rs 文件头的 TODO。
+#
+# 不签名 / 不公证：和 macOS 一样只做无签名产物。
+name: Build Linux (Wayland, unsigned)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      # createUpdaterArtifacts=true 需要签名密钥才能产出更新包，缺失会直接构建失败
+      # （与 build-macos.yml 同样的处理；这里只上传 deb/AppImage，不发 Release、不写 latest.json）
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 安装 Linux 系统依赖
+        # libssl-dev + pkg-config 是必须的：在线歌词用的 reqwest(native-tls) 在 Linux 上
+        # 链接系统 OpenSSL，缺了会在 openssl-sys 的 build script 处直接失败。
+        # libxdo-dev 供全局快捷键（global-hotkey）在 X11 下链接。
+        # libfuse2：AppImage 打包链里用到的 linuxdeploy 是自挂载 AppImage，Ubuntu 22.04 默认没有 FUSE2。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libssl-dev pkg-config libfuse2 \
+            build-essential curl wget file libxdo-dev
+
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: Rust 单测（仅信息，不阻塞构建）
+        continue-on-error: true
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: 构建 Linux 包（deb + AppImage）
+        run: npx tauri build --bundles deb,appimage
+
+      - name: 列出产物
+        run: |
+          find src-tauri/target -maxdepth 6 -type f \( -name "*.deb" -o -name "*.AppImage" \) -print
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: petra-linux
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: warn
+          retention-days: 14

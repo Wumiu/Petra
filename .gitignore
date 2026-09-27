@@ -59,3 +59,4 @@ release/*
 # Tauri updater signing key (NEVER commit)
 .tauri/
 *.key
+Petra_0.2.6_aarch64.dmg
