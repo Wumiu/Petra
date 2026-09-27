@@ -103,7 +103,7 @@ export class BehaviorEngine {
   }
 
   /**
-   * 待机模式开关：沉到就近屏幕边缘（窗口在上半→顶部倒挂，下半→底部），露出 200px。
+   * 待机模式开关：始终沉到屏幕底部边缘（不倒挂、不贴顶），露出头部。
    * 进入流程先冻结漫游、计算目标位置、清空 mover 目标，最后才置 idle；
    * 置 idle 后 main 会立刻 setPosition，此时才允许 syncModelOffset 把 modelOffset 归零，
    * 避免窗口尚未移动、模型先因 offset 归零而瞬移。
@@ -115,12 +115,13 @@ export class BehaviorEngine {
       this.fleeUntil = 0;
       this.suspendUntil = performance.now() + 3600_000; // 1 小时防漫游
       await this.pollArea();
-      // 就近边缘：以窗口中心判断（用户直觉：桌宠在屏幕哪半就往哪边沉）
+      // 固定贴底待机：无论桌宠当前在屏幕哪个位置，进入待机一律沉到屏幕底部边缘，
+      // 不再按窗口中心就近选择上半屏倒挂贴顶。idleTop 恒为 false，
+      // 渲染层（Live2DController / Rigged2DView）因此不会把模型旋转 180°。
       const a = this.area ?? { left: 0, top: 0, width: 1920, height: 1080 };
-      const midY = a.top + a.height / 2;
-      this.idleTop = this.pos.y + this.win / 2 < midY;
+      this.idleTop = false;
       void invoke("debug_mark", {
-        msg: `idle:posY=${Math.round(this.pos.y)} mid=${Math.round(midY)} top=${this.idleTop}`,
+        msg: `idle:bottom-only posY=${Math.round(this.pos.y)}`,
       }).catch(() => {});
 
       // 水平位置：进入待机后 modelOffset 会归零，因此以“模型当前屏幕位置”反推窗口 x，

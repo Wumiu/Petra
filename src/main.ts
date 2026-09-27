@@ -24,8 +24,9 @@ import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
-import { openAssistant } from "./assistant/AssistantPanel";
+import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
+import { repositionLyricBubble } from "./music/LyricBubble";
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
@@ -373,6 +374,10 @@ function positionFloatingUi(
 ) {
   /** 小助手气泡占用的高度（歌词气泡要叠到它上方，避免互相遮挡） */
   let bubblesHeight = 0;
+  // 对话记录面板打开时：对话气泡与歌词气泡一律贴到面板正下方，不遮挡面板内容。
+  // 这里是每帧定位的权威入口（positionBubbles/positionBox 只在新气泡出现时跑一次，会被本函数覆盖）。
+  const chatPanel = document.getElementById("chat-history-panel");
+  const chatRect = chatPanel && chatPanel.isConnected ? chatPanel.getBoundingClientRect() : null;
   if (toasts && toasts.children.length > 0) {
     // bottom 是相对窗口底部的距离：可见范围 [innerHeight - vr.bottom, innerHeight - vr.top]
     const minBottom = window.innerHeight - vr.bottom + 8;
@@ -404,6 +409,14 @@ function positionFloatingUi(
     let top = mr.top - bh - 12; // 模型上方
     if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
     if (top + bh > vr.bottom) top = Math.max(vr.top, vr.bottom - bh - 4); // 仍放不下 → 钳制
+    if (chatRect) {
+      // 对话记录面板打开：气泡贴面板正下方，水平居中于面板，绝不遮挡面板
+      const pcx = chatRect.left + chatRect.width / 2;
+      cx = Math.max(vr.left + bw / 2 + 4, Math.min(pcx, vr.right - bw / 2 - 4));
+      top = chatRect.bottom + 8;
+      if (top + bh > vr.bottom - 4) top = chatRect.top - bh - 8; // 下方不够退上方
+      top = Math.max(vr.top + 4, Math.min(top, vr.bottom - bh - 4));
+    }
     bubbles.style.left = `${Math.round(cx)}px`;
     bubbles.style.top = `${Math.round(top)}px`;
     bubbles.style.bottom = "auto";
@@ -419,7 +432,7 @@ function positionFloatingUi(
     const idealCx = mr.left + mr.width / 2;
     const minCx = vr.left + lw / 2 + 4;
     const maxCx = vr.right - lw / 2 - 4;
-    const cx = minCx <= maxCx ? Math.max(minCx, Math.min(idealCx, maxCx)) : (vr.left + vr.right) / 2;
+    let cx = minCx <= maxCx ? Math.max(minCx, Math.min(idealCx, maxCx)) : (vr.left + vr.right) / 2;
     const left = cx - lw / 2;
     // 动作试玩面板打开时，歌词气泡必须避开它（不能压住面板）
     const actPanel = document.getElementById("action-debug");
@@ -439,6 +452,14 @@ function positionFloatingUi(
       if (inView(left, t) && !hitPanel(left, t)) { top = t; break; }
     }
     if (Number.isNaN(top)) top = Math.max(vr.top + 8, Math.min(vr.bottom - lh - 8, candTops[candTops.length - 1]));
+    if (chatRect) {
+      // 对话记录面板打开：歌词气泡贴面板正下方，绝不遮挡面板
+      const pcx = chatRect.left + chatRect.width / 2;
+      cx = Math.max(vr.left + lw / 2 + 4, Math.min(pcx, vr.right - lw / 2 - 4));
+      top = chatRect.bottom + 8;
+      if (top + lh > vr.bottom - 4) top = chatRect.top - lh - 8;
+      top = Math.max(vr.top + 4, Math.min(top, vr.bottom - lh - 4));
+    }
     lyric.style.left = `${Math.round(cx)}px`;
     lyric.style.top = `${Math.round(top)}px`;
     lyric.style.bottom = "auto";
@@ -1247,6 +1268,9 @@ function showAnnouncement(title: string, lines: string[], version: string) {
 
   document.body.appendChild(panel);
   positionPanelNearModel(panel);
+  // 对话记录面板打开后，让歌词/对话气泡贴到面板下方，不遮挡面板内容
+  repositionLyricBubble();
+  repositionAssistantBubbles();
 }
 
   // ---------- 更新公告（模型加载完成后弹出） ----------
@@ -3082,12 +3106,15 @@ function toggleChatHistory() {
   const closeBtn = document.createElement("button");
   closeBtn.className = "as-btn";
   closeBtn.textContent = "关闭";
-  closeBtn.addEventListener("click", () => panel.remove());
+  closeBtn.addEventListener("click", () => { panel.remove(); repositionLyricBubble(); repositionAssistantBubbles(); });
   btns.appendChild(closeBtn);
   panel.appendChild(btns);
 
   document.body.appendChild(panel);
   positionPanelNearModel(panel);
+  // 对话记录面板打开后，让歌词/对话气泡贴到面板下方，不遮挡面板内容
+  repositionLyricBubble();
+  repositionAssistantBubbles();
   // 限高：超出就在列表里滚动。之前 CSS 写成 max-height:none + overflow:visible，
   // 列表一长整块溢出到面板外面，最下方（连同关闭按钮）看不到。
   const vr = getWindowVisibleRect();
@@ -3099,6 +3126,8 @@ function toggleChatHistory() {
       if (!panel.contains(e.target as Node)) {
         panel.remove();
         document.removeEventListener("pointerdown", close);
+        repositionLyricBubble();
+        repositionAssistantBubbles();
       }
     };
     document.addEventListener("pointerdown", close);
