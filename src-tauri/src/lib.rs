@@ -584,6 +584,32 @@ fn read_psd(app: AppHandle, name: String) -> Result<Vec<u8>, String> {
     std::fs::read(dir.join(&file_name)).map_err(|e| e.to_string())
 }
 
+/// 聊天历史文件路径：app_data_dir/chat-history.json
+/// 放在用户数据目录（而非软件安装目录），卸载/重装后仍保留。
+fn chat_history_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("chat-history.json"))
+}
+
+/// 保存聊天历史（前端传入 JSON 字符串，整体覆盖写）。
+#[tauri::command]
+fn save_chat_history(app: AppHandle, content: String) -> Result<(), String> {
+    let p = chat_history_path(&app)?;
+    std::fs::write(&p, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 读取聊天历史；文件不存在时返回空字符串（首次运行）。
+#[tauri::command]
+fn load_chat_history(app: AppHandle) -> Result<String, String> {
+    let p = chat_history_path(&app)?;
+    if !p.exists() {
+        return Ok(String::new());
+    }
+    std::fs::read_to_string(&p).map_err(|e| e.to_string())
+}
+
 /// 读取内置模型 manifest.json（多路径尝试，适配便携版和安装版）
 #[tauri::command]
 fn read_model_manifest(app: AppHandle) -> Result<String, String> {
@@ -3523,6 +3549,7 @@ pub fn run() {
             set_interacting, set_menu_open, set_window_pos_size,
             set_volume, send_notification, get_weather, fetch_lyrics,
             list_installed_apps, open_path, lock_screen,
+            save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,
             register_assistant_shortcut, unregister_assistant_shortcut,
         ])
