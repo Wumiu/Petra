@@ -107,9 +107,20 @@ function saveMemory() {
     /* 忽略 */
   }
 }
-function loadHistory() {
+async function loadHistory() {
   try {
-    const h = JSON.parse(localStorage.getItem(HIST_KEY) || "[]");
+    // 从用户数据目录读（app_data_dir/chat-history.json），卸载重装后仍保留
+    let raw = await invoke<string>("load_chat_history");
+    // 一次性迁移：老版本历史存在 localStorage，若文件里还没有，把 localStorage 的搬过来并写文件
+    if (!raw) {
+      const legacy = localStorage.getItem(HIST_KEY);
+      if (legacy) {
+        raw = legacy;
+        void invoke("save_chat_history", { content: legacy }).catch(() => {});
+        localStorage.removeItem(HIST_KEY);
+      }
+    }
+    const h = JSON.parse(raw || "[]");
     if (Array.isArray(h)) {
       // 校验清理：移除孤立 tool 消息 + 不完整的 tool_calls 序列（防持久化坏数据触发 400）
       const cleaned: ChatMessage[] = [];
@@ -141,18 +152,15 @@ function loadHistory() {
           i++;
         }
       }
-      history = cleaned.slice(-100);
+      history = cleaned; // 全量保留，不截断
     }
   } catch {
     history = [];
   }
 }
 function saveHistory() {
-  try {
-    localStorage.setItem(HIST_KEY, JSON.stringify(history.slice(-100)));
-  } catch {
-    /* 忽略 */
-  }
+  // 整体覆盖写到 app_data_dir/chat-history.json；fire-and-forget，失败不阻塞对话
+  void invoke("save_chat_history", { content: JSON.stringify(history) }).catch(() => {});
 }
 
 function ensureInput() {
@@ -364,11 +372,11 @@ function trimBubbles() {
   positionBubbles();
 }
 
-export function openAssistant(modelRect?: { left: number; top: number; right: number; bottom: number }) {
+export async function openAssistant(modelRect?: { left: number; top: number; right: number; bottom: number }) {
   ensureInput();
   ensureBubbles();
   loadMemory();
-  loadHistory();
+  await loadHistory();
   inputBar!.classList.remove("hidden");
   // 定位到模型（绿框）附近：默认放底部，放不下翻到上方；始终钳制在窗口可见区内（贴边自适应）
   if (modelRect) {
@@ -452,7 +460,7 @@ export function repositionAssistantBubbles(): void {
 export function clearHistory() {
   history = [];
   try {
-    localStorage.removeItem(HIST_KEY);
+    void invoke("save_chat_history", { content: "[]" }).catch(() => {});
   } catch {
     /* 忽略 */
   }

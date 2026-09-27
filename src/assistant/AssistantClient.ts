@@ -386,8 +386,8 @@ function buildMessages(
   extraContext = "",
   systemOverride = "",
 ): ChatMessage[] {
-  const MAX_MSGS = 60;
-  const MAX_CHARS = 15000;
+  const MAX_MSGS = 120;
+  const MAX_CHARS = 30000;
   let msgs = history.slice(-MAX_MSGS);
   let total = msgs.reduce((s, m) => s + (m.content?.length ?? 0), 0);
   while (msgs.length > 2 && total > MAX_CHARS) {
