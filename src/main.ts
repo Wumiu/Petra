@@ -2141,7 +2141,7 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "website",
       label: "官网",
-      onPick: () => void invoke("open_url", { url: "https://wumiu.github.io/Petra/" }),
+      onPick: () => void invoke("open_url", { url: "https://petra.xin/" }),
     },
     {
       id: "hide",
@@ -3410,7 +3410,7 @@ function openFeedbackInput() {
     const desc = document.createElement("div");
     desc.className = "mp-hint";
     desc.textContent =
-      "告诉我们遇到了什么问题，会自动附上本次启动的运行日志。优先走邮件；邮件通道不可用时导出到桌面，也可以直接「复制」贴给我。";
+      "告诉我们遇到了什么问题，会自动附上本次启动的运行日志。提交后直达飞书反馈群；网络发不出去时会导出到桌面，也可以直接「复制」贴给我。";
     host.appendChild(desc);
 
     const ta = document.createElement("textarea");
@@ -3480,8 +3480,8 @@ async function doSendFeedback(message: string) {
     toast(msg);
     return;
   } catch (e) {
-    // 邮件发不出去（最常见：邮箱授权码失效，服务器回 535）：说清原因，再走桌面导出
-    toast(`邮件通道不可用：${e}`, "warn");
+    // 飞书推送失败（网络/代理问题）：说清原因，再走桌面导出
+    toast(`飞书推送不可用：${e}，已改为导出桌面`, "warn");
   }
   try {
     const path = await invoke<string>("export_feedback", { message });
