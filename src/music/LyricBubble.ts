@@ -20,6 +20,34 @@ function ensureBox(): HTMLElement {
   return box;
 }
 
+/**
+ * 歌词气泡定位：默认由 CSS 固定在左上角（left:12px; top:40px）。
+ * 但「对话记录」面板（#chat-history-panel）打开时，面板可能弹在左上角区域，
+ * 歌词气泡必须挪到面板正下方，绝不遮挡面板内容；下方放不下则退到面板上方。
+ */
+function positionBox(): void {
+  if (!box || !box.isConnected) return;
+  const historyPanel = document.getElementById("chat-history-panel") as HTMLElement | null;
+  if (historyPanel && historyPanel.isConnected) {
+    const pr = historyPanel.getBoundingClientRect();
+    const w = box.offsetWidth || 250;
+    const h = box.offsetHeight || 40;
+    const gap = 8;
+    let top = pr.bottom + gap;
+    if (top + h > window.innerHeight - 8) top = pr.top - h - gap;
+    top = Math.max(8, Math.min(top, window.innerHeight - h - 8));
+    const left = Math.min(Math.max(pr.left, 8), Math.max(8, window.innerWidth - w - 8));
+    box.style.left = `${left}px`;
+    box.style.top = `${top}px`;
+    box.style.bottom = "auto";
+  } else {
+    // 面板关闭：交还 CSS 默认位置（左上角）
+    box.style.left = "";
+    box.style.top = "";
+    box.style.bottom = "";
+  }
+}
+
 function fadeOut(el: HTMLElement, ms: number): void {
   if (hideTimer !== null) clearTimeout(hideTimer);
   hideTimer = window.setTimeout(() => {
@@ -51,6 +79,7 @@ function show(text: string, holdMs: number, kind: "line" | "song" | "hint", tran
   }
   host.appendChild(b);
   current = b;
+  positionBox(); // 若对话记录面板打开，把歌词气泡挪到面板下方不遮挡
   fadeOut(b, holdMs);
 }
 
@@ -82,4 +111,9 @@ export function showLyricLine(text: string, trans?: string | null, holdMs = HOLD
 /** 提示（未找到歌词 / 进度失准等） */
 export function showLyricHint(text: string, holdMs = 5000): void {
   show(text, holdMs, "hint");
+}
+
+/** 外部触发重定位（例如对话记录面板打开/关闭时）：让歌词气泡避开面板 */
+export function repositionLyricBubble(): void {
+  positionBox();
 }

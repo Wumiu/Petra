@@ -233,6 +233,9 @@ export function setModelRectProvider(fn: () => { left: number; top: number; righ
 /**
  * 给气泡区定位：优先放在**模型上方**，上方放不下就放到下方/可见区内，
  * 并整体钳制在可见区内。以前气泡固定贴在窗口底部中间，正好把桌宠挡住。
+ *
+ * 例外：「对话记录」面板（#chat-history-panel）打开时，气泡一律挪到面板正下方，
+ * 绝不遮挡面板内容；下方放不下才退到面板上方。
  */
 function positionBubbles() {
   if (!bubbles) return;
@@ -242,10 +245,22 @@ function positionBubbles() {
   bubbles.style.width = `${width}px`;
 
   const h = bubbles.offsetHeight || 80;
-  const rect = modelRectProvider?.() ?? null;
   const clampLeft = (l: number) => Math.min(Math.max(l, vr.left + 8), Math.max(vr.left + 8, vr.right - width - 8));
   const clampTop = (t: number) => Math.min(Math.max(t, vr.top + 8), Math.max(vr.top + 8, vr.bottom - h - 8));
 
+  // 对话记录面板打开：气泡贴到面板正下方，不遮挡面板
+  const historyPanel = document.getElementById("chat-history-panel") as HTMLElement | null;
+  if (historyPanel && historyPanel.isConnected) {
+    const pr = historyPanel.getBoundingClientRect();
+    const gap = 8;
+    let belowTop = pr.bottom + gap;
+    let top = belowTop + h <= vr.bottom - 8 ? belowTop : pr.top - h - gap;
+    bubbles.style.left = `${clampLeft(pr.left)}px`;
+    bubbles.style.top = `${clampTop(top)}px`;
+    return;
+  }
+
+  const rect = modelRectProvider?.() ?? null;
   if (!rect) {
     // 没有模型位置：贴可见区左上角，绝不压住窗口中心
     bubbles.style.left = `${vr.left + 8}px`;
@@ -426,6 +441,11 @@ export function closeAssistant() {
 /** 清空左上角气泡区（关闭小助手模式时用） */
 export function clearBubbles() {
   if (bubbles) bubbles.innerHTML = "";
+}
+
+/** 外部触发重定位（例如对话记录面板打开/关闭时）：让对话气泡避开面板 */
+export function repositionAssistantBubbles(): void {
+  positionBubbles();
 }
 
 /** 清空对话历史（保留长期记忆 memory） */

@@ -1,5 +1,11 @@
 import type { AssistantProvider } from "../utils/settings";
 import { parseArgsSafe } from "./toolRuntime";
+// Vite ?raw：打包时把 CHANGELOG.md 全文作为字符串打进 bundle；package.json 取版本号
+// 让 AI 知道自己当前版本与最近更新了什么，主人聊到新功能时接得上话。
+// @ts-ignore
+import changelogRaw from "../../CHANGELOG.md?raw";
+// @ts-ignore
+import pkg from "../../package.json";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -322,6 +328,39 @@ const TOOLS = [
 /** system prompt 最多注入的记忆条数（token 控制；聊天时按场景召回后再传入） */
 const MAX_MEMORY_IN_PROMPT = 20;
 
+/**
+ * 版本与更新日志注入：让 AI 知道自己当前版本号和最近更新了什么。
+ * 取 CHANGELOG 第一个 ## 段（Unreleased 或最新版）的 bullet，截断到合理长度，
+ * 避免把整份更新历史塞进 system prompt 烧 token。
+ */
+let _versionInfoCache: string | null = null;
+function buildVersionInfo(): string {
+  if (_versionInfoCache !== null) return _versionInfoCache;
+  const version: string = pkg?.version ?? "未知";
+  // 解析 CHANGELOG：第一个 "## [" 段（Unreleased 或最新发布版）里的 "- " 条目
+  const lines = (changelogRaw as string).split(/\r?\n/);
+  const items: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    if (line.startsWith("## [")) {
+      if (inSection) break;       // 下一个版本段开始 → 停
+      inSection = true;
+      continue;
+    }
+    if (inSection && line.trimStart().startsWith("- ")) {
+      items.push(line.trim().replace(/^-\s*/, ""));
+    }
+  }
+  // 截断：最多 12 条；总长不超过 1200 字符，超出就硬切
+  let picked = items.slice(0, 12).join("\n· ");
+  if (picked.length > 1200) picked = picked.slice(0, 1200) + "…";
+  _versionInfoCache =
+    `\n\n【你当前的版本】Petra v${version}` +
+    `\n【最近更新内容】（主人可能会聊到；知道即可，不要主动推销，被问到时自然地聊）` +
+    `\n· ${picked}`;
+  return _versionInfoCache;
+}
+
 function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): string {
   let mem = "";
   if (memory.length > 0) {
@@ -335,7 +374,7 @@ function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): 
         return `- [${m.category}] ${m.content} ${timeNote}`;
       }).join("\n");
   }
-  return `${persona ? persona + "\n\n" : ""}${extraContext ? extraContext + "\n\n" : ""}${BASE_PROMPT}${mem}`;
+  return `${persona ? persona + "\n\n" : ""}${extraContext ? extraContext + "\n\n" : ""}${BASE_PROMPT}${buildVersionInfo()}${mem}`;
 }
 
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
