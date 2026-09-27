@@ -56,4 +56,13 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Linux 专属依赖（版本与 tao/tauri 已经依赖的 gtk 完全一致，Cargo.lock 里已有条目，
+# 不新增任何 crate，也不需要用户额外安装系统库 —— 能构建 Tauri Linux 版的机器
+# 本来就必须有 GTK3 开发包）：
+#   gtk 0.18 —— 只用来从 Tauri 窗口拿 GtkWindow → GdkWindow，进而调用
+#   gdk_window_input_shape_combine_region()。GDK 的 Wayland 后端会把它翻译成
+#   wl_surface.set_input_region，这是点击穿透的正路（见 wayland_linux.rs）。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+
 

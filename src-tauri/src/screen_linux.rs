@@ -1,62 +1,34 @@
-//! Linux 窗口 / 光标 / 显示器操作：全部走 Tauri（tao → GTK3）的跨平台 API。
+//! Linux 窗口 / 光标 / 显示器操作。
 //!
-//! ============================ Wayland 下的两条硬约束 ============================
+//! Wayland 会话下的三项能力缺口全部由 wayland_linux.rs 负责补齐，本文件只做"会话分叉"：
 //!
-//! ① 点击穿透取决于"输入区域"，GTK 这条路在 Wayland 上不通：
-//!    Tauri 的 set_ignore_cursor_events 在 Linux 上最终落到 GTK3 的
-//!    gdk_window_input_shape_combine_region（见 tao 的 linux event_loop 实现）。
-//!    GDK 只在 X11 后端把输入形状交给 SHAPE 扩展；Wayland 后端并没有把这个调用
-//!    映射到 wl_surface.set_input_region，所以它在 Wayland 会话里大概率不生效 ——
-//!    透明窗口会整块吃下鼠标事件（虽然看得见桌面，但点不到）。
-//!    TODO(wayland-clickthrough): 真正的解法是用 layer-shell（zwlr_layer_shell_v1）
-//!    创建表面，然后直接对 wl_surface.set_input_region 传交互区域（空区域 = 整体穿透）。
-//!    这需要在 GTK 之外自建窗口，和 tao 的窗口模型冲突，属于独立一轮的工作。
+//! ① 输入区域（点击穿透）：
+//!    X11 走 tao → GTK 的 input shape（SHAPE 扩展），与 macOS 的
+//!    NSWindow.ignoresMouseEvents 等价，不需要 Windows 版那套补偿逻辑。
+//!    Wayland 走 wayland_linux::apply_input_region：同一个 GDK 入口
+//!    （gdk_window_input_shape_combine_region → wl_surface.set_input_region），
+//!    但能表达"只有前端上报的那几块矩形可点"，而不是只能整窗开/关。
+//!    注意真值是"输入区域"本身：窗口在 Wayland 下不会因为透明就穿透。
 //!
-//! ② Wayland 不允许应用设置自己的绝对位置，也不暴露全局指针坐标：
-//!    tao 在 Wayland 下让 cursor_position() 直接返回 (0,0)（协议里没有"查询全局鼠标位置"
-//!    这种状态），而 set_outer_position 只是给合成器发一个移动请求，合成器通常会忽略 ——
-//!    窗口放在哪里由合成器全权决定。
-//!    所以所有依赖"绝对定位 + 全局光标"的功能都必须降级：
-//!      · move_window_toward（漫游 / 边缘滑动）→ 视为已到位，不再每 16ms 发无效请求；
-//!      · drag_offset / drag_follow（8ms 原生拖拽跟随）→ 放弃，交给前端自身的 pointermove；
-//!      · cursor_pos / cursor_client_pos（视线跟随、穿透判定）→ 尽力而为，
-//!        Wayland 下拿到的是 (0,0)，不能据此做穿透决策。
-//!    TODO(wayland-position): 需要"贴边待机 / 漫游"时，用 layer-shell 的 anchor + margin
-//!    （协议允许应用声明相对锚点和边距）替代绝对坐标；视线跟随只能退化成
-//!    "窗口内部指针相对位置"（WebView 自己的 pointermove 事件）。
-//! ==============================================================================
+//! ② 窗口位置：
+//!    X11 可以用绝对坐标（tao set_position / GTK move）配合 16ms 循环平滑移动。
+//!    Wayland 不允许应用设置 xdg_toplevel 的绝对位置，本文件把这一路交给
+//!    wayland_linux（有合成器位置接口时才生效；否则返回"已到位"，即不空转）。
+//!
+//! ③ 光标：
+//!    X11 用 tao 的 cursor_position；Wayland 交给 wayland_linux 的来源链
+//!    （Hyprland 全局光标 → GDK 窗内指针 → 都没有则返回 0）。
+//!
+//! 所有 Wayland 分支都是"探测成功才启用"，任何一步失败都退回本文件原有的 X11 行为，
+//! 不会因为拿不到 Wayland 句柄而让应用起不来。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow};
 
+use crate::wayland_linux;
 use crate::{CursorPos, WorkArea};
-
-/// 当前是不是 Wayland 会话。
-/// tao 内部用的是 GDK 的实际后端（gdk::Display::backend()），Rust 侧拿不到，
-/// 这里只能按同一口径从环境推断：
-///   · GDK_BACKEND 显式指定时以它为准（用户可以用 GDK_BACKEND=x11 强制走 XWayland）；
-///   · 否则只要设了 WAYLAND_DISPLAY 就算 Wayland（XWayland 下 GDK 也默认选 Wayland）；
-///   · 再退一步看 XDG_SESSION_TYPE。
-/// 这个判断只用于"降级"，猜错的代价是少做一次无效调用，不会误伤功能。
-fn is_wayland() -> bool {
-    if let Ok(b) = std::env::var("GDK_BACKEND") {
-        let b = b.to_lowercase();
-        if b.contains("wayland") {
-            return true;
-        }
-        if b.contains("x11") {
-            return false;
-        }
-    }
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        return true;
-    }
-    std::env::var("XDG_SESSION_TYPE")
-        .map(|v| v.eq_ignore_ascii_case("wayland"))
-        .unwrap_or(false)
-}
 
 /// work_area_at(x, y) 这个命令只有坐标、没有窗口句柄，而查显示器必须要
 /// AppHandle。setup 时登记一份，后台线程拿窗口时也会顺手补登记（幂等）。
@@ -76,11 +48,16 @@ fn app_of(win: &WebviewWindow) -> AppHandle {
 
 /// 降级提示只打一次，避免 16ms 循环把日志刷爆。
 static WARNED_MOVE: AtomicBool = AtomicBool::new(false);
-static WARNED_IGNORE: AtomicBool = AtomicBool::new(false);
 static WARNED_CURSOR: AtomicBool = AtomicBool::new(false);
 
+/// 当前是不是 Wayland 会话（判断逻辑与理由见 wayland_linux.rs）。
+fn is_wayland() -> bool {
+    wayland_linux::is_wayland()
+}
+
 /// 光标在虚拟桌面里的物理坐标。
-/// Wayland 下 tao 固定返回 (0,0)：协议不提供全局光标查询，只能当"未知"。
+/// Wayland 下 tao 固定返回 (0,0)：协议不提供全局光标查询，只有合成器私有接口
+/// （见 wayland_linux.rs）才能给出真值。
 fn cursor_physical(app: &AppHandle) -> Option<(i32, i32)> {
     app.cursor_position()
         .ok()
@@ -99,10 +76,14 @@ fn monitor_to_work_area(mon: &tauri::window::Monitor) -> WorkArea {
 
 pub fn cursor_pos(app: &tauri::AppHandle) -> CursorPos {
     remember_app(app.clone());
-    if is_wayland() && !WARNED_CURSOR.swap(true, Ordering::Relaxed) {
-        crate::log_warn(
-            "[screen] Wayland 不提供全局光标坐标，cursor_pos 只能返回 (0,0)，视线跟随已降级",
-        );
+    if is_wayland() {
+        if !wayland_linux::global_cursor_available() && !WARNED_CURSOR.swap(true, Ordering::Relaxed)
+        {
+            crate::log_warn(
+                "[screen] Wayland 下没有可用的全局光标来源，视线跟随退回\"窗内指针相对位置\"",
+            );
+        }
+        return wayland_linux::cursor_pos(app);
     }
     let (x, y) = cursor_physical(app).unwrap_or((0, 0));
     // 光标相对真实窗口中心的偏移（物理像素）：窗口位置由 Rust 权威管理，
@@ -155,13 +136,13 @@ pub fn work_area_at(x: i32, y: i32) -> WorkArea {
 /// 每帧都往主线程投递一次窗口操作。
 static LAST_IGNORE: Mutex<Option<bool>> = Mutex::new(None);
 
-/// 唯一的 native 穿透写入口。
+/// 整窗穿透开关（X11 的写入口，也是 Wayland 上拿不到 GdkWindow 时的兜底）。
 ///
 /// X11：tao 走 GTK 的 input shape（SHAPE 扩展），行为与 macOS 的
-/// NSWindow.ignoresMouseEvents 等价，不需要 Windows 版那套补偿逻辑。
-/// Wayland：GDK 没有把 input shape 映射到 wl_surface.set_input_region，
-/// 调用不生效，所以这里直接跳过 —— 宁可窗口"整块可点"，也不要每 16ms 发一次
-/// 无效请求把日志刷满。真正的穿透留给 layer-shell 方案（见文件头 TODO）。
+/// NSWindow.ignoresMouseEvents 等价。
+/// Wayland：tao 同样落到 GDK 的 input shape → wl_surface.set_input_region，
+/// 所以调用是有效的；但它只能表达"整窗可点"或"除左上角 1x1 外整窗穿透"，
+/// 无法表达"只有宠物身体可点"，那种精度由 apply_clickthrough 走矩形区域实现。
 pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
     {
         let mut last = LAST_IGNORE.lock().unwrap();
@@ -170,18 +151,32 @@ pub fn set_ignore_cursor(win: &tauri::WebviewWindow, ignore: bool) {
         }
         *last = Some(ignore);
     }
-    if is_wayland() {
-        if !WARNED_IGNORE.swap(true, Ordering::Relaxed) {
-            crate::log_warn(
-                "[screen] Wayland 下 GTK 不实现 input shape，鼠标穿透本轮不生效（待 layer-shell + set_input_region）",
-            );
-        }
-        return;
-    }
     if win.set_ignore_cursor_events(ignore).is_err() {
         // 写入失败就把缓存清掉，下一轮重试
         *LAST_IGNORE.lock().unwrap() = None;
     }
+}
+
+/// 唯一的光标穿透写入口（lib.rs 的 16ms 决策线程调用）。
+///
+/// ignore 是"整窗是否穿透"的布尔结论（非 Wayland 用）；
+/// regions 是前端上报的可交互矩形（物理像素，窗口客户端坐标）；
+/// full_window 表示这段期间整窗都要可点（渲染锁 / 原生拖拽中）。
+///
+/// Wayland 下不按光标位置切开关，而是直接把矩形列表写进输入区域：
+/// 合成器只把指针事件投递给区域内的 surface，既解决了"透明窗整块吃鼠标"，
+/// 又保住了"只有宠物身体可点"。非 Wayland 保持原有整窗开关行为。
+pub fn apply_clickthrough(
+    win: &tauri::WebviewWindow,
+    ignore: bool,
+    regions: &[wayland_linux::Rect],
+    full_window: bool,
+) {
+    if is_wayland() {
+        wayland_linux::apply_input_region(win, regions, full_window);
+        return;
+    }
+    set_ignore_cursor(win, ignore);
 }
 
 /// 窗口当前是否置顶。
@@ -207,15 +202,13 @@ pub fn move_window_toward(
     if !win.is_visible().unwrap_or(false) {
         return true;
     }
-    // Wayland：位置由合成器决定，继续算下去只会每 16ms 发一次无效的移动请求，
-    // 所以直接当"已到位"返回，让 lib.rs 的目标点被清除。
+    // Wayland：位置由合成器决定，只有拿到合成器位置接口时才可能移动；
+    // 拿不到就返回"已到位"，让 lib.rs 清掉目标，不再每 16ms 发无效请求。
     if is_wayland() {
-        if !WARNED_MOVE.swap(true, Ordering::Relaxed) {
-            crate::log_warn(
-                "[screen] Wayland 不允许应用设置窗口绝对位置，漫游/原生移动已降级（待 layer-shell anchor）",
-            );
+        if !wayland_linux::global_cursor_available() && !WARNED_MOVE.swap(true, Ordering::Relaxed) {
+            crate::log_warn("[screen] Wayland 不提供绝对定位，漫游/原生移动已降级");
         }
-        return true;
+        return wayland_linux::move_window_toward(win, tx, ty, max_speed, clamp);
     }
     let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
         return false;
@@ -254,12 +247,12 @@ pub fn move_window_toward(
 /// 拖动抓取偏移：当前鼠标 - 窗口左上角（物理像素）。
 /// 拖动开始调用一次，之后窗口跟随"当前鼠标 - 偏移"。
 ///
-/// Wayland 下没有全局光标，算出来只会是 (0,0) 减窗口位置这种噪声，
-/// 所以返回 None：lib.rs 的 drag_start 因此不会进入 8ms 原生跟随模式，
-/// 拖动交给前端自身的 pointermove 路径（那条不需要全局坐标）。
+/// Wayland 下只有拿到合成器位置接口（Hyprland）才算得出来；否则返回 None，
+/// 于是 lib.rs 的 drag_start 不会进入 8ms 原生跟随模式，拖动交给前端自身的
+/// pointermove 路径（那条不需要全局坐标）。
 pub fn drag_offset(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
     if is_wayland() {
-        return None;
+        return wayland_linux::drag_offset(win);
     }
     let app = app_of(win);
     let (cx, cy) = cursor_physical(&app)?;
@@ -269,7 +262,7 @@ pub fn drag_offset(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
 
 /// 拖动跟随一步：窗口移到"当前鼠标 - 抓取偏移"。
 /// locked_y 为待机边缘滑动：y 锁定该值（物理），只随鼠标水平移动；锁定时不 clamp y（边缘可能在屏外）。
-/// 由 8ms 线程调用，无每帧 IPC 延迟。Wayland 下直接不动作（原因同上）。
+/// 由 8ms 线程调用，无每帧 IPC 延迟。Wayland 下交给 wayland_linux（同样需要合成器接口）。
 pub fn drag_follow(
     win: &tauri::WebviewWindow,
     off_x: i32,
@@ -282,6 +275,7 @@ pub fn drag_follow(
         return;
     }
     if is_wayland() {
+        wayland_linux::drag_follow(win, off_x, off_y, locked_y, model_bounds);
         return;
     }
     let app = app_of(win);
@@ -328,8 +322,9 @@ pub fn set_window_size(win: &tauri::WebviewWindow, width: i32, height: i32) {
 /// 当前光标在主窗口客户端区内的物理像素坐标。
 /// 窗口是 decorations:false，客户端区左上角就等于窗口左上角，所以直接相减。
 ///
-/// Wayland 返回 None（拿不到全局光标）：让上层把它当"光标未知"，
-/// 而不是拿 (0,0) 算出"在窗口外"从而错误地把整个窗口设成穿透。
+/// Wayland 返回 None（核心协议不提供全局光标，没有可信的来源）；
+/// 让上层把它当"光标未知"，而不是拿 (0,0) 算出"在窗口外"从而错误地把整个窗口设成穿透。
+/// 穿透判定在 Wayland 下不依赖这个值（见 apply_clickthrough）。
 pub fn cursor_client_pos(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
     if is_wayland() {
         return None;

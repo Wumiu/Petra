@@ -46,6 +46,11 @@ mod screen;
 #[path = "screen_linux.rs"]
 mod screen;
 
+// Wayland 会话下的能力补齐（输入区域 / 移动 / 光标）：只编译进 Linux 目标。
+// screen_linux.rs 是它的主要调用方，lib.rs 的穿透决策线程也会直接用一次。
+#[cfg(target_os = "linux")]
+mod wayland_linux;
+
 #[cfg(windows)]
 mod trash;
 #[cfg(target_os = "macos")]
@@ -3227,13 +3232,37 @@ fn spawn_clickthrough_watcher(app: AppHandle) {
                             false,
                         )
                     });
-                let accepts_input = should_accept_input(
-                    &snapshot,
-                    renderer_locked,
-                    native_dragging,
-                    cursor,
-                    std::time::Instant::now(),
-                );
+                let now = std::time::Instant::now();
+                let accepts_input =
+                    should_accept_input(&snapshot, renderer_locked, native_dragging, cursor, now);
+                // Linux：穿透写入口按会话分叉 —— Wayland 直接把"可交互矩形"写进输入区域
+                // （合成器只在这些矩形内投递指针事件），X11 仍是原来的整窗开关。
+                // 其余平台这一行保持原样。
+                #[cfg(target_os = "linux")]
+                {
+                    // 前端还没上报交互区域、或上报已经过期（渲染线程可能卡住）时，
+                    // 区域列表必须当成空：空输入区域 = 整块穿透。宁可少点几下宠物，
+                    // 也不能拿旧矩形把 700x700 的透明窗钉在屏幕中间挡住桌面。
+                    let fresh = snapshot.initialized
+                        && snapshot
+                            .last_update
+                            .map(|t| now.duration_since(t) <= INTERACTION_STATE_STALE_AFTER)
+                            .unwrap_or(false);
+                    let regions: Vec<(i32, i32, i32, i32)> = if fresh {
+                        snapshot
+                            .regions
+                            .iter()
+                            .filter(|r| r.enabled && r.width > 0 && r.height > 0)
+                            .map(|r| (r.x, r.y, r.width, r.height))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    // 渲染锁 / 原生拖拽期间整窗可点，其余情况只让上报的矩形可点。
+                    let full_window = renderer_locked || native_dragging;
+                    screen::apply_clickthrough(&win, !accepts_input, &regions, full_window);
+                }
+                #[cfg(not(target_os = "linux"))]
                 screen::set_ignore_cursor(&win, !accepts_input);
 
                 // 菜单打开后，光标离开整个主窗口时通知前端关闭菜单。
