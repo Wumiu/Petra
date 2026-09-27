@@ -36,19 +36,56 @@ if [ -z "$APP" ] || [ ! -f "$APP" ]; then
 fi
 chmod +x "$APP" 2>/dev/null
 
-# 依赖自检：把"没反应"翻译成可执行的修复命令
-MISSING=""
-command -v xdg-open      >/dev/null 2>&1 || MISSING="$MISSING xdg-utils"
-command -v notify-send   >/dev/null 2>&1 || MISSING="$MISSING libnotify-bin"
+# 依赖自检：把"没反应"翻译成**当前发行版**上可执行的修复命令
+# （包名各发行版不同：Arch 是 webkit2gtk-4.1 / fuse2，Fedora 是 webkit2gtk4.1 / fuse）
+need_webkit=0 need_gtk=0 need_fuse=0 need_xdg=0 need_notify=0
+command -v xdg-open    >/dev/null 2>&1 || need_xdg=1
+command -v notify-send >/dev/null 2>&1 || need_notify=1
 if command -v ldconfig >/dev/null 2>&1; then
-  ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4' || MISSING="$MISSING libwebkit2gtk-4.1-0"
-  ldconfig -p 2>/dev/null | grep -q 'libgtk-3'        || MISSING="$MISSING libgtk-3-0"
-  ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'  || MISSING="$MISSING libfuse2"
+  ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4' || need_webkit=1
+  ldconfig -p 2>/dev/null | grep -q 'libgtk-3'        || need_gtk=1
+  ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'  || need_fuse=1
 fi
-if [ -n "$MISSING" ]; then
-  echo "[!] 可能缺少系统库/工具：$MISSING"
-  echo "    Debian/Ubuntu： sudo apt install -y$MISSING"
-  echo "    （这不是错误，只是提示；缺 libfuse2 的话下面会自动改走免挂载模式）"
+
+pkg_names() {
+  # $1 = apt | pacman | dnf
+  local out=""
+  [ "$need_webkit" -eq 1 ] && case "$1" in
+    apt)    out="$out libwebkit2gtk-4.1-0" ;;
+    pacman) out="$out webkit2gtk-4.1" ;;
+    dnf)    out="$out webkit2gtk4.1" ;;
+  esac
+  [ "$need_gtk" -eq 1 ] && case "$1" in
+    apt)    out="$out libgtk-3-0" ;;
+    pacman) out="$out gtk3" ;;
+    dnf)    out="$out gtk3" ;;
+  esac
+  [ "$need_fuse" -eq 1 ] && case "$1" in
+    apt)    out="$out libfuse2" ;;
+    pacman) out="$out fuse2" ;;
+    dnf)    out="$out fuse" ;;
+  esac
+  [ "$need_xdg" -eq 1 ] && out="$out xdg-utils"
+  [ "$need_notify" -eq 1 ] && case "$1" in
+    apt)    out="$out libnotify-bin" ;;
+    pacman) out="$out libnotify" ;;
+    dnf)    out="$out libnotify" ;;
+  esac
+  echo "$out"
+}
+
+if [ "$need_webkit$need_gtk$need_fuse$need_xdg$need_notify" != "00000" ]; then
+  echo "[!] 缺少一些系统库/工具（不一定是致命原因，先看下面的提示）"
+  if command -v pacman >/dev/null 2>&1; then
+    echo "    Arch/Manjaro 系： sudo pacman -S --needed$(pkg_names pacman)"
+  elif command -v apt >/dev/null 2>&1; then
+    echo "    Debian/Ubuntu 系： sudo apt install -y$(pkg_names apt)"
+  elif command -v dnf >/dev/null 2>&1; then
+    echo "    Fedora 系： sudo dnf install -y$(pkg_names dnf)"
+  else
+    echo "    没识别出包管理器，需要装： WebKitGTK 4.1 / GTK3 / libfuse2 / xdg-utils / libnotify"
+  fi
+  echo "    （缺 libfuse2 的话，下面会自动改走"免挂载解包"模式，通常仍能跑起来）"
   echo
 fi
 
