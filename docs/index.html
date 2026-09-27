@@ -122,8 +122,10 @@
   @keyframes bobchip{from{transform:translateY(0)}to{transform:translateY(-10px)}}
 
   /* ===== 滚动淡入 ===== */
-  .reveal{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
-  .reveal.in{opacity:1;transform:none}
+  /* 默认可见（禁用 JS 也能看全内容）；JS 加载后才用 .js 类接管入场动画 */
+  .reveal{opacity:1;transform:none;transition:opacity .6s ease,transform .6s ease}
+  .js .reveal{opacity:0;transform:translateY(22px)}
+  .js .reveal.in{opacity:1;transform:none}
   @media (prefers-reduced-motion:reduce){
     html{scroll-behavior:auto}
     .reveal{opacity:1;transform:none;transition:none}
@@ -431,6 +433,7 @@
 
 <script>
 (function(){
+  document.documentElement.classList.add('js');
   var io = new IntersectionObserver(function(entries){
     entries.forEach(function(e){
       if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); }
