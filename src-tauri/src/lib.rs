@@ -1492,8 +1492,8 @@ fn feedback_text(app: AppHandle, message: String) -> String {
 }
 
 /// 飞书自定义机器人：用户反馈直接推送到 QQ 群对应讨论群。
-const FEISHU_WEBHOOK: &str = "https://open.feishu.cn/open-apis/bot/v2/hook/bedd2350-f499-4cf4-93f6-475f17171d82";
-const FEISHU_SECRET: &str = "E0qpquyMlo4qPtBMFnEU7d";
+const FEISHU_WEBHOOK: &str = "https://open.feishu.cn/open-apis/bot/v2/hook/4443ab4f-eb1a-4ba8-a007-ad9905698482";
+const FEISHU_SECRET: &str = "hTBaQ11bX5YqSU8G0L6wXb";
 
 /// 发送反馈：用户问题描述 + 环境信息 + 本次启动日志，通过飞书自定义机器人推送到群里。
 #[tauri::command]
