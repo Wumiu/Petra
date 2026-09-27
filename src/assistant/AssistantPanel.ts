@@ -141,7 +141,7 @@ function loadHistory() {
           i++;
         }
       }
-      history = cleaned.slice(-30);
+      history = cleaned.slice(-100);
     }
   } catch {
     history = [];
@@ -149,7 +149,7 @@ function loadHistory() {
 }
 function saveHistory() {
   try {
-    localStorage.setItem(HIST_KEY, JSON.stringify(history.slice(-30)));
+    localStorage.setItem(HIST_KEY, JSON.stringify(history.slice(-100)));
   } catch {
     /* 忽略 */
   }
