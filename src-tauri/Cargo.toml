@@ -18,6 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lettre = { version = "0.11", features = ["smtp-transport", "builder", "native-tls"] }
 raw-window-handle = "0.6"
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls", "blocking"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
 
 # macOS / Linux 共用依赖（版本与 Cargo.lock 里已有的对齐，不引入新的编译负担）：
 #   reqwest   —— 取在线歌词（LRCLIB，见 lib.rs 的 fetch_lyrics；mac 与 Linux 共用同一实现）。

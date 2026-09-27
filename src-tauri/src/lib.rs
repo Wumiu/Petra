@@ -1491,48 +1491,61 @@ fn feedback_text(app: AppHandle, message: String) -> String {
     compose_feedback_text(&app, &message)
 }
 
-/// 发送反馈邮件：用户问题描述 + 环境信息 + 本次启动日志，直达开发者邮箱。
+/// 飞书自定义机器人：用户反馈直接推送到 QQ 群对应讨论群。
+const FEISHU_WEBHOOK: &str = "https://open.feishu.cn/open-apis/bot/v2/hook/bedd2350-f499-4cf4-93f6-475f17171d82";
+const FEISHU_SECRET: &str = "E0qpquyMlo4qPtBMFnEU7d";
+
+/// 发送反馈：用户问题描述 + 环境信息 + 本次启动日志，通过飞书自定义机器人推送到群里。
 #[tauri::command]
-fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
-    use lettre::transport::smtp::authentication::Credentials;
-    use lettre::transport::smtp::client::{Tls, TlsParameters};
-    use lettre::{SmtpTransport, Transport};
+async fn send_feedback(app: AppHandle, message: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        use base64::Engine;
+        type HmacSha256 = Hmac<Sha256>;
 
-    let cfg = SmtpConfig::load();
-    let body = compose_feedback_text(&app, &message);
-    let subject = format!("[桌宠反馈] v{} {}", app.package_info().version, chrono_now());
-    let email = build_feedback_email(&cfg, subject, body)?;
+        let body = compose_feedback_text(&app, &message);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_default();
 
-    let creds = Credentials::new(cfg.username.clone(), cfg.auth_code.clone());
-    let tls_params = TlsParameters::builder(cfg.smtp_server.clone())
-        .build()
-        .map_err(|e| format!("TLS 参数失败: {e}"))?;
-    let mailer = SmtpTransport::builder_dangerous(&cfg.smtp_server)
-        .port(cfg.port)
-        .tls(Tls::Wrapper(tls_params))
-        .credentials(creds)
-        .build();
+        // 飞书机器人签名：HMAC-SHA256(key="<timestamp>\n<secret>", msg=空) → base64
+        let string_to_sign = format!("{timestamp}\n{FEISHU_SECRET}");
+        let mut mac = HmacSha256::new_from_slice(string_to_sign.as_bytes())
+            .map_err(|e| format!("签名初始化失败: {e}"))?;
+        let sign = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
 
-    log_line(&format!(
-        "send_feedback: {} -> {} via {}:{}",
-        cfg.username,
-        cfg.recipients().join(", "),
-        cfg.smtp_server,
-        cfg.port
-    ));
-    match mailer.send(&email) {
-        Ok(_) => {
-            log_line("send_feedback: 已投递");
-            Ok("反馈已发送".into())
+        let payload = serde_json::json!({
+            "timestamp": timestamp,
+            "sign": sign,
+            "msg_type": "text",
+            "content": { "text": body }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("HTTP 客户端失败: {e}"))?;
+
+        log_line("send_feedback: 推送飞书群…");
+        let resp = client
+            .post(FEISHU_WEBHOOK)
+            .json(&payload)
+            .send()
+            .map_err(|e| format!("连不上飞书: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if status.is_success() && text.contains("\"code\":0") {
+            log_line("send_feedback: 飞书已投递");
+            Ok("反馈已发送，感谢！".into())
+        } else {
+            log_error(&format!("send_feedback 飞书失败: {status} {text}"));
+            Err(format!("发送失败: {text}"))
         }
-        Err(e) => {
-            // 失败也要留痕：以前这里只把错误抛给前端，日志里什么都没有，
-            // 邮箱授权码失效这种问题完全查不到。
-            let raw = e.to_string();
-            log_error(&format!("send_feedback 失败（{}:{}）：{raw}", cfg.smtp_server, cfg.port));
-            Err(describe_smtp_error(&raw))
-        }
-    }
+    })
+    .await
+    .map_err(|e| format!("后台任务失败: {e}"))?
 }
 
 fn chrono_now() -> String {
