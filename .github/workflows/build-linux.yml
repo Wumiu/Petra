@@ -73,12 +73,19 @@ jobs:
         run: |
           find src-tauri/target -maxdepth 6 -type f \( -name "*.deb" -o -name "*.AppImage" \) -print
 
+      - name: 汇总到一个目录（测试者解压后 .deb / AppImage / 启动脚本 在一起）
+        run: |
+          mkdir -p dist-linux
+          cp src-tauri/target/release/bundle/deb/*.deb dist-linux/ || true
+          cp src-tauri/target/release/bundle/appimage/*.AppImage dist-linux/ || true
+          cp 启动Petra-linux.sh dist-linux/
+          chmod +x dist-linux/*.AppImage dist-linux/启动Petra-linux.sh 2>/dev/null || true
+          ls -lh dist-linux
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: petra-linux
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          path: dist-linux/
           if-no-files-found: warn
           retention-days: 14
