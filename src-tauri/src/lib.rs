@@ -3180,14 +3180,12 @@ fn set_autostart(app: AppHandle, enabled: bool) -> bool {
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let toggle = MenuItemBuilder::with_id("toggle", "显示 / 隐藏 (Alt+P)")
-        .accelerator("Alt+P")
-        .build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "设置").build(app)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
     let restart = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_label = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&toggle, &separator, &restart, &quit_label])
+        .items(&[&settings, &separator, &restart, &quit_label])
         .build()?;
 
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -3198,7 +3196,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "toggle" => toggle_window(app),
+            "settings" => {} // 占位：之后再接设置面板
             "restart" => {
                 app.restart();
             }
