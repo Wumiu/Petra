@@ -406,15 +406,15 @@ function positionFloatingUi(
       // 可见区太窄：居中显示（允许少量溢出）
       cx = (vr.left + vr.right) / 2;
     }
-    let top = mr.top - bh - 12; // 模型上方
-    if (top < vr.top) top = mr.bottom + 12; // 上方放不下 → 翻到模型下方
-    if (top + bh > vr.bottom) top = Math.max(vr.top, vr.bottom - bh - 4); // 仍放不下 → 钳制
+    // 固定贴模型上方，不翻到下方（否则会压到输入框）；上方不够就贴可见区顶部
+    let top = mr.top - bh - 12;
+    top = Math.max(vr.top, Math.min(top, vr.bottom - bh - 4));
     if (chatRect) {
       // 对话记录面板打开：气泡贴面板正下方，水平居中于面板，绝不遮挡面板
       const pcx = chatRect.left + chatRect.width / 2;
       cx = Math.max(vr.left + bw / 2 + 4, Math.min(pcx, vr.right - bw / 2 - 4));
       top = chatRect.bottom + 8;
-      if (top + bh > vr.bottom - 4) top = chatRect.top - bh - 8; // 下方不够退上方
+      if (top + bh > vr.bottom - 4) top = vr.bottom - bh - 4; // 下方不够贴屏幕底，绝不回到面板上方
       top = Math.max(vr.top + 4, Math.min(top, vr.bottom - bh - 4));
     }
     bubbles.style.left = `${Math.round(cx)}px`;
@@ -457,7 +457,7 @@ function positionFloatingUi(
       const pcx = chatRect.left + chatRect.width / 2;
       cx = Math.max(vr.left + lw / 2 + 4, Math.min(pcx, vr.right - lw / 2 - 4));
       top = chatRect.bottom + 8;
-      if (top + lh > vr.bottom - 4) top = chatRect.top - lh - 8;
+      if (top + lh > vr.bottom - 4) top = vr.bottom - lh - 4;
       top = Math.max(vr.top + 4, Math.min(top, vr.bottom - lh - 4));
     }
     lyric.style.left = `${Math.round(cx)}px`;
@@ -2165,7 +2165,7 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "website",
       label: "官网",
-      onPick: () => void invoke("open_url", { url: "https://petra.xin/" }),
+      onPick: () => void invoke("open_url", { url: "http://petra.xin/" }),
     },
     {
       id: "hide",

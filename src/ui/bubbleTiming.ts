@@ -7,11 +7,11 @@
  */
 
 /** 最短停留 */
-export const BUBBLE_HOLD_MIN_MS = 5000;
+export const BUBBLE_HOLD_MIN_MS = 3000;
 /** 最长停留（长回复也不会赖着不走；鼠标悬停可随时暂停慢慢看） */
-export const BUBBLE_HOLD_MAX_MS = 16000;
+export const BUBBLE_HOLD_MAX_MS = 10000;
 /** 每个字符额外给的阅读时间 */
-export const BUBBLE_HOLD_PER_CHAR_MS = 60;
+export const BUBBLE_HOLD_PER_CHAR_MS = 35;
 
 /**
  * 按文本长度算停留时间：短句 5 秒起，按字数加时，封顶 16 秒。
