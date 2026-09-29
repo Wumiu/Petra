@@ -83,6 +83,26 @@ export function isProviderReady(
   return Boolean((apiKey ?? "").trim());
 }
 
+/**
+ * 是否是 MiniMax 端点（api.minimax.cn / api.minimax.io / api.minimaxi.com 等）。
+ *
+ * 为什么需要单独判断：**MiniMax 的 M 系列默认开启 thinking**，且默认把思考内容
+ * **以 `<think>` 标签保留在 `content` 字段内**（官方文档：`reasoning_split` 为 false 时
+ * thinking 以 `<think>` 标签保留在 `content` 内）。
+ * 本文件下面的流式解析只取 `delta.content`，于是"思考过程"会被当成正文显示在气泡里
+ * —— 用户侧的表现就是"回复里混着思考过程和标签"。
+ *
+ * 开启 `reasoning_split` 后，thinking 被拆分到 `reasoning_content` 字段，
+ * `content` 只留正文，解析逻辑**无需改动**。
+ * 该开关对 M3 与 M2.x 都有效，且不依赖"能否关闭 thinking"——
+ * 因为 `thinking: { type: "disabled" }` **对 M2.x 无效**，
+ * 对 **M3.1-Flash-Preview 更会直接返回 400**（其 thinking 强制开启），
+ * 所以不能把它当作通用手段来用。
+ */
+export function isMiniMaxEndpoint(base: string): boolean {
+  return /minimax/i.test(base ?? "");
+}
+
 function resolveBase(provider: AssistantProvider, customBaseUrl: string): string {
   if (provider === "custom") {
     const b = (customBaseUrl || "").trim().replace(/\/+$/, "");
@@ -437,6 +457,9 @@ export async function chatStream(
       ...(enableTools ? { tools: TOOLS } : {}),
       ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
       ...(requestOptions.maxOutputTokens ? { max_tokens: requestOptions.maxOutputTokens } : {}),
+      // MiniMax：让思考内容与正文分离（详见 isMiniMaxEndpoint 的说明）。
+      // 只对 MiniMax 端点发送，避免其他兼容端点拒绝未知字段。
+      ...(isMiniMaxEndpoint(base) ? { reasoning_split: true } : {}),
       stream: true,
     }),
     signal: requestOptions.signal,
