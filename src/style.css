@@ -2231,3 +2231,247 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* ===== Bongocat 风格环形菜单 + 设置窗口 ===== */
+#radial-menu {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 500;
+}
+#radial-menu.visible { pointer-events: auto; }
+
+.settings-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  display: flex;
+  background: rgba(18, 20, 30, 0.96);
+  backdrop-filter: blur(20px);
+  color: #e8eaf2;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  user-select: none;
+}
+.settings-panel.hidden { display: none; }
+
+.settings-panel .sp-sidebar {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px;
+  border-right: 1px solid rgba(255,255,255,0.08);
+}
+.settings-panel .sp-brand {
+  font-size: 16px;
+  font-weight: 700;
+  padding: 4px 10px 18px;
+  color: #fff;
+}
+.settings-panel .sp-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.settings-panel .sp-nav-item {
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #aab0c5;
+  transition: background 0.15s, color 0.15s;
+}
+.settings-panel .sp-nav-item:hover { background: rgba(255,255,255,0.06); color: #fff; }
+.settings-panel .sp-nav-item.active {
+  background: rgba(84, 174, 255, 0.18);
+  color: #7cc0ff;
+}
+.settings-panel .sp-close {
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+  color: #ff8a8a;
+  border: 1px solid rgba(255,100,100,0.25);
+  transition: background 0.15s;
+}
+.settings-panel .sp-close:hover { background: rgba(255,80,80,0.12); }
+
+.settings-panel .sp-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+}
+.settings-panel .sp-content { max-width: 560px; }
+.settings-panel .sp-page { display: none; }
+.settings-panel .sp-page.active { display: block; animation: sp-fade 0.18s ease-out; }
+@keyframes sp-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.settings-panel .sp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13.5px;
+  margin-bottom: 4px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.05);
+  transition: background 0.12s, transform 0.12s;
+}
+.settings-panel .sp-row:hover { background: rgba(255,255,255,0.08); }
+.settings-panel .sp-row:active { transform: scale(0.99); }
+.settings-panel .sp-row.danger { color: #ff7b72; }
+.settings-panel .sp-row.danger:hover { background: rgba(255,80,80,0.12); }
+.settings-panel .sp-row-state {
+  font-size: 12px;
+  color: #7cc0ff;
+  margin-left: 12px;
+}
+/* 设置面板：sidebar 底部（主题切换 + 关闭） */
+.settings-panel .sp-sidebar-foot {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-panel .sp-theme {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  text-align: center;
+  cursor: pointer;
+  color: #aab0c5;
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: background 0.15s, color 0.15s;
+}
+.settings-panel .sp-theme:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+/* 亮色主题覆盖 */
+.settings-panel.light {
+  background: rgba(245, 247, 252, 0.97);
+  color: #2a2f3e;
+}
+.settings-panel.light .sp-sidebar {
+  border-right: 1px solid rgba(0,0,0,0.08);
+}
+.settings-panel.light .sp-brand { color: #1a1d28; }
+.settings-panel.light .sp-nav-item { color: #5a6072; }
+.settings-panel.light .sp-nav-item:hover { background: rgba(0,0,0,0.06); color: #1a1d28; }
+.settings-panel.light .sp-nav-item.active {
+  background: rgba(84, 174, 255, 0.18);
+  color: #1a7ad8;
+}
+.settings-panel.light .sp-row {
+  color: #2a2f3e;
+}
+.settings-panel.light .sp-row:hover { background: rgba(0,0,0,0.05); }
+.settings-panel.light .sp-row.danger { color: #d63a30; }
+.settings-panel.light .sp-row.danger:hover { background: rgba(255,80,80,0.1); }
+.settings-panel.light .sp-row-state { color: #1a7ad8; }
+.settings-panel.light .sp-theme {
+  color: #5a6072;
+  border-color: rgba(0,0,0,0.12);
+}
+.settings-panel.light .sp-theme:hover { background: rgba(0,0,0,0.06); color: #1a1d28; }
+.settings-panel.light .sp-close {
+  color: #d63a30;
+  border-color: rgba(214,58,48,0.3);
+}
+.settings-panel.light .sp-close:hover { background: rgba(255,80,80,0.1); }
+/* 亮色主题下确保每行清晰可见 */
+.settings-panel.light .sp-row {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.07);
+}
+.settings-panel.light .sp-row:hover { background: #e8f1fb; }
+.settings-panel.light .sp-row-label { color: #2a2f3e; }
+.settings-panel.light .sp-content { color: #2a2f3e; }
+.settings-panel.light .sp-main { color: #2a2f3e; }
+/* iOS 风格滑钮开关 */
+.settings-panel .sp-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: rgba(255,255,255,0.15);
+  transition: background 0.2s;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.settings-panel .sp-switch.on {
+  background: #3b82f6;
+}
+.settings-panel .sp-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.settings-panel .sp-switch.on .sp-switch-knob {
+  transform: translateX(18px);
+}
+.settings-panel.light .sp-switch {
+  background: rgba(0,0,0,0.15);
+}
+.settings-panel.light .sp-switch.on {
+  background: #3b82f6;
+}
+/* 设置面板：圆角窗口 + brand 图标 + 拖拽条 */
+.settings-panel {
+  border-radius: 14px;
+  overflow: hidden;
+}
+.settings-panel .sp-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+  user-select: none;
+}
+.settings-panel .sp-brand:active { cursor: grabbing; }
+.settings-panel .sp-brand-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}.settings-panel .sp-brand img,
+.settings-panel .sp-brand span { pointer-events: none; }
+/* Liquid Glass 风：半透明毛玻璃 */
+.settings-panel {
+  background: rgba(22, 26, 40, 0.55) !important;
+  backdrop-filter: blur(30px) saturate(1.6);
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.settings-panel.light {
+  background: rgba(245, 247, 252, 0.55) !important;
+  border: 1px solid rgba(255,255,255,0.6);
+  box-shadow: 0 20px 60px rgba(100,120,180,0.25);
+}
+.settings-panel .sp-row {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(10px);
+}
+.settings-panel.light .sp-row {
+  background: rgba(255,255,255,0.55);
+  border: 1px solid rgba(255,255,255,0.7);
+}
+.settings-panel .sp-nav-item {
+  backdrop-filter: blur(10px);
+}

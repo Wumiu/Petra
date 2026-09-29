@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
@@ -9,7 +9,9 @@ import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
 import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
-import { setupContextMenu } from "./ui/ContextMenu";
+import { setupContextMenu, type MenuItemSpec } from "./ui/ContextMenu";
+import { setupRadialMenu, type RadialEntry } from "./ui/RadialMenu";
+import { setupSettingsPanel, type SettingsSection, type SettingsRow, type SettingsPanelHandle } from "./ui/SettingsPanel";
 import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "./features/diary/DiaryEventTracker";
 import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
@@ -1039,13 +1041,21 @@ async function boot() {
   setupTrashDrop(() => view, win, (path) => void importPsdFromPath(path));
   setupReminder();
 
-  setupContextMenu(
-    () => buildMenu(engine),
-    onMenuOpen,
-    () => getWindowVisibleRect(),
-    (x: number, y: number) => isInsideModel({ clientX: x, clientY: y }),
-    () => getModelRect(),
-  );
+  settingsPanel = setupSettingsPanel({
+    getSections: () => buildSettingsSections(engine),
+    onOpen: onMenuOpen,
+  });
+
+  setupRadialMenu({
+    getEntries: () => buildRadialEntries(engine),
+    onOpen: onMenuOpen,
+    isInsideModel: (x, y) => isInsideModel({ clientX: x, clientY: y }),
+  });
+
+  // 托盘右键菜单的"设置"项 → 打开设置面板
+  void listen("open-settings", () => {
+    settingsPanel?.open();
+  });
   startInteractionRegionSync();
   void setupAssistantHotkeyListener();
 
@@ -1568,6 +1578,11 @@ function startInteractionRegionSync() {
 }
 
 document.addEventListener("menu-closed", () => { engine.suspend(0); requestInteractionRegionSync(true); });
+// 环形菜单打开后立即把全屏 canvas 矩形上报给 Rust（不等 MutationObserver/100ms 轮询）
+document.addEventListener("petra:radial-opened", () => requestInteractionRegionSync(true));
+// 设置面板打开/关闭时同样立即同步
+document.addEventListener("petra:settings-opened", () => requestInteractionRegionSync(true));
+document.addEventListener("petra:settings-closed", () => requestInteractionRegionSync(true));
 function hiddenPsdInput(): HTMLInputElement {
   let input = document.getElementById("psd-input") as HTMLInputElement | null;
   if (!input) {
@@ -2211,6 +2226,144 @@ function buildMenu(engine: BehaviorEngine) {
   ];
 }
 
+// ---------- 环形菜单 + 设置窗口（Bongocat 风格） ----------
+let settingsPanel: SettingsPanelHandle | null = null;
+
+function findMenuItem(items: MenuItemSpec[], id: string): MenuItemSpec | undefined {
+  return items.find((i) => i.id === id);
+}
+
+/** 把菜单树的叶子项展平成设置面板行 */
+function menuLeaves(items: MenuItemSpec[]): SettingsRow[] {
+  const rows: SettingsRow[] = [];
+  for (const it of items) {
+    if (it.separator || it.hint || it.control) continue;
+    if (it.submenu && it.submenu.length) {
+      rows.push(...menuLeaves(it.submenu));
+    } else {
+      const s = (it.state ?? "").trim();
+      let checked: boolean | undefined = it.checked;
+      if (checked === undefined && s) {
+        if (s === "开" || s === "取消置顶") checked = true;
+        else if (s === "关" || s === "置顶") checked = false;
+        else if (/^\d+%$/.test(s)) checked = true;
+      }
+      rows.push({
+        label: it.label ?? "",
+        state: it.state,
+        danger: it.danger,
+        checked,
+        onPick: () => { it.onPick?.(); it.onStatePick?.(); },
+      });
+    }
+  }
+  return rows;
+}
+
+/** 环形菜单 7 个根扇区：交互/小游戏/待机/逗猫棒/动作试玩/抽卡/设置 */
+function buildRadialEntries(engine: BehaviorEngine): RadialEntry[] {
+  if (settings.idleMode) {
+    return [{
+      id: "idle", label: "待机模式", icon: "💤", color: "#8d84b8",
+      state: "开", checked: true, onPick: () => void toggleIdle(),
+    }];
+  }
+  const items = buildMenu(engine);
+  const interact = findMenuItem(items, "interact");
+  const minigames = findMenuItem(items, "minigames");
+  const idle = interact?.submenu?.find((s) => s.id === "idle");
+  const track = interact?.submenu?.find((s) => s.id === "track");
+  const actionDebug = interact?.submenu?.find((s) => s.id === "action-debug");
+  const dailyCard = findMenuItem(items, "daily-card");
+
+  const toChild = (s: MenuItemSpec) => ({
+    label: s.label ?? "",
+    state: s.state,
+    checked: false,
+    onPick: () => { s.onPick?.(); s.onStatePick?.(); },
+  });
+
+  return [
+    {
+      id: "interact", label: "交互", icon: "👆", color: "#5b7db1",
+      children: (interact?.submenu ?? []).filter((s) => !s.separator && !s.hint && !s.control).map(toChild),
+    },
+    {
+      id: "minigames", label: "小游戏", icon: "🎮", color: "#c4a875",
+      state: isMiniGameOpen() ? "进行中" : undefined,
+      children: (minigames?.submenu ?? []).filter((s) => !s.separator && !s.hint && !s.control).map(toChild),
+    },
+    {
+      id: "idle", label: "待机", icon: "💤", color: "#8d84b8",
+      state: idle?.state, checked: settings.idleMode,
+      onPick: () => void toggleIdle(),
+    },
+    {
+      id: "track", label: "逗猫棒", icon: "🪄", color: "#6fa894",
+      state: track?.state, checked: settings.mouseTrack,
+      onPick: () => track?.onPick?.(),
+    },
+    {
+      id: "action-debug", label: "动作试玩", icon: "🏃", color: "#c288a0",
+      onPick: () => actionDebug?.onPick?.(),
+    },
+    {
+      id: "daily-card", label: "抽卡", icon: "🃏", color: "#9e8bc4",
+      state: dailyCard?.state, onPick: () => dailyCard?.onPick?.(),
+    },
+    {
+      id: "settings", label: "设置", icon: "⚙️", color: "#7a93ad",
+      onPick: () => settingsPanel?.open(),
+    },
+  ];
+}
+
+/** 设置窗口分组：把 radial 没放进去的功能全部收纳 */
+function buildSettingsSections(engine: BehaviorEngine): SettingsSection[] {
+  const items = buildMenu(engine);
+  const sections: SettingsSection[] = [];
+  const model = findMenuItem(items, "model");
+  if (model) sections.push({ title: "模型", rows: menuLeaves(model.submenu ?? []) });
+  const interact = findMenuItem(items, "interact");
+  if (interact) sections.push({ title: "交互", rows: menuLeaves(interact.submenu ?? []) });
+
+  const asstIds = ["assistant", "assistant-hotkey", "assistant-hotkey-clear", "assistant-settings", "chat-history"];
+  const asstRows: SettingsRow[] = [];
+  for (const id of asstIds) {
+    const it = findMenuItem(items, id);
+    if (it) asstRows.push({ label: it.label ?? "", state: it.state, onPick: () => it.onPick?.() });
+  }
+  if (asstRows.length) sections.push({ title: "小助手", rows: asstRows });
+
+  const diary = findMenuItem(items, "diary");
+  if (diary) sections.push({ title: "日记", rows: menuLeaves(diary.submenu ?? []) });
+
+  const minigames = findMenuItem(items, "minigames");
+  if (minigames) sections.push({ title: "游戏", rows: menuLeaves(minigames.submenu ?? []) });
+
+  const general: SettingsRow[] = [];
+  const fb = findMenuItem(items, "feedback"); if (fb) general.push({ label: fb.label ?? "", onPick: () => fb.onPick?.() });
+  const up = findMenuItem(items, "update"); if (up) general.push({ label: up.label ?? "", onPick: () => up.onPick?.() });
+  const ws = findMenuItem(items, "website"); if (ws) general.push({ label: ws.label ?? "", onPick: () => ws.onPick?.() });
+  const hide = findMenuItem(items, "hide");
+  if (hide) {
+    general.push({ label: "隐藏桌宠", onPick: () => hide.onPick?.() });
+    general.push({ label: "窗口置顶", checked: topmostCache, onPick: () => hide.onStatePick?.() });
+  }
+  const auto = findMenuItem(items, "autostart");
+  if (auto) {
+    const as = (auto.state ?? "").trim();
+    const autoChecked = auto.checked ?? as === "开";
+    general.push({ label: auto.label ?? "", checked: autoChecked, onPick: () => auto.onPick?.() });
+  }
+  if (general.length) sections.push({ title: "通用", rows: general });
+
+  const danger: SettingsRow[] = [];
+  const rs = findMenuItem(items, "restart"); if (rs) danger.push({ label: rs.label ?? "", onPick: () => rs.onPick?.() });
+  const qt = findMenuItem(items, "quit"); if (qt) danger.push({ label: qt.label ?? "", danger: true, onPick: () => qt.onPick?.() });
+  if (danger.length) sections.push({ title: "系统", rows: danger });
+  return sections;
+}
 async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
@@ -3019,7 +3172,7 @@ function toggleBoundsPanel() {
 import type { BoundsPadding } from "./utils/settings";
 
 // ---------- 对话记录面板 ----------
-function toggleChatHistory() {
+async function toggleChatHistory() {
   const existing = document.getElementById("chat-history-panel");
   if (existing) { existing.remove(); return; }
 
@@ -3034,20 +3187,24 @@ function toggleChatHistory() {
   title.textContent = "对话记录";
   panel.appendChild(title);
 
-  // 从 localStorage 读取历史，过滤主动问候和工具消息
+  // 从聊天历史文件读取最近 10 条 user/assistant 对话
   let msgs: {role: string; content: string}[] = [];
   try {
-    const raw = JSON.parse(localStorage.getItem("live2d-pet-assistant-history") || "[]");
-    msgs = raw
-      .filter((m: any) => {
-        if (m.role !== "user" && m.role !== "assistant") return false;
-        if (!m.content) return false;
-        const c = String(m.content);
-        if (c.startsWith("[主动问候]")) return false;
-        if (c.startsWith("[主动学习]")) return false;
-        return true;
-      })
-      .map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) }));
+    const raw = await invoke<string>("load_chat_history");
+    const arr = JSON.parse(raw || "[]");
+    if (Array.isArray(arr)) {
+      msgs = arr
+        .filter((m: any) => {
+          if (m.role !== "user" && m.role !== "assistant") return false;
+          if (!m.content) return false;
+          const c = String(m.content);
+          if (c.startsWith("[主动问候]")) return false;
+          if (c.startsWith("[主动学习]")) return false;
+          return true;
+        })
+        .slice(-10)
+        .map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) }));
+    }
   } catch {}
 
   const copyOne = (text: string) => {
