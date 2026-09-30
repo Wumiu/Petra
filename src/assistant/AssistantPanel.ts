@@ -8,6 +8,7 @@ import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from ".
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
 import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
+import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
 import { toast } from "../ui/Toast";
 
@@ -562,7 +563,7 @@ function friendlyApiError(e: unknown): string {
 }
 
 /** 注入 system prompt 的紧凑环境上下文（约 20-30 token：称呼 + 时间 + 陪伴时长，增强陪伴感） */
-function buildChatContext(nickname: string): string {
+function buildChatContext(nickname: string, outputLang: string): string {
   const now = new Date();
   const hour = now.getHours();
   let tod = "晚上";
@@ -576,7 +577,15 @@ function buildChatContext(nickname: string): string {
   const parts: string[] = [];
   if (nickname) parts.push(`对用户的称呼：${nickname}`);
   parts.push(`现在：${day}${tod}${hour}点`);
-  parts.push(`已陪伴用户${formatCompanion()}`);
+  if (outputLang && outputLang !== "zh-cn") {
+    const langNames: Record<string, string> = {
+      "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+      "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
+      "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
+    };
+    const langName = langNames[outputLang] ?? outputLang;
+    parts.push(`你必须用${langName}回复。回复格式：第一行是${langName}原文，然后换行写---，再换行写中文翻译。不要解释为什么翻译，直接按格式输出`);
+  }
   return `[环境] ${parts.join("；")}`;
 }
 
@@ -593,6 +602,11 @@ async function send(text: string) {
   if (!isProviderReady(s.assistant, apiKey)) {
     const b = addBubble("sys", "未配置 API Key，请到「小助手设置」填写（本地 Ollama 可以留空）");
     scheduleFade(b, 4000);
+    return;
+  }
+  if (!s.assistant.persona.trim()) {
+    const b = addBubble("sys", "请先到「小助手设置」填写人格设定（必填）");
+    scheduleFade(b, 5000);
     return;
   }
   history.push({ role: "user", content: text });
@@ -628,9 +642,10 @@ async function send(text: string) {
         (delta) => {
           streamed = true;
           colorHook.push(delta);
+          ttsPlayer.pushDelta(delta);
         },
         true,
-        buildChatContext(s.assistant.nickname),
+        buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? ""),
       );
       if (colorHook.lastEmotion() !== "neutral") streamEmo = colorHook.lastEmotion();
 
@@ -642,15 +657,26 @@ async function send(text: string) {
       }
 
       // 无工具调用：文字入历史
-      const finalText = loading.textContent || res.text;
-      history.push({ role: "assistant", content: finalText });
+      const rawText = loading.textContent || res.text;
+      // 分离翻译：原文\n---\n翻译 → 原文大字，翻译灰色小字
+      const parts = rawText.split(/\n---\n/);
+      const mainText = parts[0].trim();
+      const transText = parts[1]?.trim();
+      history.push({ role: "assistant", content: rawText });
       // 情感反馈：AI 回复带情绪 → 角色表情/动作 + 气泡 emoji 前缀 + 气泡着色 + 心情变化
       // 流式期间已识别到的情绪优先复用（否则"～/！"这类结尾标记在接续文本后可能失效）
-      const finalEmo = classifyAssistantEmotion(finalText);
+      const finalEmo = classifyAssistantEmotion(mainText);
       const aiEmo = finalEmo !== "neutral" ? finalEmo : streamEmo;
+      loading.textContent = "";
+      loading.append(document.createTextNode(aiEmo !== "neutral" ? `${emotionEmoji(aiEmo)} ${mainText}` : mainText));
+      if (transText) {
+        const div = document.createElement("div");
+        div.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
+        div.textContent = transText;
+        loading.appendChild(div);
+      }
       if (aiEmo !== "neutral") {
         reactNow(aiEmo);
-        loading.textContent = `${emotionEmoji(aiEmo)} ${finalText}`;
         boostMood(aiEmo);
       }
       // 颜色：识别不到情绪时用当前心情兜底，避免大部分回复都是白气泡
@@ -658,9 +684,9 @@ async function send(text: string) {
       // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
       trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
-      const cmd = extractCommand(finalText);
+      const cmd = extractCommand(mainText);
       if (cmd) {
-        loading.textContent = stripCommand(finalText) || "(执行中…)";
+        loading.textContent = stripCommand(mainText) || "(执行中…)";
         await handleToolCalls(
           [{ id: `cmd_${Date.now()}`, name: "run_shell", args: { command: cmd } }],
           loading,
@@ -677,14 +703,22 @@ async function send(text: string) {
       scheduleFade(note, 6000);
     }
     saveHistory();
+    ttsPlayer.flush();
 
     // P3 主动学习：每 5 条对话自动提取新记忆（后台运行，不阻塞 UI）
     if (history.length % 5 === 0) {
       void extractMemoriesFromChat(s, apiKey);
     }
     if (!loading.textContent.trim()) loading.textContent = "(空回复)";
-    // 按字数给阅读时间，长回复不会再"刷一下就没了"
-    scheduleFade(loading, readingHoldMs(loading.textContent));
+    // 语音开着：等播完再消失；否则按字数给阅读时间
+    if (s.tts.enabled) {
+      let faded = false;
+      ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(loading, 3000); } });
+      // 保险：30 秒后强制消失
+      setTimeout(() => { if (!faded) { faded = true; scheduleFade(loading, 1000); } }, 30000);
+    } else {
+      scheduleFade(loading, readingHoldMs(loading.textContent));
+    }
   } catch (e) {
     loading.textContent = friendlyApiError(e);
     loading.dataset.emotion = "worried";
@@ -1164,15 +1198,25 @@ export async function triggerProactive() {
     : "";
   const ctx = [currentApp ? `正在使用：${currentApp}` : "", currentTitle ? `窗口标题：${currentTitle.slice(0, 60)}` : ""].filter(Boolean).join("；");
 
-  // 心情低谷 → 安慰模式（心情随主人情绪联动，低落说明最近主人不开心）
+  // 心情低谷 → 安慰模式
   const comfortLine = getMood().happiness < 0.35
-    ? "\n【安慰模式】主人的心情最近有些低落，用你的人设温柔地安慰、陪伴一句，别提\"心情指数\"这类系统概念。"
+    ? "\n【安慰模式】用户的心情最近有些低落，用你的人设温柔地安慰、陪伴一句，别提\"心情指数\"这类系统概念。"
     : "";
-  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}\n\n` +
-    "自然地和主人打个招呼或说一句关心的话，保持你的人设风格。\n" +
-    "\n要求：简短（1-2句）、口语化、有温度、不要像客服。" +
-    "如果有相关记忆可以自然引用，但不要生硬堆砌。\n" +
-    "不要说\"作为AI\"之类的话，你就是桌宠伙伴。";
+  // 语言要求
+  let langLine = "";
+  if (s.assistant.outputLanguage && s.assistant.outputLanguage !== "zh-cn") {
+    const langNames: Record<string, string> = {
+      "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+      "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
+      "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
+    };
+    const langName = langNames[s.assistant.outputLanguage] ?? s.assistant.outputLanguage;
+    langLine = `\n你必须用${langName}说话。回复格式：第一行是${langName}原文，然后换行写---，再换行写中文翻译。`;
+  }
+  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}${langLine}\n\n` +
+    "自然地和用户打个招呼或说一句关心的话，保持你的人设风格。\n" +
+    "\n要求：简短（1-2句）、口语化、不要像客服。" +
+    "不要说\"作为AI\"之类的话。";
 
   // token 优化：问候用独立临时历史，不污染主对话历史（后续请求不携带问候上下文）
   const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
@@ -1184,6 +1228,7 @@ export async function triggerProactive() {
     // enableTools=false：问候不需要工具，省掉整套工具定义的输入 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       colorHook.push(d);
+      ttsPlayer.pushDelta(d);
     }, false);
     for (const m of relevantMemories) {
       const orig = memory.find(e => e.id === m.id);
@@ -1191,11 +1236,30 @@ export async function triggerProactive() {
     }
     saveMemory();
     boostMood("greeting_sent");
-    const finalEmo = classifyAssistantEmotion(bubble.textContent);
+    // 分离翻译
+    const rawText = bubble.textContent;
+    const parts = rawText.split(/\n---\n/);
+    const mainText = parts[0].trim();
+    const transText = parts[1]?.trim();
+    bubble.textContent = "";
+    bubble.append(document.createTextNode(mainText));
+    if (transText) {
+      const div = document.createElement("div");
+      div.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
+      div.textContent = transText;
+      bubble.appendChild(div);
+    }
+    ttsPlayer.flush();
+    const finalEmo = classifyAssistantEmotion(mainText);
     const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
     if (emo !== "neutral") reactNow(emo);
     bubble.dataset.emotion = bubbleEmotion(emo);
-    scheduleFade(bubble, 10000);
+    // 语音开着等播完再消失
+    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+      ttsPlayer.onIdle(() => scheduleFade(bubble, 3000));
+    } else {
+      scheduleFade(bubble, 10000);
+    }
   } catch {
     bubble.remove();
   } finally {
