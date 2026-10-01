@@ -3,6 +3,20 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
+// 启动错误捕获：崩溃时直接显示在屏幕上
+window.addEventListener("error", (e) => {
+  const div = document.createElement("div");
+  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff0000;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
+  div.textContent = "启动错误: " + e.message + "\n" + (e.error?.stack || "");
+  document.body?.appendChild(div);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const div = document.createElement("div");
+  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff6600;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
+  div.textContent = "Promise错误: " + (e.reason?.message || e.reason);
+  document.body?.appendChild(div);
+});
+
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
 import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
@@ -18,6 +32,7 @@ import { hasDrawnToday } from "./features/card/DailyCardManager";
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
+import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
 import { setVisibleRect } from "./ui/visible";
 import { clamp } from "./utils/math";
@@ -244,6 +259,11 @@ class PIXIApp {
 const app = new PIXIApp();
 let view!: PetView;
 let settings: Settings = loadSettings();
+let ttsApiKey = "";
+invoke<string>("get_tts_key").then(k => {
+  ttsApiKey = k;
+  ttsPlayer.setConfig(settings.tts.enabled, k, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+}).catch(() => {});
 window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
   const saved = loadSettings();
   settings.gameSound = saved.gameSound;
@@ -1846,6 +1866,40 @@ async function toggleModelPanel() {
   }
 }
 
+/** 语音设置弹窗 */
+function showTtsDialog(savedKey: string) {
+  document.getElementById("tts-dlg")?.remove();
+  const dlg = document.createElement("div");
+  dlg.id = "tts-dlg";
+  dlg.setAttribute("data-petra-interactive", "true");
+  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;min-width:320px;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
+  dlg.innerHTML = `
+    <div style="font-weight:bold;font-size:16px;margin-bottom:16px;">语音设置</div>
+    <div style="color:#999;margin-bottom:4px;">API Key</div>
+    <input id="tts-k" type="password" value="${savedKey.replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:14px;outline:none;">
+    <div style="color:#999;margin-bottom:4px;">音色 ID</div>
+    <input id="tts-s" type="text" value="${settings.tts.speakerId.replace(/"/g,'&quot;')}" style="width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:18px;outline:none;">
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="tts-c" style="padding:8px 20px;border-radius:6px;border:none;background:#555;color:#fff;cursor:pointer;">取消</button>
+      <button id="tts-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;">保存</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  const close = () => { dlg.remove(); };
+  (dlg.querySelector("#tts-c") as HTMLElement).onclick = close;
+  (dlg.querySelector("#tts-ok") as HTMLElement).onclick = async () => {
+    const k = (dlg.querySelector("#tts-k") as HTMLInputElement).value.trim();
+    const s = (dlg.querySelector("#tts-s") as HTMLInputElement).value.trim();
+    await invoke("set_tts_key", { apiKey: k }).catch(() => {});
+    settings.tts.speakerId = s;
+    saveSettings(settings);
+    ttsApiKey = k;
+    ttsPlayer.setConfig(settings.tts.enabled, k, s, settings.assistant.outputLanguage ?? "");
+    close();
+    toast("语音设置已保存");
+  };
+}
+
 function buildMenu(engine: BehaviorEngine) {
   // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
   if (settings.idleMode) {
@@ -2060,6 +2114,46 @@ function buildMenu(engine: BehaviorEngine) {
       onPick: () => void toggleAssistantSettings(),
     },
     {
+      id: "tts-toggle",
+      label: "🔊 语音输出",
+      state: settings.tts.enabled ? "开" : "关",
+      onPick: () => {
+        settings.tts.enabled = !settings.tts.enabled;
+        saveSettings(settings);
+        ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+        toast(settings.tts.enabled ? "语音输出已开启" : "语音输出已关闭");
+      },
+    },
+    {
+      id: "tts-config",
+      label: "语音设置",
+      onPick: async () => {
+        const savedKey = await invoke<string>("get_tts_key").catch(() => "");
+        showTtsDialog(savedKey);
+      },
+    },
+    {
+      id: "tts-test",
+      label: "测试语音",
+      onPick: () => {
+        const lang = settings.assistant.outputLanguage ?? "";
+        ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, lang);
+        settings.tts.enabled = true;
+        saveSettings(settings);
+        const testText: Record<string, string> = {
+          en: "Hello, voice test successful.",
+          ja: "こんにちは、音声テスト成功しました。",
+          ko: "안녕하세요, 음성 테스트 성공했습니다.",
+          fr: "Bonjour, test vocal réussi.",
+          es: "Hola, prueba de voz exitosa.",
+          de: "Hallo, Sprachtest erfolgreich.",
+          ru: "Привет, тест голоса успешен.",
+        };
+        ttsPlayer.pushDelta(testText[lang] ?? "你好，语音测试成功。");
+        ttsPlayer.flush();
+      },
+    },
+    {
       id: "chat-history",
       label: "对话记录",
       onPick: () => toggleChatHistory(),
@@ -2200,7 +2294,14 @@ function buildMenu(engine: BehaviorEngine) {
     {
       id: "restart",
       label: "重启",
-      onPick: () => void invoke("restart_app"),
+      onPick: () => {
+        // dev 模式下 app.restart() 会退出但不重新启动，改成刷新页面
+        if (import.meta.env.DEV) {
+          window.location.reload();
+        } else {
+          void invoke("restart_app");
+        }
+      },
     },
     {
       id: "quit",
@@ -3019,7 +3120,7 @@ function toggleBoundsPanel() {
 import type { BoundsPadding } from "./utils/settings";
 
 // ---------- 对话记录面板 ----------
-function toggleChatHistory() {
+async function toggleChatHistory() {
   const existing = document.getElementById("chat-history-panel");
   if (existing) { existing.remove(); return; }
 
@@ -3034,11 +3135,12 @@ function toggleChatHistory() {
   title.textContent = "对话记录";
   panel.appendChild(title);
 
-  // 从 localStorage 读取历史，过滤主动问候和工具消息
+  // 从后端读历史，只显示最近10条
   let msgs: {role: string; content: string}[] = [];
   try {
-    const raw = JSON.parse(localStorage.getItem("live2d-pet-assistant-history") || "[]");
-    msgs = raw
+    const raw = await invoke<string>("load_chat_history").catch(() => "");
+    const arr = JSON.parse(raw || "[]");
+    msgs = arr
       .filter((m: any) => {
         if (m.role !== "user" && m.role !== "assistant") return false;
         if (!m.content) return false;
@@ -3047,7 +3149,8 @@ function toggleChatHistory() {
         if (c.startsWith("[主动学习]")) return false;
         return true;
       })
-      .map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) }));
+      .map((m: any) => ({ role: m.role, content: String(m.content).split("\n---\n")[0].slice(0, 500) }))
+      .slice(-10);
   } catch {}
 
   const copyOne = (text: string) => {
@@ -3229,6 +3332,38 @@ async function toggleAssistantSettings() {
     persona.value = settings.assistant.persona;
     mkRow("人格设定", persona);
 
+    // 输出语言
+    const langSelect = document.createElement("select");
+    langSelect.className = "as-input as-select";
+    const langs: [string, string][] = [
+      ["", "自动（跟随用户）"],
+      ["zh-cn", "中文"],
+      ["en", "英语"],
+      ["ja", "日语"],
+      ["ko", "韩语"],
+      ["fr", "法语"],
+      ["de", "德语"],
+      ["es-es", "西班牙语"],
+      ["ru", "俄语"],
+      ["th", "泰语"],
+      ["vi", "越南语"],
+      ["it", "意大利语"],
+      ["pt", "葡萄牙语"],
+      ["ar", "阿拉伯语"],
+    ];
+    langs.forEach(([code, label]) => {
+      const opt = document.createElement("option");
+      opt.value = code;
+      opt.textContent = label;
+      langSelect.appendChild(opt);
+    });
+    langSelect.value = settings.assistant.outputLanguage ?? "";
+    mkRow("人物语言", langSelect);
+    const langHint = document.createElement("div");
+    langHint.className = "as-privacy";
+    langHint.textContent = "AI 用该语言回复，气泡下方显示中文翻译（翻译不朗读）";
+    host.appendChild(langHint);
+
     // 对用户的称呼
     const nickname = document.createElement("input");
     nickname.className = "as-input";
@@ -3385,6 +3520,7 @@ async function toggleAssistantSettings() {
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
+      settings.assistant.outputLanguage = langSelect.value;
       settings.gameTalk = gameTalk.checked;
       // 天气城市变了就清掉缓存，下次打开信息板立刻重新取
       const cityNext = weatherCity.value.trim();
@@ -3402,6 +3538,7 @@ async function toggleAssistantSettings() {
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }
+      ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });

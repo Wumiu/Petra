@@ -32,6 +32,8 @@ export interface AssistantSettings {
   nickname: string;
   /** 全局呼出快捷键（Tauri accelerator 字符串，如 "Ctrl+Shift+A"）；空表示未设置 */
   shortcut: string;
+  /** AI 输出语言（explicit_language 代码），空=自动 */
+  outputLanguage: string;
 }
 
 export interface DiarySettings {
@@ -86,6 +88,12 @@ export interface Settings {
   hourlyQuietStart: number;
   /** 免打扰结束小时（不含），0~23，默认 8 */
   hourlyQuietEnd: number;
+  /** TTS 语音输出配置 */
+  tts: {
+    enabled: boolean;
+    apiKey: string;
+    speakerId: string;
+  };
 }
 
 const DEFAULTS: Settings = {
@@ -112,6 +120,7 @@ const DEFAULTS: Settings = {
     greetInterval: 20,
     nickname: "",
     shortcut: "",
+    outputLanguage: "",
   },
   diary: {
     enabled: true,
@@ -129,6 +138,11 @@ const DEFAULTS: Settings = {
   hourlyChimeQuiet: true,
   hourlyQuietStart: 23,
   hourlyQuietEnd: 8,
+  tts: {
+    enabled: false,
+    apiKey: "",
+    speakerId: "",
+  },
 };
 
 /** 活动频率表情因子：越大表情/活动越少（渲染器用） */
@@ -152,6 +166,7 @@ export function loadSettings(): Settings {
       assistant: { ...DEFAULTS.assistant, ...(parsed.assistant ?? {}) },
       diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
       dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
+      tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },
     };
     s.gameSound = s.gameSound !== false;
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
