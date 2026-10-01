@@ -14,7 +14,9 @@ class TTSPlayer {
   private speaking = false;
   private buffer = "";
   private stopped = false;
+  private skipSource = false;
   private idleCallbacks: (() => void)[] = [];
+  muted = false;
 
   onIdle(cb: () => void) { this.idleCallbacks.push(cb); }
 
@@ -30,7 +32,7 @@ class TTSPlayer {
     if (!this.enabled || !this.apiKey || !this.speakerId) return;
     if (this.stopped) return;
     this.buffer += delta;
-    // 检测到翻译分隔符，后面的内容不读
+    // 遇到翻译分隔符，只读前面的外文原文
     if (this.buffer.includes("\n---")) {
       this.buffer = this.buffer.split("\n---")[0];
       this.stopped = true;
@@ -47,6 +49,7 @@ class TTSPlayer {
     }
     this.buffer = "";
     this.stopped = false;
+    this.skipSource = false;
   }
 
   stop() {
@@ -116,6 +119,7 @@ class TTSPlayer {
     const next = this.queue.splice(idx, 1)[0];
     if (!next.audio) { this.speaking = false; this.pump(); return; }
     this.speaking = true;
+    next.audio.volume = this.muted ? 0 : 1;
     next.audio.onended = () => { this.speaking = false; this.pump(); };
     next.audio.onerror = () => { this.speaking = false; this.pump(); };
     next.audio.play().catch(() => { this.speaking = false; this.pump(); });

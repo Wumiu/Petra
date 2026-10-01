@@ -3538,6 +3538,7 @@ async function toggleAssistantSettings() {
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }
+      ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });

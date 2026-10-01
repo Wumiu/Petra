@@ -21,6 +21,7 @@ let bubbles: HTMLElement | null = null;
 let input: HTMLInputElement;
 let allowAllShell: HTMLInputElement;
 let history: ChatMessage[] = [];
+let lastChatLang = "";
 let memory: MemoryStore = [];
 let timer: number | null = null;
 let blurTimer: number | null = null;
@@ -566,32 +567,33 @@ function friendlyApiError(e: unknown): string {
 function buildChatContext(nickname: string, outputLang: string): string {
   const now = new Date();
   const hour = now.getHours();
-  let tod = "晚上";
-  if (hour >= 5 && hour < 9) tod = "早晨";
-  else if (hour >= 9 && hour < 12) tod = "上午";
-  else if (hour >= 12 && hour < 14) tod = "中午";
-  else if (hour >= 14 && hour < 18) tod = "下午";
-  else if (hour >= 18 && hour < 23) tod = "晚上";
-  else tod = "深夜";
   const day = now.toLocaleDateString("zh-CN", { weekday: "long" });
   const parts: string[] = [];
-  if (nickname) parts.push(`对用户的称呼：${nickname}`);
-  parts.push(`现在：${day}${tod}${hour}点`);
-  if (outputLang && outputLang !== "zh-cn") {
-    const langNames: Record<string, string> = {
-      "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
-      "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
-      "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
-    };
-    const langName = langNames[outputLang] ?? outputLang;
-    parts.push(`你必须用${langName}回复。回复格式：第一行是${langName}原文，然后换行写---，再换行写中文翻译。不要解释为什么翻译，直接按格式输出`);
+  if (nickname) {
+    if (outputLang && outputLang !== "zh-cn") {
+      parts.push(`用户昵称：${nickname}（用${langNameOf(outputLang)}自然地称呼用户，不要翻译成中文）`);
+    } else {
+      parts.push(`对用户的称呼：${nickname}`);
+    }
   }
+  parts.push(`现在：${day}${hour}点`);
   return `[环境] ${parts.join("；")}`;
+}
+
+function langNameOf(code: string): string {
+  const m: Record<string, string> = {
+    "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+    "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
+    "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
+  };
+  return m[code] ?? code;
 }
 
 async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
+  const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
+  ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled) {
     const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
@@ -609,7 +611,22 @@ async function send(text: string) {
     scheduleFade(b, 5000);
     return;
   }
-  history.push({ role: "user", content: text });
+  const langNames: Record<string, string> = {
+    "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+    "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
+    "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
+  };
+  const outLang = s.assistant.outputLanguage;
+  const langName = outLang ? (langNames[outLang] ?? "英语") : "";
+  // 换语言时清空对话历史
+  if (lastChatLang !== outLang && history.length > 0) {
+    history = [];
+  }
+  lastChatLang = outLang;
+  const userContent = (outLang && outLang !== "zh-cn")
+    ? `${text}\n[系统提醒：你必须用${langName}回复，不要用中文]`
+    : text;
+  history.push({ role: "user", content: userContent });
   saveHistory();
   // 情感反馈：先分析用户消息（零 token），立即驱动角色表情/动作 + 心情
   const userEmo = classifyEmotion(text);
@@ -630,13 +647,24 @@ async function send(text: string) {
     while (budget.nextRound()) {
       if (budget.rounds > 1) loading.textContent = "";
       // token 优化：记忆按场景/话题召回（≤6 条），而非全量注入 system prompt
-      const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text }).slice(0, 6);
+      const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text });
+      const langNames: Record<string, string> = {
+        "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+        "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
+        "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
+      };
+      const langName = s.assistant.outputLanguage ? (langNames[s.assistant.outputLanguage] ?? "英语") : "";
+      const langInstruction = (s.assistant.outputLanguage && s.assistant.outputLanguage !== "zh-cn")
+        ? `【最高优先级】你必须全程用${langName}回复用户，不管用户说什么语言。回复中绝对不要夹杂中文。\n\n`
+        : `【最高优先级】你必须全程用中文回复用户。\n\n`;
+      const personaWithLang = langInstruction + s.assistant.persona;
+
       const res = await chatStream(
         s.assistant.provider,
         apiKey,
         s.assistant.model,
         history,
-        s.assistant.persona,
+        personaWithLang,
         ctxMemories,
         s.assistant.customBaseUrl,
         (delta) => {
@@ -657,14 +685,14 @@ async function send(text: string) {
       }
 
       // 无工具调用：文字入历史
-      const rawText = loading.textContent || res.text;
-      // 分离翻译：原文\n---\n翻译 → 原文大字，翻译灰色小字
-      const parts = rawText.split(/\n---\n/);
-      const mainText = parts[0].trim();
-      const transText = parts[1]?.trim();
-      history.push({ role: "assistant", content: rawText });
-      // 情感反馈：AI 回复带情绪 → 角色表情/动作 + 气泡 emoji 前缀 + 气泡着色 + 心情变化
-      // 流式期间已识别到的情绪优先复用（否则"～/！"这类结尾标记在接续文本后可能失效）
+      const rawText = res.text;
+      // 分离翻译：原文 + --- + 翻译
+      const parts = rawText.split(/-{3,}/);
+      const mainText = (parts[0] || "").trim();
+      let transText = (parts[1] || "").trim();
+      // 历史只存中文翻译（或中文原文）
+      history.push({ role: "assistant", content: transText || mainText });
+      // 情感反馈
       const finalEmo = classifyAssistantEmotion(mainText);
       const aiEmo = finalEmo !== "neutral" ? finalEmo : streamEmo;
       loading.textContent = "";
@@ -674,6 +702,27 @@ async function send(text: string) {
         div.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
         div.textContent = transText;
         loading.appendChild(div);
+      } else if (outLang && outLang !== "zh-cn" && mainText) {
+        // 自动翻译：异步请求中文翻译
+        const transDiv = document.createElement("div");
+        transDiv.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
+        transDiv.textContent = "翻译中...";
+        loading.appendChild(transDiv);
+        (async () => {
+          try {
+            const t = await chatStream(
+              s.assistant.provider, apiKey, s.assistant.model,
+              [], "你是翻译器，把以下文本翻译成中文，只输出翻译结果：",
+              [], "", () => {}, false,
+              `翻译：${mainText}`,
+            );
+            transText = t.text.trim();
+            transDiv.textContent = transText;
+            history[history.length - 1].content = transText;
+          } catch {
+            transDiv.remove();
+          }
+        })();
       }
       if (aiEmo !== "neutral") {
         reactNow(aiEmo);
@@ -681,6 +730,18 @@ async function send(text: string) {
       }
       // 颜色：识别不到情绪时用当前心情兜底，避免大部分回复都是白气泡
       loading.dataset.emotion = bubbleEmotion(aiEmo);
+      // 小喇叭静音按钮
+      const muteBtn = document.createElement("div");
+      muteBtn.style.cssText = "display:inline-block;margin-top:6px;cursor:pointer;font-size:12px;opacity:0.6;";
+      muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
+      muteBtn.onclick = (e) => {
+        e.stopPropagation();
+        ttsPlayer.muted = !ttsPlayer.muted;
+        // 立即调整当前正在播放的音频音量
+        document.querySelectorAll<HTMLAudioElement>("audio").forEach(a => { a.volume = ttsPlayer.muted ? 0 : 1; });
+        muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
+      };
+      loading.appendChild(muteBtn);
       // 记录对话事件（日记系统）：记用户说的话（tracker 内部 safeSlice 截到 80 字）
       trackEvent({ type: "chat", summary: text });
       // CMD 兜底（非 function calling provider）
@@ -1088,7 +1149,8 @@ function recallRelevantMemories(context: {
   });
   
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, 8).map(s => s.entry);
+  // 只召回高分且相关的记忆，最多2条，避免AI提起无关旧事
+  return scored.filter(s => s.score >= 5).slice(0, 2).map(s => s.entry);
 }
 
 
