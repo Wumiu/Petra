@@ -732,12 +732,12 @@ async function send(text: string) {
       loading.dataset.emotion = bubbleEmotion(aiEmo);
       // 小喇叭静音按钮
       const muteBtn = document.createElement("div");
-      muteBtn.style.cssText = "display:inline-block;margin-top:6px;cursor:pointer;font-size:12px;opacity:0.6;";
+      muteBtn.setAttribute("data-petra-interactive", "true");
+      muteBtn.style.cssText = "display:inline-block;margin-top:6px;cursor:pointer;font-size:14px;opacity:0.7;padding:2px 6px;border-radius:4px;background:rgba(255,255,255,0.1);";
       muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
       muteBtn.onclick = (e) => {
         e.stopPropagation();
         ttsPlayer.muted = !ttsPlayer.muted;
-        // 立即调整当前正在播放的音频音量
         document.querySelectorAll<HTMLAudioElement>("audio").forEach(a => { a.volume = ttsPlayer.muted ? 0 : 1; });
         muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
       };
@@ -774,9 +774,9 @@ async function send(text: string) {
     // 语音开着：等播完再消失；否则按字数给阅读时间
     if (s.tts.enabled) {
       let faded = false;
-      ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(loading, 3000); } });
-      // 保险：30 秒后强制消失
-      setTimeout(() => { if (!faded) { faded = true; scheduleFade(loading, 1000); } }, 30000);
+      ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(loading, 5000); } });
+      // 保险：120秒后强制消失
+      setTimeout(() => { if (!faded) { faded = true; scheduleFade(loading, 3000); } }, 120000);
     } else {
       scheduleFade(loading, readingHoldMs(loading.textContent));
     }

@@ -3594,6 +3594,14 @@ pub fn run() {
     // 开发版禁止实际安装由前端 import.meta.env.DEV 保护（见 UpdateManager.performUpdate）。
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 第二次启动：把主窗口拉到前台
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
