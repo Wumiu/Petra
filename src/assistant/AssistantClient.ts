@@ -164,6 +164,20 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "delete_wrong_history",
+      description: "当用户强烈纠正你之前记错的事实时，调用此工具删除对话历史里相关的错误对话，避免你一直认死理。传入错误事实相关的关键词，系统会自动删除包含这些关键词的历史消息。",
+      parameters: {
+        type: "object",
+        properties: {
+          keywords: { type: "string", description: "错误事实相关的关键词，多个关键词用空格隔开，比如：没睡觉 熬夜 通宵" },
+        },
+        required: ["keywords"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_volume",
       description:
         "调节系统音量。传 level (0-100) 设置音量百分比，传 mute (true/false) 静音/取消静音。",

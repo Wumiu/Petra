@@ -563,6 +563,52 @@ function positionPanelNearModel(panel: HTMLElement) {
   panel.style.transform = "none";
 }
 
+/** 天气信息板专用定位：输入框打开时优先放模型上方（避免和输入框抢位置），贴边自动翻到内侧 */
+function positionInfoPanelNearModel(
+  el: HTMLElement,
+  mr: { left: number; top: number; right: number; bottom: number; width: number; height: number },
+  vr: { left: number; top: number; right: number; bottom: number },
+) {
+  const pw = el.offsetWidth || 270;
+  const ph = el.offsetHeight || 200;
+  const gap = 8;
+
+  // 严格按要求：天气面板只放模型左右两侧，上下都不许放
+  const inputBar = document.getElementById("as-inputbar");
+  const inputOpen = !!inputBar && !inputBar.classList.contains("hidden");
+  // 垂直方向和模型垂直居中对齐
+  const top = mr.top + (mr.height - ph) / 2;
+
+  // 候选：先右后左
+  const candidates = [
+    { left: mr.right + gap, top: top }, // 模型右侧
+    { left: mr.left - pw - gap, top: top }, // 模型左侧
+  ];
+
+  // 选第一个完整落在可见区内的
+  for (const c of candidates) {
+    const l = Math.round(c.left);
+    const t = Math.round(c.top);
+    if (l >= vr.left && l + pw <= vr.right && t >= vr.top && t + ph <= vr.bottom) {
+      el.style.left = `${l}px`;
+      el.style.top = `${t}px`;
+      return;
+    }
+  }
+
+  // 严格按要求：气泡只放模型左右两侧，右边放不下就直接放模型左边，绝不挡模型
+  const rightCandidate = mr.right + gap;
+  let left: number;
+  if (rightCandidate + pw <= vr.right) {
+    left = rightCandidate; // 右边放得下就放右边
+  } else {
+    left = mr.left - pw - gap; // 右边放不下就放模型左边，绝不挡模型
+  }
+  left = Math.max(vr.left, left); // 最后再钳制不超出窗口左边缘
+  el.style.left = `${Math.round(left)}px`;
+  el.style.top = `${Math.max(vr.top, Math.min(top, vr.bottom - ph))}px`;
+}
+
 /** 将通知定位到模型头顶（不挡住模型） */
 function positionAboveModel(el: HTMLElement) {
   const mr = getModelRect();
@@ -1388,11 +1434,14 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     }
     // 拖拽中所有打开的面板跟随模型位置
     if (drag && drag.moved) {
-      // 输入框：默认在模型下方，放不下翻到上方，避开信息板，钳制可见区
+      // 输入框：默认在模型下方居中，放不下翻到上方，避开信息板，钳制可见区
       const ib = document.getElementById("as-inputbar");
       if (ib && !ib.classList.contains("hidden")) {
         const ih = ib.offsetHeight || 60;
         const iw = ib.offsetWidth || 185;
+        // 水平居中在模型正下方：模型中心 - 输入框半宽
+        const modelCenterX = mr.left + mr.width / 2;
+        const idealLeft = modelCenterX - iw / 2;
         const infoEl = document.getElementById("info-panel");
         const ir = infoEl && !infoEl.classList.contains("hidden")
           ? infoEl.getBoundingClientRect()
@@ -1404,21 +1453,28 @@ function showAnnouncement(title: string, lines: string[], version: string) {
         const tops = [mr.bottom + 10, vr.bottom - ih, mr.top - ih - 10]; // 贴底时钳到可见区底部（允许盖住模型下半部分）
         let top = tops[0];
         for (const t of tops) {
-          if (!collides(mr.left, t) && t >= vr.top && t + ih <= vr.bottom) {
+          if (!collides(idealLeft, t) && t >= vr.top && t + ih <= vr.bottom) {
             top = t;
             break;
           }
         }
         top = Math.max(vr.top, Math.min(top, vr.bottom - ih));
-        ib.style.left = `${Math.round(Math.max(vr.left, Math.min(mr.left, vr.right - iw)))}px`;
+        // 钳制到可见区内
+        const left = Math.max(vr.left, Math.min(idealLeft, vr.right - iw));
+        ib.style.left = `${Math.round(left)}px`;
         ib.style.top = `${Math.round(top)}px`;
         ib.style.bottom = "auto";
       }
       positionFloatingUi(toasts, bubbles, lyricBubbles, mr, vr);
-      // 其他面板（model-panel、chat-history 等）
+      // 其他面板（model-panel、chat-history 等）跟随模型位置
       document.querySelectorAll(".model-panel:not(.hidden), #chat-history-panel").forEach(el => {
         positionPanelNearModel(el as HTMLElement);
       });
+      // 天气信息板单独跟随：始终紧挨着模型，贴边自动翻到内侧
+      const infoEl = document.getElementById("info-panel") as HTMLElement | null;
+      if (infoEl && !infoEl.classList.contains("hidden")) {
+        positionInfoPanelNearModel(infoEl, mr, vr);
+      }
     }
 
     // 调试日志仅 dev 构建输出
@@ -2136,10 +2192,13 @@ function buildMenu(engine: BehaviorEngine) {
       id: "tts-test",
       label: "测试语音",
       onPick: () => {
+        // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
+        if (!settings.tts.enabled) {
+          toast("请先开启语音输出再测试", "warn");
+          return;
+        }
         const lang = settings.assistant.outputLanguage ?? "";
         ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, lang);
-        settings.tts.enabled = true;
-        saveSettings(settings);
         const testText: Record<string, string> = {
           en: "Hello, voice test successful.",
           ja: "こんにちは、音声テスト成功しました。",
@@ -2316,10 +2375,20 @@ async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
   if (settings.idleMode) {
-    // 进入待机：收起对话框/气泡/天气信息板，待机期间一律不显示
+    // 进入待机：收起所有打开的窗口/面板/对话框，待机期间一律不显示
     closeAssistant();
     clearBubbles();
     infoPanelEl?.classList.add("hidden");
+    // 关闭所有面板类元素：模型面板/卡牌/日记/大小/边界/调节等
+    document.querySelectorAll(".model-panel:not(.hidden)").forEach(el => el.classList.add("hidden"));
+    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置
+    document.getElementById("assistant-settings")?.classList.add("hidden");
+    document.getElementById("chat-history-panel")?.classList.add("hidden");
+    document.getElementById("feedback-panel")?.classList.add("hidden");
+    document.getElementById("action-debug")?.classList.add("hidden");
+    document.getElementById("tts-dlg")?.remove();
+    // 关闭右键菜单
+    document.getElementById("menu")?.classList.add("hidden");
     // 同步窗口实际位置（逻辑），保证就近边缘判断准确（引擎 pos 可能因漫游漂移）
     const p = await getCurrentWindow().outerPosition();
     engine.setPos(p.x / scaleFactor, p.y / scaleFactor);
@@ -2656,101 +2725,12 @@ async function showInfoPanel() {
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
   // 贴边自适应：宽度随可见区收缩
-  let panelW = Math.min(270, Math.max(160, vr.right - vr.left - 20));
-  let panelH = el.offsetHeight || 200;
-  el.style.maxHeight = "";
+  el.style.width = `${Math.min(270, Math.max(160, vr.right - vr.left - 20))}px`;
+  el.style.maxHeight = "none";
 
-  // 定位：助手开启时避开输入框（输入框默认在模型下方，其次可见区底部、模型上方），
-  // 候选依次 上方 → 左右外侧 → 输入框下方；旁边空间略小时收缩面板宽度贴合侧面（不压模型），
-  // 全部放不下时收缩高度（滚动）兜底，保证信息板始终出现且不遮输入框、不压模型
-  const a = engine.workArea;
-  const screenCy = a ? a.top + a.height / 2 : window.innerHeight / 2;
-  const modelScreenCenterY = engine.windowScreenPos.y + mr.top + mr.height / 2;
-  const assistantOpen = settings.assistant.enabled;
-  // 贴顶（模型顶边贴近工作区顶部）+ 助手开启：不显示信息板（贴顶布局局促，避免与输入框冲突）
-  const atTop = a ? engine.windowScreenPos.y + mr.top <= a.top + 40 : false;
-  if (assistantOpen && atTop) {
-    el.classList.add("hidden");
-    return;
-  }
-  let cx = mr.left + (mr.width - panelW) / 2;
-  const BAR_H = 80; // 输入框高度估计
-  const BAR_W = 185;
-  let left = cx;
-  let top = mr.bottom + 6;
-  if (assistantOpen) {
-    // 输入框预期位置（与 openAssistant 一致：模型下方 → 可见区底部 → 模型上方）
-    let barTop = mr.bottom + 10;
-    if (barTop + BAR_H > vr.bottom) barTop = vr.bottom - BAR_H;
-    if (barTop < vr.top) barTop = vr.top;
-    const barRect = { left: mr.left, right: mr.left + BAR_W, top: barTop, bottom: barTop + BAR_H };
-    const hitsBar = (l: number, t: number) =>
-      l < barRect.right && l + panelW > barRect.left && t < barRect.bottom && t + panelH > barRect.top;
-    const fits = (l: number, t: number) =>
-      !hitsBar(l, t) &&
-      l >= vr.left && l + panelW <= vr.right &&
-      t >= vr.top && t + panelH <= vr.bottom;
-    let placed: { left: number; top: number } | null = null;
-    // 上方
-    if (fits(cx, mr.top - panelH - 6)) placed = { left: cx, top: mr.top - panelH - 6 };
-    // 左右外侧（严格不压模型；空间略小时收缩宽度贴合侧面）
-    if (!placed) {
-      const rightAvail = vr.right - (mr.right + 10);
-      const leftAvail = mr.left - 10 - vr.left;
-      const trySide = (avail: number, l: number): boolean => {
-        if (avail < 140) return false;
-        if (avail < panelW) {
-          panelW = Math.max(140, avail);
-          cx = mr.left + (mr.width - panelW) / 2;
-        }
-        if (fits(l, mr.top)) {
-          placed = { left: l, top: mr.top };
-          return true;
-        }
-        return false;
-      };
-      if (!trySide(rightAvail, mr.right + 10)) trySide(leftAvail, mr.left - panelW - 10);
-    }
-    // 输入框下方（叠放，不遮输入框）
-    if (!placed && fits(cx, barRect.bottom + 6)) placed = { left: cx, top: barRect.bottom + 6 };
-    // 空间不足：收缩高度（滚动）优先放输入框下方，其次模型上方，最后钳制到输入框下方
-    if (!placed) {
-      const belowH = vr.bottom - (barRect.bottom + 6);
-      const aboveH = mr.top - 6 - vr.top;
-      if (belowH >= 80) {
-        panelH = belowH;
-        el.style.maxHeight = `${panelH}px`;
-        placed = { left: cx, top: barRect.bottom + 6 };
-      } else if (aboveH >= 80) {
-        panelH = aboveH;
-        el.style.maxHeight = `${panelH}px`;
-        placed = { left: cx, top: vr.top };
-      } else {
-        panelH = Math.max(60, vr.bottom - vr.top - 10);
-        el.style.maxHeight = `${panelH}px`;
-        placed = { left: cx, top: Math.max(vr.top, Math.min(barRect.bottom + 6, vr.bottom - panelH)) };
-      }
-    }
-    if (placed) {
-      left = placed.left;
-      top = placed.top;
-    }
-  } else if (modelScreenCenterY <= screenCy) {
-    // 模型在上半屏 → 信息版默认在下方
-    top = mr.bottom + 6;
-    if (top + panelH > vr.bottom) top = mr.top - panelH - 6;
-  } else {
-    // 模型在下半屏 → 信息版在上方
-    top = mr.top - panelH - 6;
-    if (top < vr.top) top = mr.bottom + 6;
-  }
-  // 兜底钳制到可见区
-  left = Math.max(vr.left, Math.min(left, Math.max(vr.left, vr.right - panelW)));
-  top = Math.max(vr.top, Math.min(top, Math.max(vr.top, vr.bottom - panelH)));
+  // 用统一的定位函数：优先模型下方居中，贴边自动翻到内侧，始终挨着模型
+  positionInfoPanelNearModel(el, mr, vr);
 
-  el.style.left = `${Math.round(left)}px`;
-  el.style.top = `${Math.round(top)}px`;
-  el.style.width = `${panelW}px`;
   el.style.opacity = "1";
   // 进入动画（从下方滑入）
   el.style.transform = "translateY(12px)";

@@ -385,6 +385,9 @@ export async function openAssistant(modelRect?: { left: number; top: number; rig
     const vr = getVisibleRect();
     const barW = inputBar!.offsetWidth || 185;
     const barH = inputBar!.offsetHeight || 60;
+    // 水平居中在模型正下方：模型中心 - 输入框半宽
+    const modelCenterX = modelRect.left + (modelRect.right - modelRect.left) / 2;
+    const centeredLeft = modelCenterX - barW / 2;
     // 避开已显示的信息板（避免叠放遮挡：信息板先于输入框定位）
     const infoEl = document.getElementById("info-panel");
     const infoRect =
@@ -394,9 +397,9 @@ export async function openAssistant(modelRect?: { left: number; top: number; rig
       l < infoRect.right && l + barW > infoRect.left &&
       t < infoRect.bottom && t + barH > infoRect.top;
     const cands = [
-      { left: modelRect.left, top: modelRect.bottom + 10 }, // 模型下方（默认）
-      { left: modelRect.left, top: vr.bottom - barH }, // 可见区底部（贴底时允许盖住模型下半部分）
-      { left: modelRect.left, top: modelRect.top - barH - 10 }, // 模型上方（最后尝试）
+      { left: centeredLeft, top: modelRect.bottom + 10 }, // 模型下方居中（默认）
+      { left: centeredLeft, top: vr.bottom - barH }, // 可见区底部居中（贴底时允许盖住模型下半部分）
+      { left: centeredLeft, top: modelRect.top - barH - 10 }, // 模型上方居中（最后尝试）
     ];
     let pick: { left: number; top: number } | null = null;
     for (const c of cands) {
@@ -891,6 +894,25 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       } else {
         history.push({ role: "tool", tool_call_id: tc.id, content: "内容为空" });
       }
+      continue;
+    }
+    if (tc.name === "delete_wrong_history") {
+      const keywords = String(tc.args.keywords ?? "").trim().split(/\s+/).filter(Boolean);
+      if (keywords.length === 0) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "没有提供关键词" });
+        continue;
+      }
+      // 删除所有包含任意关键词的用户和助手消息
+      const before = history.length;
+      history = history.filter(msg => {
+        if (msg.role !== "user" && msg.role !== "assistant") return true;
+        const text = "content" in msg ? String(msg.content || "") : "";
+        return !keywords.some(k => text.includes(k));
+      });
+      const deleted = before - history.length;
+      // 保存到文件
+      void invoke("save_chat_history", { content: JSON.stringify(history) }).catch(() => {});
+      history.push({ role: "tool", tool_call_id: tc.id, content: `已删除${deleted}条相关错误对话记录，现在我不会再记错了` });
       continue;
     }
     if (tc.name === "launch_application") {
