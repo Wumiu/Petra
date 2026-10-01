@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/petra-logo.png" width="180" alt="Petra Logo" />
+  <img src="assets/petra-logo.png" width="180" alt="Petra Logo" />
 </p>
 
 <h1 align="center">Petra</h1>
