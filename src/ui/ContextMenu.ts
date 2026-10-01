@@ -4,7 +4,6 @@ export interface MenuItemSpec {
   label?: string;
   state?: string;
   danger?: boolean;
-  checked?: boolean;
   separator?: boolean;
   submenu?: MenuItemSpec[];  // 子菜单
   onPick?: () => void;

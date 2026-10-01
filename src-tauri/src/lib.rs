@@ -3263,47 +3263,13 @@ fn set_autostart(app: AppHandle, enabled: bool) -> bool {
     outcome.is_ok()
 }
 
-#[tauri::command]
-fn open_settings_window(app: tauri::AppHandle) -> tauri::Result<()> {
-    use tauri::WebviewWindowBuilder;
-    if let Some(win) = app.get_webview_window("settings") {
-        win.show()?;
-        win.set_focus()?;
-        return Ok(());
-    }
-    WebviewWindowBuilder::new(
-        &app,
-        "settings",
-        tauri::WebviewUrl::App("index.html#settings".into()),
-    )
-    .title("Petra 设置")
-    .inner_size(800.0, 600.0)
-    .min_inner_size(700.0, 520.0)
-    .resizable(true)
-    // .always_on_top(true)
-    .decorations(true)
-    .transparent(false)
-    .build()?;
-    #[cfg(debug_assertions)]
-    {
-        use tauri::Manager;
-        if let Some(w) = app.get_webview_window("settings") {
-            w.open_devtools();
-        }
-    }
-    Ok(())
-}
-
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let toggle = MenuItemBuilder::with_id("toggle", "显示 / 隐藏 (Alt+P)")
-        .accelerator("Alt+P")
-        .build(app)?;
     let settings = MenuItemBuilder::with_id("settings", "设置").build(app)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
     let restart = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_label = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
-        .items(&[&toggle, &settings, &separator, &restart, &quit_label])
+        .items(&[&settings, &separator, &restart, &quit_label])
         .build()?;
 
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
@@ -3314,10 +3280,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "toggle" => toggle_window(app),
-            "settings" => {
-                let _ = app.emit("open-settings", ());
-            }
+            "settings" => {} // 占位：之后再接设置面板
             "restart" => {
                 app.restart();
             }
@@ -3691,7 +3654,8 @@ pub fn run() {
             list_installed_apps, open_path, lock_screen,
             save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,
-            register_assistant_shortcut, unregister_assistant_shortcut, open_settings_window,
+            register_assistant_shortcut, unregister_assistant_shortcut,
+            tts_synthesize, set_tts_key, get_tts_key,
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {
