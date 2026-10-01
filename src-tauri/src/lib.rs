@@ -1134,6 +1134,35 @@ fn api_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("api_key.bin"))
 }
 
+fn tts_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("tts_key.bin"))
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn set_tts_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    if api_key.is_empty() {
+        let _ = std::fs::remove_file(tts_key_path(&app)?);
+        return Ok(());
+    }
+    let enc = dpapi_protect(api_key.as_bytes())?;
+    std::fs::write(tts_key_path(&app)?, enc).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_tts_key(app: AppHandle) -> Result<String, String> {
+    let path = tts_key_path(&app)?;
+    let enc = std::fs::read(&path).map_err(|_| "".to_string())?;
+    if enc.is_empty() { return Ok("".to_string()); }
+    let dec = dpapi_unprotect(&enc)?;
+    String::from_utf8(dec).map_err(|e| e.to_string())
+}
+
 /// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
 #[cfg(windows)]
 #[tauri::command]
@@ -2632,6 +2661,61 @@ fn list_installed_apps() -> String {
     format!("开始菜单里可启动的软件共 {total} 个{tail}：{}", names.join("、"))
 }
 
+#[tauri::command]
+async fn tts_synthesize(
+    api_key: String,
+    speaker: String,
+    text: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+
+    let mut req = serde_json::json!({
+        "req_params": {
+            "text": text,
+            "speaker": speaker,
+            "audio_params": { "format": "mp3", "sample_rate": 24000 }
+        }
+    });
+    if let Some(lang) = language.filter(|l| !l.is_empty()) {
+        req["req_params"]["explicit_language"] = serde_json::Value::String(lang);
+    }
+
+    let resp = client
+        .post("https://openspeech.bytedance.com/api/v3/tts/unidirectional")
+        .header("X-Api-Key", &api_key)
+        .header("X-Api-Resource-Id", "seed-icl-2.0")
+        .header("X-Api-Request-Id", &format!("{:x}{:x}{:x}{:x}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            std::process::id()))
+        .header("Content-Type", "application/json")
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| format!("TTS request: {e}"))?;
+
+    let body = resp.text().await.map_err(|e| format!("TTS read: {e}"))?;
+    let mut combined = String::new();
+    for line in body.lines() {
+        let t = line.trim();
+        if t.is_empty() { continue; }
+        if let Ok(j) = serde_json::from_str::<serde_json::Value>(t) {
+            if let Some(data) = j.get("data").and_then(|d| d.as_str()) {
+                combined.push_str(data);
+            }
+        }
+    }
+    if combined.is_empty() {
+        return Err(format!("TTS no audio: {}", body));
+    }
+    Ok(combined)
+}
+
 /// 列出可启动的应用（macOS 扫 /Applications，Linux 扫 freedesktop 的 .desktop）。
 #[cfg(unix)]
 #[tauri::command]
@@ -3547,6 +3631,14 @@ pub fn run() {
     // 开发版禁止实际安装由前端 import.meta.env.DEV 保护（见 UpdateManager.performUpdate）。
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // 第二次启动：把主窗口拉到前台
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
