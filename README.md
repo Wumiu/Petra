@@ -7,9 +7,9 @@
 <p align="center">一个运行在 Windows 桌面的可自定义 AI 桌宠</p>
 
 <p align="center">
-  <img src="docs/assets/wink.gif" height="200" alt="Petra Wink Demo" />
-  <img src="docs/assets/sleep.gif" height="200" alt="Petra Sleep Demo" />
-  <img src="docs/assets/sway.gif" height="200" alt="Petra Sway Demo" />
+  <img src="assets/wink.gif" height="200" alt="Petra Wink Demo" />
+  <img src="assets/sleep.gif" height="200" alt="Petra Sleep Demo" />
+  <img src="assets/sway.gif" height="200" alt="Petra Sway Demo" />
 </p>
 
 ## 简介
