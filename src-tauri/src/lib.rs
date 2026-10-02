@@ -523,7 +523,9 @@ fn restart_app(app: AppHandle) {
 
 fn sanitize_psd_name(name: &str) -> String {
     const MAX_NAME_LEN: usize = 64;
-    let base = std::path::Path::new(name)
+    // 导入名称可能包含 Windows 路径；在 macOS/Linux 上也必须剥离反斜杠目录。
+    let normalized = name.replace('\\', "/");
+    let base = std::path::Path::new(&normalized)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| name.to_string());
@@ -1134,6 +1136,7 @@ fn api_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .join("api_key.bin"))
 }
 
+#[cfg(windows)]
 fn tts_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
@@ -1187,6 +1190,60 @@ fn get_api_key(app: AppHandle) -> Result<String, String> {
 const KEYCHAIN_SERVICE: &str = "com.wumiu.petra.apikey";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "petra";
+
+/// TTS 与聊天 API Key 使用不同的 Keychain 项，互不覆盖。
+#[cfg(target_os = "macos")]
+const TTS_KEYCHAIN_SERVICE: &str = "com.wumiu.petra.ttskey";
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn set_tts_key(api_key: String) -> Result<(), String> {
+    // 与聊天密钥一致：参数直接传给 security，不经过 shell，也不记录密钥。
+    // 空字符串保存为空值，表示用户已清除 TTS 密钥。
+    let status = hidden_command("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            TTS_KEYCHAIN_SERVICE,
+            "-w",
+            api_key.as_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("写入 TTS 钥匙串失败: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("写入 TTS 钥匙串失败（security 退出码 {status}）"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn get_tts_key() -> Result<String, String> {
+    let out = hidden_command("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            TTS_KEYCHAIN_SERVICE,
+            "-w",
+        ])
+        .output()
+        .map_err(|e| format!("读取 TTS 钥匙串失败: {e}"))?;
+    if !out.status.success() {
+        return Err("未设置 TTS API Key 或钥匙串不可用".to_string());
+    }
+    String::from_utf8(out.stdout)
+        .map(|key| key.trim().to_string())
+        .map_err(|_| "TTS API Key 编码无效".to_string())
+}
 
 /// 存储 API Key 到 Keychain（-U 表示已存在就更新，避免堆出重复项）。
 ///
@@ -3883,6 +3940,4 @@ mod tests {
         assert!(validate_shell_command("shutdown /s").is_err(), "非白名单命令必须拦截");
     }
 }
-
-
 
