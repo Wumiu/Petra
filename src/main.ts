@@ -2136,8 +2136,9 @@ function buildMenu(engine: BehaviorEngine) {
       id: "tts-test",
       label: "测试语音",
       onPick: () => {
+        // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
         if (!settings.tts.enabled) {
-          toast("语音输出未开启，请先在设置里打开语音输出");
+          toast("请先开启语音输出再测试", "warn");
           return;
         }
         const lang = settings.assistant.outputLanguage ?? "";

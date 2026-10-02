@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { readingHoldMs } from "../ui/bubbleTiming";
-import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, wantsScreenCapture, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
 import { classifyEmotion, classifyAssistantEmotion, moodFallbackEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
@@ -759,6 +759,7 @@ async function send(text: string) {
           [{ id: `cmd_${Date.now()}`, name: "run_shell", args: { command: cmd } }],
           loading,
           budget,
+          screenshot,
         );
         continue;
       }
@@ -1385,7 +1386,6 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
 }
 // 记忆初始化
 loadMemory();
-
 
 
 
