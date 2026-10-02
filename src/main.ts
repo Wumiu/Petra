@@ -35,6 +35,7 @@ import { toast } from "./ui/Toast";
 import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
 import { setVisibleRect } from "./ui/visible";
+import { infoPanelPlacement } from "./ui/infoPanelPlacement";
 import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
@@ -563,50 +564,29 @@ function positionPanelNearModel(panel: HTMLElement) {
   panel.style.transform = "none";
 }
 
-/** 天气信息板专用定位：输入框打开时优先放模型上方（避免和输入框抢位置），贴边自动翻到内侧 */
+/** 天气面板优先放模型侧面，缩窄/滚动后仍放不下才翻到上下方。 */
 function positionInfoPanelNearModel(
   el: HTMLElement,
   mr: { left: number; top: number; right: number; bottom: number; width: number; height: number },
   vr: { left: number; top: number; right: number; bottom: number },
 ) {
-  const pw = el.offsetWidth || 270;
-  const ph = el.offsetHeight || 200;
-  const gap = 8;
-
-  // 严格按要求：天气面板只放模型左右两侧，上下都不许放
+  el.style.boxSizing = "border-box";
+  el.style.width = `${Math.min(270, Math.max(140, vr.right - vr.left))}px`;
+  el.style.maxHeight = `${Math.max(0, vr.bottom - vr.top)}px`;
   const inputBar = document.getElementById("as-inputbar");
-  const inputOpen = !!inputBar && !inputBar.classList.contains("hidden");
-  // 垂直方向和模型垂直居中对齐
-  const top = mr.top + (mr.height - ph) / 2;
-
-  // 候选：先右后左
-  const candidates = [
-    { left: mr.right + gap, top: top }, // 模型右侧
-    { left: mr.left - pw - gap, top: top }, // 模型左侧
-  ];
-
-  // 选第一个完整落在可见区内的
-  for (const c of candidates) {
-    const l = Math.round(c.left);
-    const t = Math.round(c.top);
-    if (l >= vr.left && l + pw <= vr.right && t >= vr.top && t + ph <= vr.bottom) {
-      el.style.left = `${l}px`;
-      el.style.top = `${t}px`;
-      return;
-    }
-  }
-
-  // 严格按要求：气泡只放模型左右两侧，右边放不下就直接放模型左边，绝不挡模型
-  const rightCandidate = mr.right + gap;
-  let left: number;
-  if (rightCandidate + pw <= vr.right) {
-    left = rightCandidate; // 右边放得下就放右边
-  } else {
-    left = mr.left - pw - gap; // 右边放不下就放模型左边，绝不挡模型
-  }
-  left = Math.max(vr.left, left); // 最后再钳制不超出窗口左边缘
-  el.style.left = `${Math.round(left)}px`;
-  el.style.top = `${Math.max(vr.top, Math.min(top, vr.bottom - ph))}px`;
+  const inputRect = inputBar && !inputBar.classList.contains("hidden")
+    ? inputBar.getBoundingClientRect() : undefined;
+  const placement = infoPanelPlacement(mr, vr, {
+    width: el.offsetWidth || 270,
+    height: el.offsetHeight || 200,
+  }, inputRect);
+  // 极限缩放/贴边时没有足够的空闲区域；保留显示状态，拖回后可重新定位。
+  el.style.visibility = placement ? "" : "hidden";
+  if (!placement) return;
+  el.style.width = `${placement.width}px`;
+  el.style.maxHeight = `${placement.height}px`;
+  el.style.left = `${placement.left}px`;
+  el.style.top = `${placement.top}px`;
 }
 
 /** 将通知定位到模型头顶（不挡住模型） */
@@ -2724,11 +2704,7 @@ async function showInfoPanel() {
   el.classList.remove("hidden");
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
-  // 贴边自适应：宽度随可见区收缩
-  el.style.width = `${Math.min(270, Math.max(160, vr.right - vr.left - 20))}px`;
-  el.style.maxHeight = "none";
-
-  // 用统一的定位函数：优先模型下方居中，贴边自动翻到内侧，始终挨着模型
+  // 先限制尺寸，再按真实可用空间定位。
   positionInfoPanelNearModel(el, mr, vr);
 
   el.style.opacity = "1";
@@ -2806,6 +2782,10 @@ function updateInfoPanelContent(el: HTMLElement, companion: string, weather: str
       if (feat === "card") toggleDailyCardPanel();
     });
   });
+  // 天气异步返回或待办变化后，内容高度会改变，需重新测量布局。
+  if (!el.classList.contains("hidden")) {
+    positionInfoPanelNearModel(el, getModelRect(), getWindowVisibleRect());
+  }
 }
 
 function escapeHtml(s: string): string {

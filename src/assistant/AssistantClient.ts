@@ -165,7 +165,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "delete_wrong_history",
-      description: "当用户强烈纠正你之前记错的事实时，调用此工具删除对话历史里相关的错误对话，避免你一直认死理。传入错误事实相关的关键词，系统会自动删除包含这些关键词的历史消息。",
+      description: "当用户强烈纠正你之前记错的事实时，调用此工具删除旧对话里相关的错误对话。传入错误事实相关的具体关键词，系统会删除命中的完整旧对话轮次，保留用户本轮的纠正。此工具不修改长期记忆。",
       parameters: {
         type: "object",
         properties: {

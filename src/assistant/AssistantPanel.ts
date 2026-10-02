@@ -10,6 +10,7 @@ import { loadSettings, saveSettings } from "../utils/settings";
 import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
 import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
+import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
 
 const MAX_BUBBLES = 2;
@@ -902,17 +903,11 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
         history.push({ role: "tool", tool_call_id: tc.id, content: "没有提供关键词" });
         continue;
       }
-      // 删除所有包含任意关键词的用户和助手消息
+      // 按完整旧轮次删除，避免留下孤立 tool 消息；当前纠正和正在执行的工具保留。
       const before = history.length;
-      history = history.filter(msg => {
-        if (msg.role !== "user" && msg.role !== "assistant") return true;
-        const text = "content" in msg ? String(msg.content || "") : "";
-        return !keywords.some(k => text.includes(k));
-      });
+      history = deleteWrongHistory(history, keywords);
       const deleted = before - history.length;
-      // 保存到文件
-      void invoke("save_chat_history", { content: JSON.stringify(history) }).catch(() => {});
-      history.push({ role: "tool", tool_call_id: tc.id, content: `已删除${deleted}条相关错误对话记录，现在我不会再记错了` });
+      history.push({ role: "tool", tool_call_id: tc.id, content: `已删除旧对话中的${deleted}条消息，保留了本轮纠正。` });
       continue;
     }
     if (tc.name === "launch_application") {
@@ -1391,7 +1386,6 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
 }
 // 记忆初始化
 loadMemory();
-
 
 
 
