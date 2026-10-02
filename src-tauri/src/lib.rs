@@ -78,6 +78,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use crate::capture::capture_screen;
 
 /// Windows GUI 子系统中启动控制台程序（powershell/cmd/reg/shutdown）时，
 /// 默认会弹出一个新的控制台窗口。加 CREATE_NO_WINDOW 避免窗口闪现。

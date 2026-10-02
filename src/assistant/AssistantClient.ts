@@ -277,6 +277,14 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "capture_screen",
+      description: "截取当前屏幕画面。当用户想让你「看屏幕/看看桌面/截图/我屏幕上有什么/帮我看看这个界面」时调用。调用后你会看到屏幕画面内容，可以据此回答用户关于屏幕上显示了什么的问题。",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "get_idle_seconds",
       description: "查看用户已经多久没有操作电脑（秒）。用于判断主人在不在，例如要不要轻声问候。",
       parameters: { type: "object", properties: {} },
@@ -409,11 +417,10 @@ function buildMessages(
 /**
  * 用户这句话是不是在要求"看屏幕"。
  *
- * **第一步只做显式触发**：用户明确要求时才截图（"桌宠自己判断要不要看"是第二步的事）。
- * 判定故意收得窄 —— **必须同时出现"屏幕类词"和"动作词"**：
- * 「看看我的屏幕」「帮我瞅下桌面」「截个屏幕」会命中；
- * 「我的屏幕有点暗」「我截个图发你」不会命中。
- * 宁可漏，也不要误截：截图带隐私，不该因为一句话里恰好有"看"和"屏"就发出去。
+ * 触发条件：提到屏幕/桌面相关 + 在询问屏幕内容（而不是评价屏幕状态）。
+ * 「看看我的屏幕」「我屏幕上有什么」「桌面上那个文件叫啥」会命中；
+ * 「我的屏幕有点暗」「屏幕怎么这么亮」这类评价状态的不会命中。
+ * 截图带隐私，评价屏幕状态时不该偷偷截屏。
  *
  * 导出成独立函数是为了能单独测（放在这里与 extractCommand 同类）。
  */
@@ -421,7 +428,10 @@ export function wantsScreenCapture(text: string): boolean {
   if (!text) return false;
   const t = text.replace(/\s+/g, "");
   if (!/(屏幕|桌面|显示器)/.test(t)) return false;
-  return /(看|瞅|瞄|瞧|截|拍)/.test(t);
+  // 评价屏幕状态的句子不触发（暗了、亮了、卡了、模糊了）
+  if (/(暗|亮|卡|慢|烫|刺眼|闪烁|模糊|不清楚|晃|抖)/.test(t)) return false;
+  // 动作词 or 疑问/请求词 → 判定为想看屏幕内容
+  return /(看|瞅|瞄|瞧|截|拍|望|盯|什么|啥|怎么|如何|哪个|哪些|帮我|给我)/.test(t);
 }
 
 /**

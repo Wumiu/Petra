@@ -2136,10 +2136,12 @@ function buildMenu(engine: BehaviorEngine) {
       id: "tts-test",
       label: "测试语音",
       onPick: () => {
+        if (!settings.tts.enabled) {
+          toast("语音输出未开启，请先在设置里打开语音输出");
+          return;
+        }
         const lang = settings.assistant.outputLanguage ?? "";
         ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, lang);
-        settings.tts.enabled = true;
-        saveSettings(settings);
         const testText: Record<string, string> = {
           en: "Hello, voice test successful.",
           ja: "こんにちは、音声テスト成功しました。",
