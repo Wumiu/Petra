@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { readingHoldMs } from "../ui/bubbleTiming";
-import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
+import { chatStream, extractCommand, stripCommand, PROVIDERS, isProviderReady, wantsScreenCapture, type ChatMessage, type ToolCall, type MemoryEntry, type MemoryStore } from "./AssistantClient";
 import { classifyEmotion, classifyAssistantEmotion, moodFallbackEmotion, reactNow, emotionEmoji, boostMood, getMood, type EmotionTag } from "./EmotionEngine";
 import type { AssistantProvider } from "../utils/settings";
 import { trackEvent } from "../features/diary/DiaryEventTracker";
@@ -633,6 +633,17 @@ async function send(text: string) {
   reactNow(userEmo);
   boostMood("chat");
   if (userEmo !== "neutral") boostMood(userEmo);
+  // 「看屏幕」：用户明确要求时截一张当前屏幕，随本轮消息一起发出去（见 wantsScreenCapture）。
+  // 只在本轮生效、不进历史 —— 图片 base64 很大，进历史会把存储撑爆（见 ChatRequestOptions.screenImage）。
+  // ⚠️ Linux 版没有实现（capture_linux.rs 是桩），失败时如实告诉用户，别让他以为桌宠"看得见"。
+  let screenImage: string | undefined;
+  if (wantsScreenCapture(text)) {
+    try {
+      screenImage = `data:image/png;base64,${await invoke<string>("capture_screen")}`;
+    } catch (e) {
+      toast(`截图失败：${String(e)}`);
+    }
+  }
   busy = true;
   const loading = addBubble("ai", "");
   const colorHook = makeStreamColorHook(loading);
@@ -674,6 +685,9 @@ async function send(text: string) {
         },
         true,
         buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? ""),
+        "",
+        // 只有第一轮带图：工具循环的后续轮次不重复上传，省流量也省 token
+        budget.rounds === 1 ? { screenImage } : undefined,
       );
       if (colorHook.lastEmotion() !== "neutral") streamEmo = colorHook.lastEmotion();
 

@@ -406,6 +406,54 @@ function buildMessages(
   return [{ role: "system", content: system }, ...msgs];
 }
 
+/**
+ * 用户这句话是不是在要求"看屏幕"。
+ *
+ * **第一步只做显式触发**：用户明确要求时才截图（"桌宠自己判断要不要看"是第二步的事）。
+ * 判定故意收得窄 —— **必须同时出现"屏幕类词"和"动作词"**：
+ * 「看看我的屏幕」「帮我瞅下桌面」「截个屏幕」会命中；
+ * 「我的屏幕有点暗」「我截个图发你」不会命中。
+ * 宁可漏，也不要误截：截图带隐私，不该因为一句话里恰好有"看"和"屏"就发出去。
+ *
+ * 导出成独立函数是为了能单独测（放在这里与 extractCommand 同类）。
+ */
+export function wantsScreenCapture(text: string): boolean {
+  if (!text) return false;
+  const t = text.replace(/\s+/g, "");
+  if (!/(屏幕|桌面|显示器)/.test(t)) return false;
+  return /(看|瞅|瞄|瞧|截|拍)/.test(t);
+}
+
+/**
+ * 把截图挂到最后一条 user 消息上 —— 转成 OpenAI 的多模态 content 数组：
+ *   content: [ { type: "text", ... }, { type: "image_url", image_url: { url } } ]
+ *
+ * 为什么不直接改 `ChatMessage.content` 的类型：那个类型被 4 个文件引用，
+ * 放宽成数组会连带影响 buildMessages 的字符统计、历史序列化、气泡渲染。
+ * 这里**只在"发出去的那一份"上做转换**，历史与类型都不动，改动面最小。
+ *
+ * 没有截图 / 历史里没有 user 消息时原样返回。
+ */
+function attachScreenImage(messages: ChatMessage[], dataUrl?: string): unknown {
+  if (!dataUrl) return messages;
+  let idx = -1;
+  for (let n = messages.length - 1; n >= 0; n--) {
+    if (messages[n].role === "user") { idx = n; break; }
+  }
+  if (idx < 0) return messages;
+  return messages.map((m, n) =>
+    n !== idx
+      ? m
+      : {
+          ...m,
+          content: [
+            { type: "text", text: m.content ?? "" },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+  );
+}
+
 /** OpenAI 兼容流式 chat；返回完整文本 + 工具调用。enableTools=false 时不带 tools（纯文本生成，如日记/抽卡文案） */
 export async function chatStream(
   provider: AssistantProvider,
@@ -436,7 +484,7 @@ export async function chatStream(
     },
     body: JSON.stringify({
       model: m,
-      messages,
+      messages: attachScreenImage(messages, requestOptions.screenImage),
       // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
       // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
       ...(enableTools ? { tools: TOOLS } : {}),
@@ -717,4 +765,11 @@ export interface ChatRequestOptions {
   signal?: AbortSignal;
   maxOutputTokens?: number;
   onUsage?: (usage: ChatUsage) => void;
+  /**
+   * 本轮随消息附带的屏幕截图（data URL，形如 `data:image/png;base64,...`）。
+   *
+   * 只注入到**最后一条 user 消息**，且**不进对话历史** —— 否则 base64 会把
+   * 历史文件撑爆，也会让 buildMessages 的字符预算（MAX_CHARS）失真。
+   */
+  screenImage?: string;
 }
