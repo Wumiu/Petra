@@ -164,6 +164,20 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "delete_wrong_history",
+      description: "当用户强烈纠正你之前记错的事实时，调用此工具删除旧对话里相关的错误对话。传入错误事实相关的具体关键词，系统会删除命中的完整旧对话轮次，保留用户本轮的纠正。此工具不修改长期记忆。",
+      parameters: {
+        type: "object",
+        properties: {
+          keywords: { type: "string", description: "错误事实相关的关键词，多个关键词用空格隔开，比如：没睡觉 熬夜 通宵" },
+        },
+        required: ["keywords"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_volume",
       description:
         "调节系统音量。传 level (0-100) 设置音量百分比，传 mute (true/false) 静音/取消静音。",
@@ -412,26 +426,6 @@ function buildMessages(
   // systemOverride：轻量调用（如麻将实时点评）用它替代完整系统提示，省掉 BASE_PROMPT 与记忆
   const system = systemOverride || systemPrompt(persona, memory, extraContext);
   return [{ role: "system", content: system }, ...msgs];
-}
-
-/**
- * 用户这句话是不是在要求"看屏幕"。
- *
- * 触发条件：提到屏幕/桌面相关 + 在询问屏幕内容（而不是评价屏幕状态）。
- * 「看看我的屏幕」「我屏幕上有什么」「桌面上那个文件叫啥」会命中；
- * 「我的屏幕有点暗」「屏幕怎么这么亮」这类评价状态的不会命中。
- * 截图带隐私，评价屏幕状态时不该偷偷截屏。
- *
- * 导出成独立函数是为了能单独测（放在这里与 extractCommand 同类）。
- */
-export function wantsScreenCapture(text: string): boolean {
-  if (!text) return false;
-  const t = text.replace(/\s+/g, "");
-  if (!/(屏幕|桌面|显示器)/.test(t)) return false;
-  // 评价屏幕状态的句子不触发（暗了、亮了、卡了、模糊了）
-  if (/(暗|亮|卡|慢|烫|刺眼|闪烁|模糊|不清楚|晃|抖)/.test(t)) return false;
-  // 动作词 or 疑问/请求词 → 判定为想看屏幕内容
-  return /(看|瞅|瞄|瞧|截|拍|望|盯|什么|啥|怎么|如何|哪个|哪些|帮我|给我)/.test(t);
 }
 
 /**
