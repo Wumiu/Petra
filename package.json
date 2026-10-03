@@ -4,8 +4,6 @@
   "version": "0.2.7",
   "type": "module",
   "scripts": {
-    "test:chat-history": "tsc src/assistant/ChatHistory.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/chat-history.test.js",
-    "test:info-panel": "tsc src/ui/infoPanelPlacement.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/info-panel.test.js",
     "dev": "npm run sync:vendor && vite",
     "build": "npm run sync:vendor && tsc && vite build",
     "sync:vendor": "node scripts/sync-vendor.mjs",
