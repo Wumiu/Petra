@@ -46,6 +46,15 @@ mod screen;
 #[path = "screen_linux.rs"]
 mod screen;
 
+// 屏幕截图（桌宠"识图"用）：非 Linux 走 xcap，Linux 是桩。
+// 为什么单独分叉而不是三平台各一份 —— xcap 自身已经跨 Windows/macOS，
+// 真正需要分叉的是"Linux 不引入 xcap"这件事（它会拉进一批系统库，见 Cargo.toml）。
+#[cfg(not(target_os = "linux"))]
+mod capture;
+#[cfg(target_os = "linux")]
+#[path = "capture_linux.rs"]
+mod capture;
+
 // Wayland 会话下的能力补齐（输入区域 / 移动 / 光标）：只编译进 Linux 目标。
 // screen_linux.rs 是它的主要调用方，lib.rs 的穿透决策线程也会直接用一次。
 #[cfg(target_os = "linux")]
@@ -69,6 +78,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use crate::capture::capture_screen;
 
 /// Windows GUI 子系统中启动控制台程序（powershell/cmd/reg/shutdown）时，
 /// 默认会弹出一个新的控制台窗口。加 CREATE_NO_WINDOW 避免窗口闪现。
@@ -3713,6 +3723,7 @@ pub fn run() {
             schedule_shutdown, cancel_shutdown,
             register_assistant_shortcut, unregister_assistant_shortcut,
             tts_synthesize, set_tts_key, get_tts_key,
+            capture_screen,
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {

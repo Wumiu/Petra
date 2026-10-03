@@ -13,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 const rt = require("./build/assistant/toolRuntime.js");
-const ac = require("./build/assistant/AssistantClient.js");
+const ac = require("./load-assistant-client.js");
 const bt = require("./build/ui/bubbleTiming.js");
 const ee = require("./build/assistant/EmotionEngine.js");
 
@@ -101,13 +101,13 @@ const missingSpec = declared.filter((n) => !rt.isKnownTool(n));
 check("每个模型可见的工具都有运行时规格", missingSpec.length === 0, missingSpec.join(","));
 const extraSpec = rt.toolNames().filter((n) => !declared.includes(n));
 check("运行时表里没有多余工具", extraSpec.length === 0, extraSpec.join(","));
-check("空文本给最短时间", bt.readingHoldMs("") === 5000, String(bt.readingHoldMs("")));
-check("纯空白也算空", bt.readingHoldMs("   ") === 5000);
-check("短句按最短 5 秒", bt.readingHoldMs("好") === 5060, String(bt.readingHoldMs("好")));
-check("50 字给 8 秒", bt.readingHoldMs("x".repeat(50)) === 8000, String(bt.readingHoldMs("x".repeat(50))));
-check("100 字给 11 秒", bt.readingHoldMs("x".repeat(100)) === 11000, String(bt.readingHoldMs("x".repeat(100))));
-check("长文封顶 16 秒", bt.readingHoldMs("x".repeat(400)) === 16000, String(bt.readingHoldMs("x".repeat(400))));
-check("可自定义基数（报错提示留久一点）", bt.readingHoldMs("x", 8000) === 8060, String(bt.readingHoldMs("x", 8000)));
+check("空文本给最短时间", bt.readingHoldMs("") === 3000, String(bt.readingHoldMs("")));
+check("纯空白也算空", bt.readingHoldMs("   ") === 3000);
+check("短句按最短 3 秒", bt.readingHoldMs("好") === 3035, String(bt.readingHoldMs("好")));
+check("50 字给 4.75 秒", bt.readingHoldMs("x".repeat(50)) === 4750, String(bt.readingHoldMs("x".repeat(50))));
+check("100 字给 6.5 秒", bt.readingHoldMs("x".repeat(100)) === 6500, String(bt.readingHoldMs("x".repeat(100))));
+check("长文封顶 10 秒", bt.readingHoldMs("x".repeat(400)) === 10000, String(bt.readingHoldMs("x".repeat(400))));
+check("可自定义基数（报错提示留久一点）", bt.readingHoldMs("x", 8000) === 8035, String(bt.readingHoldMs("x", 8000)));
 check("最短不超过封顶", bt.BUBBLE_HOLD_MIN_MS <= bt.BUBBLE_HOLD_MAX_MS);
 
 // ---------- 气泡配色兜底（识别不到情绪时用心情上色，避免一片白）----------

@@ -633,6 +633,9 @@ async function send(text: string) {
   reactNow(userEmo);
   boostMood("chat");
   if (userEmo !== "neutral") boostMood(userEmo);
+  // 截图：由模型通过 capture_screen 工具触发，不再前端关键词预判。
+  // 只在本轮生效、不进历史 —— 图片 base64 很大，进历史会把存储撑爆。
+  const screenshot: { image: string | undefined } = { image: undefined };
   busy = true;
   const loading = addBubble("ai", "");
   const colorHook = makeStreamColorHook(loading);
@@ -655,9 +658,10 @@ async function send(text: string) {
       };
       const langName = s.assistant.outputLanguage ? (langNames[s.assistant.outputLanguage] ?? "英语") : "";
       const langInstruction = (s.assistant.outputLanguage && s.assistant.outputLanguage !== "zh-cn")
-        ? `【最高优先级】你必须全程用${langName}回复用户，不管用户说什么语言。回复中绝对不要夹杂中文。\n\n`
-        : `【最高优先级】你必须全程用中文回复用户。\n\n`;
-      const personaWithLang = langInstruction + s.assistant.persona;
+        ? `【最高优先级·最终指令】你必须全程用${langName}回复用户，不管用户说什么语言。回复中绝对不要夹杂中文，哪怕用户用中文提问也要用${langName}回答。`
+        : `【最高优先级·最终指令】你必须全程用中文回复用户。`;
+      const personaWithLang = s.assistant.persona;
+      const extraCtxWithLang = buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? "") + "\n\n" + langInstruction;
 
       const res = await chatStream(
         s.assistant.provider,
@@ -673,14 +677,17 @@ async function send(text: string) {
           ttsPlayer.pushDelta(delta);
         },
         true,
-        buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? ""),
+        extraCtxWithLang,
+        "",
+        // 有截图就传（可能模型第二轮才调用截图工具）
+        screenshot.image ? { screenImage: screenshot.image } : undefined,
       );
       if (colorHook.lastEmotion() !== "neutral") streamEmo = colorHook.lastEmotion();
 
       if (res.toolCalls.length) {
         // 工具调用：执行后进入下一轮
         if (budget.rounds === 1 && !streamed) loading.textContent = "";
-        await handleToolCalls(res.toolCalls, loading, budget);
+        await handleToolCalls(res.toolCalls, loading, budget, screenshot);
         continue;
       }
 
@@ -752,6 +759,7 @@ async function send(text: string) {
           [{ id: `cmd_${Date.now()}`, name: "run_shell", args: { command: cmd } }],
           loading,
           budget,
+          screenshot,
         );
         continue;
       }
@@ -798,7 +806,7 @@ function withHint(text: string, hint: string): string {
 }
 
 /** 处理工具调用：先 push assistant tool_calls 消息，再逐个执行并 push tool 消息 */
-async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: ToolLoopBudget) {
+async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: ToolLoopBudget, screenshot: { image: string | undefined }) {
   // assistant 消息带 tool_calls（content 为 null 规范格式；DeepSeek 要求 tool 消息紧跟它）
   history.push({
     role: "assistant",
@@ -1000,6 +1008,15 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
     }
     if (tc.name === "active_window_title") {
       await invokeTool(tc, "active_window_title");
+    }
+    if (tc.name === "capture_screen") {
+      try {
+        const b64 = await invoke<string>("capture_screen");
+        screenshot.image = `data:image/png;base64,${b64}`;
+        history.push({ role: "tool", tool_call_id: tc.id, content: "截图成功。屏幕画面已作为图片附加在后续请求中，请根据你看到的屏幕内容回答用户的问题。" });
+      } catch (e) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: `截图失败：${e}` });
+      }
     }
     if (tc.name === "get_idle_seconds") {
       await invokeTool(tc, "get_idle_seconds");
@@ -1369,7 +1386,6 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
 }
 // 记忆初始化
 loadMemory();
-
 
 
 

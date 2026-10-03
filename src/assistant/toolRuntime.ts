@@ -35,6 +35,7 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
   open_path: { required: ["path"] },
   list_installed_apps: { maxResultChars: 2000, readOnly: true },
   active_window_title: { maxResultChars: 400, readOnly: true },
+  capture_screen: { readOnly: true },
   get_idle_seconds: { readOnly: true },
   send_notification: { required: ["title"] },
   lock_screen: {},

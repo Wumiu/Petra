@@ -61,6 +61,17 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# 屏幕截图（桌宠"识图"用，见 src/capture.rs）：Windows / macOS 走 xcap。
+#   ⚠️ **刻意排除 Linux** —— xcap 在 Linux 上要 libxcb / libxrandr / libpipewire /
+#   libdbus / libwayland / libegl / libclang 一批系统开发包，会破坏本项目
+#   "Linux 零新增系统库"的约定（见下方 Linux 段）。Linux 侧是 capture_linux.rs 的桩。
+#   image：xcap 本来就依赖它（0.25 + png feature）。这里显式声明**同一版本**，
+#   好让 capture.rs 能把 capture_image() 的返回值编码成 PNG —— 版本必须一致，
+#   否则 DynamicImage 与 xcap 返回的 RgbaImage 对不上。
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+xcap = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 # Linux 专属依赖（版本与 tao/tauri 已经依赖的 gtk 完全一致，Cargo.lock 里已有条目，
 # 不新增任何 crate，也不需要用户额外安装系统库 —— 能构建 Tauri Linux 版的机器
 # 本来就必须有 GTK3 开发包）：
