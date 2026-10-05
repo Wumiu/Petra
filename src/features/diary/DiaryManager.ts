@@ -20,11 +20,14 @@ import {
 } from "./DiaryDigest";
 import { chatStream, isProviderReady, type ChatMessage } from "../../assistant/AssistantClient";
 import { loadSettings } from "../../utils/settings";
+import { buildLanguageInstruction, splitTranslation } from "../../utils/outputLanguage";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface DiaryEntry {
   date: string;
   content: string;
+  /** 输出语言非中文时的中文译文；单独存字段，不并进 content —— 导出时用 --- 做分隔线，会撞车 */
+  translation?: string;
   /** 旧数据里可能残留的事件快照（历史字段，新日记不再写入，读取时可选） */
   events?: DiaryEvent[];
   aiGenerated: boolean;
@@ -163,6 +166,7 @@ function collectDigestInput(date: string, persona: string, nickname: string): Di
 
 interface GenResult {
   content: string;
+  translation?: string;
   error?: string;
 }
 
@@ -177,16 +181,22 @@ async function generateDiaryContent(input: DigestInput, apiKey: string): Promise
 
   const prompt = buildDiaryPrompt(input);
   const history: ChatMessage[] = [{ role: "user", content: prompt }];
+  // systemOverride 会整体取代系统提示（见 AssistantClient.buildMessages，此时 extraContext 被忽略），
+  // 所以语言指令必须拼进 override 本身，不能走 extraContext。
+  const langInstruction = buildLanguageInstruction(settings.assistant.outputLanguage ?? "", { withTranslation: true });
+  const systemPromptText = langInstruction
+    ? DIARY_SYSTEM_PROMPT + "若要求附中文翻译，则正文之后换行写 ---、再换行写译文（正文的长度要求不含译文）。" + langInstruction
+    : DIARY_SYSTEM_PROMPT;
 
   try {
     const result = await Promise.race([
-      chatStream(provider, apiKey, model, history, "", [], customBaseUrl, () => {}, false, "", DIARY_SYSTEM_PROMPT),
+      chatStream(provider, apiKey, model, history, "", [], customBaseUrl, () => {}, false, "", systemPromptText),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("AI 超时（30 秒）")), AI_TIMEOUT_MS),
       ),
     ]);
-    const text = result.text.trim();
-    if (text.length > 10) return { content: text };
+    const { main, trans } = splitTranslation(result.text);
+    if (main.length > 10) return trans ? { content: main, translation: trans } : { content: main };
     return { content: "", error: "AI 只返回了空内容或工具调用，未生成正文" };
   } catch (err) {
     console.warn("[日记] AI 生成失败：", err);
@@ -241,10 +251,11 @@ export async function checkAndGenerateDiary(opts: { manual?: boolean } = {}): Pr
       input.events.length > 0 || (input.apps?.length ?? 0) > 0 || (input.tracks?.length ?? 0) > 0;
     if (!hasMaterial) continue;
 
-    const { content } = await generateDiaryContent(input, apiKey);
+    const { content, translation } = await generateDiaryContent(input, apiKey);
     if (!content) continue; // 生成失败：保留素材，下次启动重试
 
     const entry: DiaryEntry = { date, content, aiGenerated: true, createdAt: Date.now() };
+    if (translation) entry.translation = translation;
     const diaries = loadDiaries();
     diaries.push(entry);
     saveDiaries(diaries);
@@ -269,7 +280,13 @@ export function diariesToMarkdown(): string {
     `# 📖 Petra 日记本\n\n> 共 ${diaries.length} 篇 · 导出时间 ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}\n\n`;
   if (diaries.length === 0) return head + "（还没有日记）\n";
   const body = diaries
-    .map(d => `## ${d.date} · ${weekdayLabel(d.date)}（${d.aiGenerated ? "AI 生成" : "简单纪要"}）\n\n${d.content.trim()}\n`)
+    .map(d => {
+      // 译文用引用块；绝不能用 --- ，那是各篇之间的分隔线
+      const transBlock = d.translation
+        ? `\n${d.translation.trim().split("\n").map(l => `> ${l}`).join("\n")}\n`
+        : "";
+      return `## ${d.date} · ${weekdayLabel(d.date)}（${d.aiGenerated ? "AI 生成" : "简单纪要"}）\n\n${d.content.trim()}\n${transBlock}`;
+    })
     .join("\n---\n\n");
   return head + body + "\n";
 }

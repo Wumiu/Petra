@@ -7,6 +7,7 @@ import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
+import { buildLanguageInstruction, langNameOf, splitTranslation } from "../utils/outputLanguage";
 import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
 import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
@@ -584,15 +585,6 @@ function buildChatContext(nickname: string, outputLang: string): string {
   return `[环境] ${parts.join("；")}`;
 }
 
-function langNameOf(code: string): string {
-  const m: Record<string, string> = {
-    "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
-    "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
-    "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
-  };
-  return m[code] ?? code;
-}
-
 async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
@@ -615,13 +607,8 @@ async function send(text: string) {
     scheduleFade(b, 5000);
     return;
   }
-  const langNames: Record<string, string> = {
-    "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
-    "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
-    "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
-  };
   const outLang = s.assistant.outputLanguage;
-  const langName = outLang ? (langNames[outLang] ?? "英语") : "";
+  const langName = outLang ? langNameOf(outLang) : "";
   // 换语言时清空对话历史
   if (lastChatLang !== outLang && history.length > 0) {
     history = [];
@@ -655,15 +642,7 @@ async function send(text: string) {
       if (budget.rounds > 1) loading.textContent = "";
       // token 优化：记忆按场景/话题召回（≤6 条），而非全量注入 system prompt
       const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text });
-      const langNames: Record<string, string> = {
-        "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
-        "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
-        "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
-      };
-      const langName = s.assistant.outputLanguage ? (langNames[s.assistant.outputLanguage] ?? "英语") : "";
-      const langInstruction = (s.assistant.outputLanguage && s.assistant.outputLanguage !== "zh-cn")
-        ? `【最高优先级·最终指令】你必须全程用${langName}回复用户，不管用户说什么语言。回复中绝对不要夹杂中文，哪怕用户用中文提问也要用${langName}回答。`
-        : `【最高优先级·最终指令】你必须全程用中文回复用户。`;
+      const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { pinChinese: true });
       const personaWithLang = s.assistant.persona;
       const extraCtxWithLang = buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? "") + "\n\n" + langInstruction;
 
@@ -698,9 +677,9 @@ async function send(text: string) {
       // 无工具调用：文字入历史
       const rawText = res.text;
       // 分离翻译：原文 + --- + 翻译
-      const parts = rawText.split(/-{3,}/);
-      const mainText = (parts[0] || "").trim();
-      let transText = (parts[1] || "").trim();
+      const split = splitTranslation(rawText);
+      const mainText = split.main;
+      let transText = split.trans;
       // 历史只存中文翻译（或中文原文）
       history.push({ role: "assistant", content: transText || mainText });
       // 情感反馈
@@ -1299,17 +1278,8 @@ export async function triggerProactive() {
     ? "\n【安慰模式】用户的心情最近有些低落，用你的人设温柔地安慰、陪伴一句，别提\"心情指数\"这类系统概念。"
     : "";
   // 语言要求
-  let langLine = "";
-  if (s.assistant.outputLanguage && s.assistant.outputLanguage !== "zh-cn") {
-    const langNames: Record<string, string> = {
-      "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
-      "es-es": "西班牙语", "ru": "俄语", "th": "泰语", "vi": "越南语",
-      "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
-    };
-    const langName = langNames[s.assistant.outputLanguage] ?? s.assistant.outputLanguage;
-    langLine = `\n你必须用${langName}说话。回复格式：第一行是${langName}原文，然后换行写---，再换行写中文翻译。`;
-  }
-  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}${langLine}\n\n` +
+  const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { withTranslation: true });
+  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}${langInstruction ? "\n" + langInstruction : ""}\n\n` +
     "自然地和用户打个招呼或说一句关心的话，保持你的人设风格。\n" +
     "\n要求：简短（1-2句）、口语化、不要像客服。" +
     "不要说\"作为AI\"之类的话。";
@@ -1333,10 +1303,7 @@ export async function triggerProactive() {
     saveMemory();
     boostMood("greeting_sent");
     // 分离翻译
-    const rawText = bubble.textContent;
-    const parts = rawText.split(/\n---\n/);
-    const mainText = parts[0].trim();
-    const transText = parts[1]?.trim();
+    const { main: mainText, trans: transText } = splitTranslation(bubble.textContent);
     bubble.textContent = "";
     bubble.append(document.createTextNode(mainText));
     if (transText) {
@@ -1364,8 +1331,6 @@ export async function triggerProactive() {
   }
 }
 
-/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论 */
-/** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论 */
 /** 抽卡点评：用户关闭抽卡面板后，让 AI 根据卡牌结果发表评论（不污染聊天历史） */
 export async function triggerCardCommentary(card: { rarity: string; theme: string; baseText: string; aiText: string }) {
   if (busy) return;
@@ -1376,6 +1341,7 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
   let cardInfo = `主题「${card.theme}」，祝福语：${card.baseText}`;
   if (card.aiText !== card.baseText) cardInfo += `，AI文案：${card.aiText}`;
   const prompt = `[抽卡点评] 刚才用户抽到了一张 ${card.rarity} 卡，${cardInfo}。用你的人设风格对这张卡发表一句简短的点评或吐槽（1-2句），保持口语化，不要复述祝福语。直接对用户说话。`;
+  const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { withTranslation: true });
 
   // 用临时 history，不污染主聊天历史
   const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
@@ -1387,13 +1353,33 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
     // enableTools=false：点评不需要工具，省 token
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       colorHook.push(d);
-    }, false);
-    const finalEmo = classifyAssistantEmotion(bubble.textContent);
+      ttsPlayer.pushDelta(d);
+    }, false, langInstruction);
+    // 分离翻译：情绪分类与朗读都只用原文，译文和 --- 会干扰分类
+    const { main: mainText, trans: transText } = splitTranslation(bubble.textContent);
+    bubble.textContent = "";
+    bubble.append(document.createTextNode(mainText));
+    if (transText) {
+      const div = document.createElement("div");
+      div.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
+      div.textContent = transText;
+      bubble.appendChild(div);
+    }
+    ttsPlayer.flush();
+    const finalEmo = classifyAssistantEmotion(mainText);
     const emo = finalEmo !== "neutral" ? finalEmo : colorHook.lastEmotion();
     if (emo !== "neutral") reactNow(emo);
     bubble.dataset.emotion = bubbleEmotion(emo);
     // 不保存到主 history，避免影响主动问候
-    scheduleFade(bubble, 8000);
+    // 语音开着：等播完再消失。onIdle 只在「队列空且未在播放」时触发一次，
+    // 短文可能在注册回调前就播完（回调永不触发），故必须带超时兜底。
+    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+      let faded = false;
+      ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } });
+      setTimeout(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } }, 120000);
+    } else {
+      scheduleFade(bubble, 8000);
+    }
   } catch {
     bubble.remove();
   } finally {

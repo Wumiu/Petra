@@ -21,7 +21,7 @@ function clearTypewriter() {
   }
 }
 
-function typewriter(el: HTMLElement, text: string, speed = 50): void {
+function typewriter(el: HTMLElement, text: string, speed = 50, onDone?: () => void): void {
   clearTypewriter();
   el.textContent = "";
   let i = 0;
@@ -31,6 +31,7 @@ function typewriter(el: HTMLElement, text: string, speed = 50): void {
       i++;
     } else {
       clearTypewriter();
+      onDone?.();
     }
   }, speed);
 }
@@ -145,12 +146,21 @@ function renderCard(host: HTMLElement, result: DrawResult | null, animating: boo
   if (result) {
     const textEl = document.createElement("div");
     textEl.className = "cp-text" + (result.aiGenerated ? " cp-text-ai" : "");
+    host.appendChild(textEl);
+    // 译文等打字机走完再出现，否则原文还没显完译文就先跳出来了
+    const appendTranslation = () => {
+      if (!result.aiTranslation) return;
+      const transEl = document.createElement("div");
+      transEl.className = "cp-translation";
+      transEl.textContent = result.aiTranslation;
+      host.appendChild(transEl);
+    };
     if (animating) {
-      typewriter(textEl, result.aiText);
+      typewriter(textEl, result.aiText, 50, appendTranslation);
     } else {
       textEl.textContent = result.aiText;
+      appendTranslation();
     }
-    host.appendChild(textEl);
   }
 
   // 操作按钮

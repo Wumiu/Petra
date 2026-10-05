@@ -144,6 +144,11 @@ export class PsdRuntime {
   private A: any = null;
   private CW = 768;
   private CH = 768;
+  /**
+   * 角色包围盒「只增不减」的包络（画布坐标）。
+   * 每帧的瞬时轮廓会随呼吸/眨眼/待机动作变化，直接拿它做屏幕边缘夹取，
+   * 会让模型贴边时被反复推开又漂回（表现为"过一会动一下"），所以这里取运行期最大值。
+   */
   private charBounds: { left: number; top: number; right: number; bottom: number } | null = null;
   private FS = 1;
   private NP: any = null;
@@ -203,7 +208,7 @@ export class PsdRuntime {
   get warnings(): string[] {
     return this._warnings;
   }
-  /** 角色包围盒（画布坐标，模型边缘补偿用） */
+  /** 角色包围盒包络（画布坐标，模型边缘补偿用）。缓变，不随单帧动画抖动。 */
   get characterBounds(): { left: number; top: number; right: number; bottom: number } | null {
     return this.charBounds;
   }
@@ -266,17 +271,9 @@ export class PsdRuntime {
     if (Math.abs(this.CW - this.CH) / Math.max(this.CW, this.CH) > 0.05) {
       this._warnings.push(`画布 ${this.CW}x${this.CH} 非正方形，动画可能变形（建议正方形 768~2048）`);
     }
-    // 角色包围盒：所有图层 x/y/w/h 并集（画布坐标），供模型边缘补偿判断"模型而非窗口"出屏量
-    {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const Lr of rig.layers) {
-        if (Lr.x < minX) minX = Lr.x;
-        if (Lr.y < minY) minY = Lr.y;
-        if (Lr.x + Lr.w > maxX) maxX = Lr.x + Lr.w;
-        if (Lr.y + Lr.h > maxY) maxY = Lr.y + Lr.h;
-      }
-      this.charBounds = { left: minX, top: minY, right: maxX, bottom: maxY };
-    }
+    // 换模型时重置包围盒包络，首个 update 会用实际变形顶点重建。
+    // 不用图层矩形初始化：那含各层 PSD 的透明边距，比可见轮廓大得多，会把包络永久撑大。
+    this.charBounds = null;
     this.A = rig.anchors;
     this.FS = this.A.faceScale;
     this.NP = this.A.neckPivot;
@@ -552,7 +549,8 @@ export class PsdRuntime {
       }
     }
 
-    // ---- 动态更新角色包围盒（基于变形后的实际顶点，每帧更新） ----
+    // ---- 更新角色包围盒包络（基于变形后的实际顶点） ----
+    // 只向"更大"的方向扩张、从不收缩：瞬时轮廓逐帧抖动，拿它做边缘夹取会推着模型来回动。
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const L of this.layers) {
       if (this.fadeAlpha(L, e) < 0.01) continue; // 不可见层跳过
@@ -565,7 +563,15 @@ export class PsdRuntime {
         if (cy > maxY) maxY = cy;
       }
     }
-    if (minX < maxX) this.charBounds = { left: minX, top: minY, right: maxX, bottom: maxY };
+    if (minX < maxX) {
+      const s = this.charBounds;
+      this.charBounds = s
+        ? {
+            left: Math.min(s.left, minX), top: Math.min(s.top, minY),
+            right: Math.max(s.right, maxX), bottom: Math.max(s.bottom, maxY),
+          }
+        : { left: minX, top: minY, right: maxX, bottom: maxY };
+    }
   }
 
   /** 自动算出来的手臂轴：拆过手的图层 = 该手内侧上角；否则退回中轴 + 肩线 */
