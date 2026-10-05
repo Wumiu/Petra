@@ -187,6 +187,8 @@ npm run tauri dev      # 开发
 npm run tauri build    # 打包
 ```
 
+参与开发前请先看 [CONTRIBUTING.md](CONTRIBUTING.md)，里面有 issue / 关联分支 / PR 的流程约定。
+
 ## 项目结构
 
 ```
