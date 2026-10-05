@@ -63,6 +63,8 @@ export interface Settings {
   modelScales: Record<string, number>;
   /** 天气城市名（中文），空则用 API 返回的英文名 */
   weatherCity: string;
+  /** 天气气泡：点桌宠时弹出的信息面板（天气/待办/陪伴时间）；关掉后一律不弹 */
+  weatherBubble: boolean;
   boundsPadding: BoundsPadding;
   passthrough: boolean;
   /** 免确认 shell（持久化，重启后保持） */
@@ -108,6 +110,7 @@ const DEFAULTS: Settings = {
   modelScale: 1,
   modelScales: {},
   weatherCity: "",
+  weatherBubble: true,
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
   allowAllShell: false,

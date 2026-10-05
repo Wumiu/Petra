@@ -47,7 +47,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
-import { registerEmotionReactor, reactToTouch, getMoodDriverValue, getMood, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
+import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
 import { startMusicLyrics, stopMusicLyrics, noteAudioLevel, isSinging, setLyricsTranslate } from "./music/NowPlaying";
@@ -639,7 +639,6 @@ async function createView(): Promise<PetView> {
         // 统一走 Rust 命令读取（dev/release 都通过 exe/resource 目录找文件）
         const bytes = await invoke<number[]>("read_builtin_psd", { name: file });
         currentModel = { type: "manifest", name: file };
-        resetBoundsOnModelSwitch();
         return await makePsdView(new Uint8Array(bytes));
       } catch (err) {
         console.error(`内置模型 ${file} 加载失败:`, err);
@@ -871,6 +870,17 @@ async function setupAssistantHotkeyListener() {
   }
 }
 
+/** 上次主动问候的时刻（ms）。0 = 本次运行还没问候过。 */
+let lastGreetAt = 0;
+
+/**
+ * 用户在设置里改了问候间隔后调用：把计时锚点重设到当下，
+ * 让新间隔从改动这一刻起算，而不是继续沿用"距上次问候"的旧节奏。
+ */
+function resyncGreetingSchedule() {
+  lastGreetAt = Date.now();
+}
+
 async function boot() {
   try {
     await mountView();
@@ -962,14 +972,10 @@ async function boot() {
     setTimeout(() => void engine.teleportRandom(), FIRST_ROAM_DELAY);
   }
 
-  // 小助手主动问候：每 20 分钟，若开启且空闲则智能打招呼（识别当前窗口）
-  // 主动问候：场景触发（替代固定 20 分钟）
-  let lastGreetAt = 0;
-  let activeStartAt = Date.now();   // 当前连续活跃段的起始时间
+  // 主动问候：按用户设置的间隔（settings.assistant.greetInterval）触发，每分钟检查一次
   let lastActiveAt = Date.now();    // 最近一次检测到用户活跃的时间
   let wasIdle = false;              // 上次检查时是否处于空闲
 
-  // 每 5 分钟检查一次场景
   setInterval(async () => {
     if (!settings.assistant.enabled) return;
     if (settings.idleMode) return; // 待机期间不弹主动问候/对话框
@@ -988,8 +994,7 @@ async function boot() {
     } else {
       // 用户活跃
       if (wasIdle) {
-        // 从离开状态回来 → 重置活跃段
-        activeStartAt = now;
+        // 从离开状态回来
         wasIdle = false;
         // 回归问候：离开超过 15 分钟才触发
         const awayMs = now - lastActiveAt;
@@ -1004,33 +1009,17 @@ async function boot() {
     }
 
     const sinceGreet = now - lastGreetAt;
-    const activeMs = now - activeStartAt; // 连续活跃时长
     const hour = new Date().getHours();
-
-    // 久坐提醒：连续活跃超过 90 分钟且没离开过
-    // 获取用户设置的问候间隔（分钟转毫秒）
+    // 用户设置的问候间隔（分钟→毫秒）
     const greetIntervalMs = (settings.assistant.greetInterval ?? 20) * 60 * 1000;
 
-    if (activeMs > 90 * 60 * 1000 && sinceGreet > greetIntervalMs * 3 && !wasIdle) {
+    // 固定间隔问候：用户在活跃、且距上次问候超过设定间隔就问候一次。
+    // 这里原先是"场景触发"，门槛分别为久坐 90 分钟 + 间隔×3、熬夜 30 分钟、
+    // 心情 45 分钟、兜底 60 分钟 —— 全都远高于设置值本身，导致设置项形同虚设。
+    if (sinceGreet > greetIntervalMs && !wasIdle) {
       lastGreetAt = now;
       void triggerProactive();
-          trackEvent({ type: "greeting", summary: "主动问候了用户" });
-      return;
-    }
-
-    // 熬夜关怀（23 点至凌晨 5 点）
-    if ((hour >= 23 || hour < 5) && sinceGreet > 30 * 60 * 1000) {
-      lastGreetAt = now;
-      void triggerProactive();
-          trackEvent({ type: "greeting", summary: "深夜关心了还在熬夜的用户" });
-      return;
-    }
-
-    // 心情低谷关怀：宠物心情很低（用户最近情绪低落）→ 触发安慰型问候
-    if (getMood().happiness < 0.35 && sinceGreet > 45 * 60 * 1000) {
-      lastGreetAt = now;
-      void triggerProactive();
-          trackEvent({ type: "greeting", summary: "察觉主人心情低落，主动安慰了用户" });
+      trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
 
@@ -1038,17 +1027,10 @@ async function boot() {
     if (hour >= 6 && hour < 10 && lastGreetAt === 0) {
       lastGreetAt = now;
       void triggerProactive();
-          trackEvent({ type: "greeting", summary: "主动问候了用户" });
+      trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
-
-    // 兜底
-    if (sinceGreet > 60 * 60 * 1000) {
-      lastGreetAt = now;
-      void triggerProactive();
-          trackEvent({ type: "greeting", summary: "主动问候了用户" });
-    }
-  }, 5 * 60 * 1000);
+  }, 60 * 1000);
 
   // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
   setInterval(() => void engine.pollCursor(), 60);
@@ -1702,10 +1684,14 @@ async function toggleModelPanel() {
     // 内置模型（manifest / 打包）：多个内置模型可切换
     for (const f of builtinNames) {
       const label = f.replace(/\.psd$/i, "");
+      const isCurrent = currentModel.type === "manifest" && currentModel.name === f;
       mk(`内置 · ${label}`, () => {
         localStorage.setItem(BUILTIN_KEY, f);
         localStorage.removeItem(PSD_KEY);
-      }, currentModel.type === "manifest" && currentModel.name === f);
+        // 只有真的换了模型才重置边界：不同模型轮廓不同，上一个模型调好的边框不适用。
+        // 不能把这个重置放进 createView —— 启动时也走那条加载路径，会导致每次启动都清掉用户设置。
+        if (!isCurrent) resetBoundsOnModelSwitch();
+      }, isCurrent);
     }
     // 已导入 PSD——带删除按钮（内置模型不可删）
     for (const m of models) {
@@ -2069,6 +2055,18 @@ function buildMenu(engine: BehaviorEngine) {
             } else {
               toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
             }
+          },
+        },
+        {
+          id: "weather-bubble",
+          label: "天气气泡",
+          state: settings.weatherBubble ? "开" : "关",
+          onPick: () => {
+            settings.weatherBubble = !settings.weatherBubble;
+            saveSettings(settings);
+            // 关掉时把已经弹出来的面板一并收走，否则要等它 5 秒超时
+            if (!settings.weatherBubble) hideInfoPanel();
+            toast(settings.weatherBubble ? "天气气泡已开启" : "天气气泡已关闭");
           },
         },
         {
@@ -2670,6 +2668,8 @@ let cachedWeather: { text: string; time: number } | null = null;
 // 天气解析与展示见 src/features/weather/WeatherFormat.ts（纯函数，有单测）
 
 async function showInfoPanel() {
+  // 「交互 → 天气气泡」关掉后，这个面板一律不弹（含天气、待办、陪伴时间）
+  if (!settings.weatherBubble) return;
   if (!infoPanelEl) {
     infoPanelEl = document.createElement("div");
     infoPanelEl.id = "info-panel";
@@ -2714,13 +2714,20 @@ async function showInfoPanel() {
 
   // 5 秒自动消失；region collector 会自动移除信息版区域。
   if (infoPanelHideTimer) clearTimeout(infoPanelHideTimer);
-  infoPanelHideTimer = setTimeout(() => {
-    if (el) {
-      el.style.opacity = "0";
-      el.style.transform = "translateY(8px)";
-      setTimeout(() => { if (el) el.classList.add("hidden"); }, 300);
-    }
-  }, 5000);
+  infoPanelHideTimer = setTimeout(hideInfoPanel, 5000);
+}
+
+/** 收起信息板（天气气泡）。自动超时和右上角的 ✕ 都走这里。 */
+function hideInfoPanel() {
+  const el = infoPanelEl;
+  if (!el) return;
+  if (infoPanelHideTimer) {
+    clearTimeout(infoPanelHideTimer);
+    infoPanelHideTimer = null;
+  }
+  el.style.opacity = "0";
+  el.style.transform = "translateY(8px)";
+  setTimeout(() => el.classList.add("hidden"), 300);
 }
 
 // 待办变化时刷新信息版（模态框添加后触发）
@@ -2750,11 +2757,18 @@ function updateInfoPanelContent(el: HTMLElement, companion: string, weather: str
 
   el.innerHTML = `
     <div class="info-panel-header">${dateStr}</div>
+    <button class="info-panel-close" data-petra-interactive="true" title="关闭">✕</button>
     <div class="info-panel-weather">${weather}</div>
     <div class="info-panel-companion">💖 陪伴时间：${companion}</div>
     <div class="info-panel-rm-title">待办事项 <button class="info-rm-add">＋ 添加</button></div>
     ${rmHtml}
   `;
+
+  // 关闭按钮：面板每次更新都会整块重渲染，所以监听必须在这里重新绑
+  el.querySelector(".info-panel-close")?.addEventListener("pointerdown", (e) => {
+    e.stopPropagation();
+    hideInfoPanel();
+  });
 
   // 添加按钮 → 弹出填写窗口
   el.querySelector(".info-rm-add")?.addEventListener("pointerdown", (e) => {
@@ -3488,7 +3502,11 @@ async function toggleAssistantSettings() {
       settings.weatherCity = cityNext;
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
-      settings.assistant.greetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
+      const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
+      // 间隔真变了就重设计时锚点：否则新值要等"距上次问候"的旧节奏走完才生效，
+      // 用户会以为设置没起作用（改短了当场不生效、改长了又按老周期弹）。
+      if (nextGreetInterval !== settings.assistant.greetInterval) resyncGreetingSchedule();
+      settings.assistant.greetInterval = nextGreetInterval;
       saveSettings(settings);
       // API Key 存 Rust 侧（DPAPI 加密）
       try {

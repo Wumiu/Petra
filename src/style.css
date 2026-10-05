@@ -665,6 +665,32 @@ body {
   font-size: 13px;
   color: #4a3560;
   margin-bottom: 6px;
+  padding-right: 22px; /* 给右上角的关闭按钮让位 */
+}
+/* 信息板右上角的关闭按钮 */
+.info-panel-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #a090b0;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto; /* 信息版整体 pointer-events:none，按钮要单独打开才点得到 */
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.info-panel-close:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #4a3560;
 }
 .info-panel-weather {
   font-size: 14px;
@@ -977,6 +1003,17 @@ body {
   border-top: 1px dashed rgba(90, 60, 110, 0.1);
 }
 
+/* 输出语言非中文时的中文译文，列在正文下方 */
+.dp-translation {
+  padding: 6px 0 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #6a5a75;
+  opacity: 0.7;
+  white-space: pre-wrap;
+  border-top: 1px dashed rgba(90, 60, 110, 0.1);
+}
+
 .dp-actions {
   margin-top: 6px;
   display: flex;
@@ -1165,6 +1202,17 @@ body {
 .cp-text-ai {
   font-style: italic;
   color: #6a5a75;
+}
+
+/* 输出语言非中文时的中文译文，附在正文下方 */
+.cp-translation {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6a5a75;
+  opacity: 0.7;
+  text-align: center;
+  padding: 0 12px 6px;
+  white-space: pre-wrap;
 }
 
 .cp-actions {

@@ -862,6 +862,10 @@ fn spawn_drag_follower(app: AppHandle) {
 }
 
 /// 小助手主动问候：取当前前台窗口标题 + 进程名，供 AI 判断用户在做什么。
+///
+/// 桌宠自己的窗口（点击、开面板、弹气泡）经常就是前台窗口，直接返回会永远
+/// 识别成"Petra"。所以从前景窗口沿 z 序往下找第一个不属于本进程、且可见的窗口
+/// —— 也就是桌宠底下那层，主人真正在用的那个。
 #[cfg(windows)]
 #[tauri::command]
 fn active_window_title() -> String {
@@ -871,12 +875,32 @@ fn active_window_title() -> String {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        GetForegroundWindow, GetWindow, GetWindowTextW, GetWindowThreadProcessId,
+        IsWindowVisible, GW_HWNDNEXT,
     };
     unsafe {
-        let hwnd = GetForegroundWindow();
+        let mut hwnd = GetForegroundWindow();
         if hwnd.is_invalid() {
             return String::new();
+        }
+        let own_pid = std::process::id();
+        let mut walked = 0u32;
+        loop {
+            let mut wpid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut wpid));
+            if wpid != own_pid && IsWindowVisible(hwnd).as_bool() {
+                break;
+            }
+            // 上限兜底：z 序理论上有限，但异常窗口链不该让这里转死
+            let next = match GetWindow(hwnd, GW_HWNDNEXT) {
+                Ok(h) => h,
+                Err(_) => return String::new(),
+            };
+            if next.is_invalid() || next == hwnd || walked >= 200 {
+                return String::new();
+            }
+            hwnd = next;
+            walked += 1;
         }
         let mut buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut buf);

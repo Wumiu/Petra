@@ -2,6 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { chatStream, estimateTokens, isKeylessProvider, isProviderReady } from "../../assistant/AssistantClient";
 import { loadSettings } from "../../utils/settings";
+import { buildLanguageInstruction } from "../../utils/outputLanguage";
 import type { RiichiGame } from "./engine";
 import { isHonor, rankOf, suitOf } from "./tiles";
 
@@ -159,9 +160,13 @@ async function runRequest(
   const startedAt = Date.now();
   const timer = window.setTimeout(() => controller.abort(), PET_TALK_LIMITS.timeoutMs);
   const persona = s.assistant.persona?.trim() ?? "";
+  // 语言指令必须排在静默规则「之前」：静默标记是字面中文「沉默」，
+  // 若语言指令在后，模型可能改用对应语言的静默词，绕过下面的 includes 判定而把静默当成台词说出来。
+  const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { pinChinese: true });
   const system =
     (persona ? persona + "\n" : "") +
-    "你是正在与用户对局的桌宠，也是牌桌上的对手。只依据提供的字段白名单说1到2句简短中文。" +
+    "你是正在与用户对局的桌宠，也是牌桌上的对手。只依据提供的字段白名单说1到2句简短的话。" +
+    langInstruction +
     "不得推测或索取对手暗牌、牌山顺序、未公开指示牌；不决定出牌、计分或合法操作；不输出HTML或命令。" +
     `通常不超过60字；没有值得说的内容时只回复「${SILENCE_TOKEN}」。`;
   let snapshot = buildSnapshot(game, reason, manualText);

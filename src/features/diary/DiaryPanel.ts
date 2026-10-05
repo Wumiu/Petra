@@ -163,6 +163,13 @@ function renderList(host: HTMLElement) {
       content.textContent = diary.content;
       item.appendChild(content);
 
+      if (diary.translation) {
+        const trans = document.createElement("div");
+        trans.className = "dp-translation";
+        trans.textContent = diary.translation;
+        item.appendChild(trans);
+      }
+
       const actions = document.createElement("div");
       actions.className = "dp-actions";
 
@@ -171,7 +178,8 @@ function renderList(host: HTMLElement) {
       copyBtn.textContent = "📋 复制";
       copyBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
-        const ok = await copyText(`${formatDate(diary.date)}\n${diary.content}`);
+        const copyBody = diary.translation ? `${diary.content}\n\n${diary.translation}` : diary.content;
+        const ok = await copyText(`${formatDate(diary.date)}\n${copyBody}`);
         toast(ok ? "日记已复制到剪贴板" : "复制失败，请手动选中复制", ok ? "info" : "warn");
       });
       actions.appendChild(copyBtn);
