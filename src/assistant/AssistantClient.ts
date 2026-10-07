@@ -114,7 +114,7 @@ function resolveBase(provider: AssistantProvider, customBaseUrl: string): string
 
 const BASE_PROMPT =
   "严格按照上面的人格设定说话，每一句话都符合该人设的语气、口吻、用词和情绪。不要像客服，不要像AI，你就是那个人。\n" +
-  "【工具能力】用户需要时可以：打开软件、查天气、调音量、搜网页、开网址、设提醒、锁屏、关机、查当前窗口。工具只在意图明确时调用，结果用符合人设的口语转述，失败就如实说。\n" +
+  "【工具能力】用户需要时可以：打开软件、查天气、调音量、搜网页、开网址、关网页、设提醒、锁屏、关机、查当前窗口、在桌面/文档/下载里新建文件或文件夹、读文件内容、改文件（改前自动备份）。改文件前先读一遍，改完说清楚改了什么、备份在哪。工具只在意图明确时调用，结果用符合人设的口语转述，失败就如实说。\n" +
   "【记忆】用户透露偏好/习惯/情绪就调用 remember。\n" +
   "不要主动提工具能力，不要说\"作为AI\"之类的话。";
 
@@ -263,11 +263,108 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "close_web_page",
+      description:
+        "关闭浏览器里用户指定的那个网页（标签页）。keyword 传页面标题或站点名里的关键词，例如「bilibili」「淘宝」「那个视频」。只关一个：如果匹配到多个页面，工具会返回候选列表，你要先问用户是哪一个，不要自己猜。",
+      parameters: {
+        type: "object",
+        properties: {
+          keyword: { type: "string", description: "要关闭的页面的关键词（页面标题或站点名的一部分，至少 2 个字）" },
+        },
+        required: ["keyword"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "open_path",
       description: "用系统默认程序打开本机的文件或文件夹（路径必须真实存在）。如「打开我的下载文件夹」。",
       parameters: {
         type: "object",
         properties: { path: { type: "string", description: "文件或文件夹的完整路径" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_entry",
+      description:
+        "新建文件夹或文件。路径必须是绝对路径，且只能建在 桌面/文档/下载 之内（其它位置会被拒绝）。is_dir=true 建文件夹；建文件时可传 content 直接写入内容。已存在的文件不会被覆盖（改内容请用 edit_text_file / write_text_file）。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "完整绝对路径，例如 D:\\桌面\\笔记\\todo.txt" },
+          is_dir: { type: "boolean", description: "true=新建文件夹，false=新建文件" },
+          content: { type: "string", description: "新建文件时的初始内容（可选）" },
+        },
+        required: ["path", "is_dir"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_text_file",
+      description:
+        "读取一个文本文件的**内容**（不是用默认程序打开，那个用 open_path）。返回带行号信息的一段内容；文件很大时只会返回一部分（truncated=true），可以再用 start_line 接着读。二进制文件会被拒绝。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "文件完整绝对路径" },
+          start_line: { type: "number", description: "从第几行开始读（1 基，默认 1）" },
+          max_lines: { type: "number", description: "最多读多少行（默认 200，上限 2000）" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_text_file",
+      description:
+        "修改文件内容：把 old_string 精确替换成 new_string。old_string 必须与文件里的内容**完全一致**（含缩进和换行），所以通常先用 read_text_file 看一遍。匹配到多处时必须给出更长的唯一片段，或把 replace_all 设为 true。覆盖前会自动备份成 xxx.petra-bak。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "文件完整绝对路径" },
+          old_string: { type: "string", description: "要被替换掉的原文（必须与文件内容完全一致）" },
+          new_string: { type: "string", description: "替换成的新内容；传空串表示删除这段" },
+          replace_all: { type: "boolean", description: "true=替换所有匹配（默认 false，多处匹配会报错让模型收敛）" },
+        },
+        required: ["path", "old_string", "new_string"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_text_file",
+      description:
+        "整个写入一个文件（覆盖或追加）。覆盖已有文件前会自动备份成 xxx.petra-bak；新建可执行/脚本类文件（exe/bat/ps1 等）会被拒绝。只是改几处内容时优先用 edit_text_file，避免误伤其它内容。",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "文件完整绝对路径" },
+          content: { type: "string", description: "要写入的完整内容" },
+          mode: { type: "string", enum: ["overwrite", "append"], description: "overwrite=覆盖（默认），append=追加到末尾" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_directory",
+      description:
+        "列出文件夹里有什么（目录在前）。用户说「桌面有什么/我下载里那个文件叫啥」时用它先看一遍；小助手只能列 桌面/文档/下载 之内的目录。",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "文件夹完整绝对路径" } },
         required: ["path"],
       },
     },

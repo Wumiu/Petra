@@ -7,7 +7,12 @@ import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
-import { buildLanguageInstruction, langNameOf, splitTranslation } from "../utils/outputLanguage";
+import { buildLanguageInstruction, buildLanguageReminder, langNameOf, splitTranslation } from "../utils/outputLanguage";
+import {
+  buildCardCommentPrompt,
+  buildGreetingPrompt,
+  proactiveLangInstruction,
+} from "./proactivePrompts";
 import { ToolLoopBudget, formatToolError, toolNames, truncateToolResult, validateToolArgs } from "./toolRuntime";
 import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
@@ -319,6 +324,57 @@ function resetTimer() {
   }
 }
 
+/**
+ * 文件写操作的确认气泡。
+ *
+ * 与 run_shell 的「允许 / 拒绝」同一套交互，额外给一个「以后不再确认」勾选框
+ * （勾了就把 settings.allowAllFileWrite 置真并持久化，和 allowAllShell 一个路子）。
+ * 读文件不弹：agent 要先看才能改，读又不会破坏东西，沙箱在 Rust 侧兜着。
+ */
+async function confirmFileWrite(action: string): Promise<boolean> {
+  if (loadSettings().allowAllFileWrite) return true;
+  return await new Promise<boolean>((resolve) => {
+    ensureBubbles();
+    const row = document.createElement("div");
+    row.className = "as-bubble as-confirm";
+    const label = document.createElement("span");
+    label.textContent = action;
+    const yes = document.createElement("button");
+    yes.className = "as-btn";
+    yes.textContent = "允许";
+    const no = document.createElement("button");
+    no.className = "as-btn as-btn-no";
+    no.textContent = "拒绝";
+    const remember = document.createElement("label");
+    remember.className = "as-allow";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    const cbText = document.createElement("span");
+    cbText.textContent = "以后不再确认";
+    remember.append(cb, cbText);
+    row.append(label, yes, no, remember);
+    bubbles!.appendChild(row);
+    positionBubbles();
+    const finish = (ok: boolean) => {
+      if (ok && cb.checked) {
+        const s = loadSettings();
+        s.allowAllFileWrite = true;
+        saveSettings(s);
+      }
+      row.remove();
+      positionBubbles();
+      resolve(ok);
+    };
+    yes.addEventListener("click", () => finish(true));
+    no.addEventListener("click", () => finish(false));
+  });
+}
+
+/** 文件禁止目录：每次现读设置，改了立刻生效（不用重开面板） */
+function fileDenyPaths(): string[] {
+  return loadSettings().fileDenyPaths ?? [];
+}
+
 function addBubble(kind: "ai" | "sys" | "confirm", text: string): HTMLElement {
   ensureBubbles();
   const b = document.createElement("div");
@@ -608,15 +664,14 @@ async function send(text: string) {
     return;
   }
   const outLang = s.assistant.outputLanguage;
-  const langName = outLang ? langNameOf(outLang) : "";
   // 换语言时清空对话历史
   if (lastChatLang !== outLang && history.length > 0) {
     history = [];
   }
   lastChatLang = outLang;
-  const userContent = (outLang && outLang !== "zh-cn")
-    ? `${text}\n[系统提醒：你必须用${langName}回复，不要用中文]`
-    : text;
+  // 语言提醒压在用户消息末尾：模型对末尾最敏感，放中段会被后面的中文语境带跑
+  const langReminder = buildLanguageReminder(outLang ?? "");
+  const userContent = langReminder ? `${text}\n${langReminder}` : text;
   history.push({ role: "user", content: userContent });
   saveHistory();
   // 情感反馈：先分析用户消息（零 token），立即驱动角色表情/动作 + 心情
@@ -727,8 +782,9 @@ async function send(text: string) {
       muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
       muteBtn.onclick = (e) => {
         e.stopPropagation();
-        ttsPlayer.muted = !ttsPlayer.muted;
-        document.querySelectorAll<HTMLAudioElement>("audio").forEach(a => { a.volume = ttsPlayer.muted ? 0 : 1; });
+        // 实时静音/放声：交给 TTSPlayer 立刻改正在播的那一段的音量。
+        // 不能靠查 DOM 设 volume —— new Audio() 的元素不在 DOM 里，查不到（老 bug）。
+        ttsPlayer.setMuted(!ttsPlayer.muted);
         muteBtn.textContent = ttsPlayer.muted ? "🔇" : "🔊";
       };
       loading.appendChild(muteBtn);
@@ -996,8 +1052,83 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
     if (tc.name === "open_url") {
       await invokeTool(tc, "open_url", { url: String(tc.args.url || "") });
     }
+    if (tc.name === "close_web_page") {
+      // 关哪个由用户说，关不关得掉由 Rust 侧如实回报（找不到 / 匹配到多个都会回候选列表）
+      await invokeTool(tc, "close_web_page", { keyword: String(tc.args.keyword || "") });
+    }
     if (tc.name === "open_path") {
       await invokeTool(tc, "open_path", { path: String(tc.args.path || "") });
+    }
+    // ---------- 文件能力 ----------
+    // 读/列：直接执行（不改动任何东西，沙箱在 Rust 侧）
+    if (tc.name === "read_text_file") {
+      await invokeTool(tc, "read_text_file", {
+        path: String(tc.args.path || ""),
+        startLine: tc.args.start_line,
+        maxLines: tc.args.max_lines,
+        denyPaths: fileDenyPaths(),
+      });
+    }
+    if (tc.name === "list_directory") {
+      await invokeTool(tc, "list_directory", {
+        path: String(tc.args.path || ""),
+        denyPaths: fileDenyPaths(),
+      });
+    }
+    // 新建/改：先弹确认气泡（可勾「以后不再确认」）
+    if (tc.name === "create_entry") {
+      const path = String(tc.args.path || "");
+      const isDir = tc.args.is_dir === true;
+      const ok = await confirmFileWrite(`小助手想新建${isDir ? "文件夹" : "文件"}：${path}`);
+      if (!ok) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "用户拒绝了这次新建操作" });
+      } else {
+        await invokeTool(tc, "create_entry", {
+          path,
+          isDir,
+          content: tc.args.content === undefined ? undefined : String(tc.args.content),
+          denyPaths: fileDenyPaths(),
+        });
+      }
+    }
+    if (tc.name === "edit_text_file") {
+      const path = String(tc.args.path || "");
+      const oldStr = String(tc.args.old_string ?? "");
+      const newStr = String(tc.args.new_string ?? "");
+      // 预览要短：确认气泡只是给用户判断"改的是不是这个文件、动的是哪一段"
+      const brief = (s: string) => (s.length > 60 ? `${s.slice(0, 60)}…` : s);
+      const ok = await confirmFileWrite(
+        `小助手想改文件：${path}\n把「${brief(oldStr)}」换成「${newStr === "" ? "（删除）" : brief(newStr)}」`,
+      );
+      if (!ok) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "用户拒绝了这次修改" });
+      } else {
+        await invokeTool(tc, "edit_text_file", {
+          path,
+          oldString: oldStr,
+          newString: newStr,
+          replaceAll: tc.args.replace_all === true,
+          denyPaths: fileDenyPaths(),
+        });
+      }
+    }
+    if (tc.name === "write_text_file") {
+      const path = String(tc.args.path || "");
+      const mode = tc.args.mode === "append" ? "append" : "overwrite";
+      const body = String(tc.args.content ?? "");
+      const ok = await confirmFileWrite(
+        `小助手想${mode === "append" ? "追加内容到" : "整个写入"}：${path}（${body.length} 字，覆盖会先备份）`,
+      );
+      if (!ok) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "用户拒绝了这次写入" });
+      } else {
+        await invokeTool(tc, "write_text_file", {
+          path,
+          content: body,
+          mode,
+          denyPaths: fileDenyPaths(),
+        });
+      }
     }
     if (tc.name === "list_installed_apps") {
       await invokeTool(tc, "list_installed_apps");
@@ -1277,12 +1408,17 @@ export async function triggerProactive() {
   const comfortLine = getMood().happiness < 0.35
     ? "\n【安慰模式】用户的心情最近有些低落，用你的人设温柔地安慰、陪伴一句，别提\"心情指数\"这类系统概念。"
     : "";
-  // 语言要求
-  const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { withTranslation: true });
-  const prompt = `[主动问候] ${timeStr}（${dayOfWeek}）${ctx ? "，" + ctx : ""}${memoryBlock}${comfortLine}${langInstruction ? "\n" + langInstruction : ""}\n\n` +
-    "自然地和用户打个招呼或说一句关心的话，保持你的人设风格。\n" +
-    "\n要求：简短（1-2句）、口语化、不要像客服。" +
-    "不要说\"作为AI\"之类的话。";
+  // 语言要求：system 侧一份 + 用户消息末尾一份（位置要求见 proactivePrompts.ts）
+  const outLang = s.assistant.outputLanguage ?? "";
+  const langInstruction = proactiveLangInstruction(outLang);
+  const prompt = buildGreetingPrompt({
+    timeStr,
+    dayOfWeek,
+    ctx,
+    memoryBlock,
+    comfortLine,
+    outputLanguage: outLang,
+  });
 
   // token 优化：问候用独立临时历史，不污染主对话历史（后续请求不携带问候上下文）
   const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];
@@ -1295,7 +1431,7 @@ export async function triggerProactive() {
     await chatStream(s.assistant.provider, apiKey, s.assistant.model, tmpHistory, s.assistant.persona, memory, s.assistant.customBaseUrl, (d) => {
       colorHook.push(d);
       ttsPlayer.pushDelta(d);
-    }, false);
+    }, false, langInstruction);
     for (const m of relevantMemories) {
       const orig = memory.find(e => e.id === m.id);
       if (orig) orig.lastUsedAt = Date.now();
@@ -1338,10 +1474,9 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled || !isProviderReady(s.assistant, apiKey)) return;
 
-  let cardInfo = `主题「${card.theme}」，祝福语：${card.baseText}`;
-  if (card.aiText !== card.baseText) cardInfo += `，AI文案：${card.aiText}`;
-  const prompt = `[抽卡点评] 刚才用户抽到了一张 ${card.rarity} 卡，${cardInfo}。用你的人设风格对这张卡发表一句简短的点评或吐槽（1-2句），保持口语化，不要复述祝福语。直接对用户说话。`;
-  const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { withTranslation: true });
+  const outLang = s.assistant.outputLanguage ?? "";
+  const prompt = buildCardCommentPrompt(card, outLang);
+  const langInstruction = proactiveLangInstruction(outLang);
 
   // 用临时 history，不污染主聊天历史
   const tmpHistory: ChatMessage[] = [{ role: "user", content: prompt }];

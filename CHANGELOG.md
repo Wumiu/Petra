@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+- 新增小助手的**文件能力**（agent 式）：`create_entry`（新建文件夹/文件）、`read_text_file`（读内容，大文件可按 start_line/max_lines 续读）、`edit_text_file`（精确替换，改前自动备份成 `xxx.petra-bak`）、`write_text_file`（覆盖/追加，覆盖前备份）、`list_directory`（列目录，目录在前）；「用默认程序打开文件」沿用已有的 `open_path`。安全边界全部画在 **Rust 侧**（新增 `src-tauri/src/files.rs`）：只接受绝对路径、判定前先规范化（`..` 与符号链接都会被展开，因此逃不出沙箱）、落点必须在 **桌面 / 文档 / 下载** 之内、禁止表（内置 AppData / .ssh / .aws / 程序目录等，另加设置里可配的「文件禁止目录」，`.git` 一律不碰）、可执行与脚本类后缀（exe/bat/ps1/lnk/sh…）不许新建、读 512KB / 写 1MB 上限、含 NUL 字节的二进制文件拒读。往文件里写之前弹「允许 / 拒绝」确认气泡，并带「以后不再确认」勾选框（持久化 `settings.allowAllFileWrite`，与免确认 shell 同一套路）。中文 Windows 的老文本（GBK）按系统 ANSI 代码页解码、写回时保留原编码（为此 windows crate 新增 `Win32_Globalization` feature）。新增 17 条 Rust 单测覆盖路径沙箱：相对路径、`..`、越界、**符号链接逃逸**、禁止目录、`.git`、保留设备名、后缀策略、GBK 往返
+
+- 修复主动问候「偶尔说中文」（选了日语等非中文输出语言时）：问候 prompt 把语言指令放在**中段**，后面还跟着"要求：简短（1-2句）、口语化、不要像客服"这类中文 —— 模型顺着最近的中文继续写，于是整句变中文；连「第一行原文 + `---` + 中文翻译」的格式也一起丢，而 TTS 只朗读 `---` 之前的部分（TTSPlayer.pushDelta 遇 `\n---` 截断），丢掉分隔符就把中文一起念了出来。现在语言提醒固定压在用户消息**最后一行**（模型对末尾最敏感），system 侧再放一份（extraContext），双保险；同一处 bug 的抽卡点评也一并修好，主聊天原本就是末尾提醒、本次只是抽成共用函数。新增 src/assistant/proactivePrompts.ts（纯函数，便于单测）与 tests/output-language.test.js（npm run test:lang，含"三条 AI 出口都不许再漏语言指令"的源码级检查）
+
+- 修复语音"先说下面、再说上面"（播报顺序与文字顺序不一致）：TTS 的合成是**并发预取**的（每断出一句就立刻发请求，谁先返回不一定，第一句长、返回慢很常见），而播放队列出队时取的是"第一个**已经合成好**的"（`queue.findIndex(i => i.ready)`）—— 于是第二句先合成完就先播，听起来就是倒着的。现在出队**只认队首**：队首没合成好就等它（preload 完成时再 pump），预取仍然并发、不牺牲首句延迟；合成失败的那句标 ready 后跳过，不会卡住后面。新增 tests/tts-order.test.js（已接入 npm run test:tts）：用"第一句最慢"的桩复现乱序合成，断言播放顺序严格是 1→2→3，并覆盖中间一句合成失败时仍按序播完
+
+- 修复语音输出的静音键"按了不实时生效"：TTS 的音频元素是 `new Audio()` 出来的、**不在 DOM 里**，而静音键一直用 `document.querySelectorAll("audio")` 去改 volume —— 一个都查不到，于是按下去对正在播的那一段毫无作用，要等下一句才安静。现在 TTSPlayer 自己持有"正在播的那一段"的引用并新增 `setMuted()`：按下 🔇 立刻静音、再按 🔇 立刻放声（不用等下一句），静音用 volume=0 而不是 pause，队列照常走完以免气泡消失与 onIdle 卡住；顺带修好同根因的 `stop()`（`querySelector("audio.tts-current")` 也是永远查不到，导致关掉语音输出时当前这句还在响）。新增 tests/tts-mute.test.js（npm run test:tts）锁住这个回归
+
+- 新增小助手工具 `close_web_page`（关网页）：说「把 B站那个页面关了」即可关掉指定的**标签页**。走 UI Automation 找到标签页并 Invoke 它自己的关闭按钮（读屏软件用的同一套接口），因此只影响这一个标签页、不会把整个浏览器窗口带走，也**不需要把浏览器切到前台**（不抢焦点、不打断打字/播放）；关键词匹配标签页标题（含站点名），标题没命中时用当前地址栏 URL 兜底；匹配到多个会回候选列表让小助手先反问用户，一个都没命中会回报当前开着的标签页。Windows 实现见 src-tauri/src/webpage.rs（新增 Cargo feature `Win32_UI_Accessibility`），macOS 走 AppleScript（需「自动化」权限），Linux 如实返回不支持
+
 - 合并组员提交 74b85c6「upgrade riichi mahjong visuals and interactions」：立直麻将表现层重做（原创 SVG 牌面 tileAssets、手牌/摸牌/牌河/副露/宝牌指示/牌山牌背统一视觉）、引擎与视图交互改进、游戏内表情反应可抢占节流（reactNow force）、新增 tests/riichi-state.test.js 与 scripts/riichi-ui-smoke.mjs、scripts/riichi-round2-acceptance.mjs 验收脚本
 
 - 合并组员提交 96e297c「polish riichi visuals and interactions」：牌面换成 FluffyStuff/riichi-mahjong-tiles 的 Regular 牌组（Public Domain/CC0，随附许可证），37 个 SVG 资源；新增 scripts/riichi-visual-review.mjs 视觉验收脚本；游戏层允许 data-tauri-drag-region 拖拽窗口（capabilities 增加 core:window:allow-start-dragging）

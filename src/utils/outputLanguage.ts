@@ -47,6 +47,26 @@ export function buildLanguageInstruction(
 }
 
 /**
+ * 贴在**用户消息末尾**的一句话语言提醒。
+ *
+ * 为什么必须有这一条：语言指令只放在 prompt 中段时，模型会顺着紧跟在它后面的中文
+ * 要求继续说中文 —— 实测"主动问候偶尔说中文"就是这么来的（指令后面还跟着
+ * "要求：简短（1-2句）、口语化、不要像客服"这类中文）。模型对**末尾**最敏感，
+ * 所以这条要压在最后一行。主聊天一直是这么做的（用户消息末尾提醒），
+ * 问候 / 抽卡点评漏了这一步，本函数把三者统一。
+ */
+export function buildLanguageReminder(
+  outputLanguage: string,
+  opts: { withTranslation?: boolean } = {},
+): string {
+  if (!outputLanguage || outputLanguage === "zh-cn") return "";
+  const name = langNameOf(outputLanguage);
+  return opts.withTranslation
+    ? `[系统提醒·最后强调：第 1 行必须是${name}原文，不要先写中文；第 2 行写 ---；中文翻译放在 --- 之后。]`
+    : `[系统提醒：你必须用${name}回复，不要用中文]`;
+}
+
+/**
  * 按首个 `---` 分隔符把模型输出拆成「原文 + 中文译文」。
  * 没有分隔符时整段视为原文、译文为空。
  */
