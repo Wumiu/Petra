@@ -198,8 +198,27 @@ fn push_canon(out: &mut Vec<PathBuf>, p: PathBuf) {
 // ==================== 判定核心 ====================
 
 /// 全部文件命令的唯一入口：路径必须过这一关。
+///
+/// 拒绝时**记日志**：不然"它为什么说不行"只能靠复现，排查成本很高
+/// （判定逻辑仍在纯函数 guard_with 里，这里只负责拿 roots/deny 与记一笔）。
 pub fn guard(app: &AppHandle, raw: &str, user_deny: &[String]) -> Result<Guarded, String> {
-    guard_with(&allowed_roots(app), &denied_paths(app, user_deny), raw)
+    let result = guard_with(&allowed_roots(app), &denied_paths(app, user_deny), raw);
+    if let Err(e) = &result {
+        log_line(&format!("files: 拒绝 {}", raw));
+        log_line(&format!("files:   原因：{e}"));
+    }
+    result
+}
+
+/// 展示用路径：Windows 的 canonicalize 会带 `\\?\`（verbatim）前缀，那是实现细节 ——
+/// 直接回给模型/用户会变成"反斜杠反斜杠问号"，TTS 还会念出来。
+/// **只影响展示**，判定一律用规范化后的真实路径。
+fn display_path(p: &Path) -> String {
+    let s = p.to_string_lossy().to_string();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    s.strip_prefix(r"\\?\").unwrap_or(s.as_str()).to_string()
 }
 
 /// 判定核心（与 `AppHandle` 解耦，单测直接喂 roots/deny）。
@@ -240,7 +259,7 @@ pub fn guard_with(roots: &[PathBuf], deny: &[PathBuf], raw: &str) -> Result<Guar
             "「{shown}」不在允许范围内：小助手只能动这几个目录 —— {}",
             roots
                 .iter()
-                .map(|r| r.display().to_string())
+                .map(|r| display_path(r))
                 .collect::<Vec<_>>()
                 .join("、")
         ));
@@ -249,13 +268,15 @@ pub fn guard_with(roots: &[PathBuf], deny: &[PathBuf], raw: &str) -> Result<Guar
         if real.starts_with(d) {
             return Err(format!(
                 "「{shown}」在禁止目录「{}」里，已拒绝（可在「小助手设置 → 文件禁止目录」里调整）",
-                d.display()
+                display_path(d)
             ));
         }
     }
     Ok(Guarded {
         real,
-        shown,
+        // 回显用的路径也过一遍展示层：万一调用方自己传了 `\\?\…`（例如把我们上一条
+        // 错误信息里的路径原样抄回来），也不该把这个前缀再喂回去
+        shown: display_path(Path::new(&shown)),
     })
 }
 
@@ -468,7 +489,7 @@ pub fn create_entry(
             return Err(format!("「{}」已经是一个文件了，不能建同名文件夹", g.shown));
         }
         std::fs::create_dir_all(&g.real).map_err(|e| format!("新建文件夹失败：{e}"))?;
-        log_line(&format!("files: mkdir {}", g.real.display()));
+        log_line(&format!("files: mkdir {}", display_path(&g.real)));
         return Ok(format!("已新建文件夹：{}", g.shown));
     }
 
@@ -483,7 +504,7 @@ pub fn create_entry(
     ensure_parent(&g.real)?;
     let text = content.unwrap_or_default();
     write_capped(&g.real, text.as_bytes())?;
-    log_line(&format!("files: create {}", g.real.display()));
+    log_line(&format!("files: create {}", display_path(&g.real)));
     Ok(format!("已新建文件：{}（{} 字节）", g.shown, text.len()))
 }
 
@@ -523,7 +544,7 @@ pub fn read_text_file(
     let line_capped = start - 1 + content.lines().count() < total_lines;
     log_line(&format!(
         "files: read {} lines {}-{}",
-        g.real.display(),
+        display_path(&g.real),
         start,
         start + content.lines().count().saturating_sub(1)
     ));
@@ -591,7 +612,7 @@ pub fn write_text_file(
     log_line(&format!(
         "files: {} {}",
         if append { "append" } else { "write" },
-        g.real.display()
+        display_path(&g.real)
     ));
     Ok(format!(
         "已{}：{}{}",
@@ -657,7 +678,7 @@ pub fn edit_text_file(
     std::fs::write(&g.real, &out).map_err(|e| format!("写入失败：{e}"))?;
     log_line(&format!(
         "files: edit {} ({} 处)",
-        g.real.display(),
+        display_path(&g.real),
         count
     ));
     Ok(format!(
@@ -787,6 +808,47 @@ mod tests {
         assert!(err.contains("不在允许范围"), "{err}");
     }
 
+    /// 手动测试时发现的毛病：拒绝信息里漏出了 Windows canonicalize 的 `\\?\` 前缀
+    /// （模型会读到它，TTS 还会念成"反斜杠反斜杠问号"）。展示层必须剥掉。
+    ///
+    /// 注意输入路径要用**普通写法**（`std::env::temp_dir()` 那种）：若拿 canonicalize
+    /// 过的 PathBuf 去拼，输入本身就带 `\\?\`，测的就不是"展示层有没有剥"这件事了。
+    #[test]
+    fn reject_message_hides_verbatim_prefix() {
+        let outside = std::env::temp_dir().join("petra-outside-probe.txt");
+        let err = guard_with(&roots(), &[], &outside.to_string_lossy()).unwrap_err();
+        assert!(!err.contains(r"\\?\"), "不该把 verbatim 前缀回给模型：{err}");
+        assert!(
+            err.contains(&display_path(&temp_root())),
+            "要给出可读的允许根：{err}"
+        );
+    }
+
+    /// 调用方自己传 `\\?\…`（例如把我们上一条错误信息里的路径抄回来）时也要剥掉。
+    /// 这里用**普通写法**拼出 verbatim 输入，别拿 canonicalize 过的路径去套 `\\?\`，
+    /// 否则会拼出双前缀，测的就不是这件事了。
+    #[test]
+    fn verbatim_input_is_echoed_clean() {
+        let plain_root = std::env::temp_dir().join("petra-files-test");
+        let raw = format!(r"\\?\{}\x.txt", plain_root.display());
+        let g = guard_with(&roots(), &[], &raw).unwrap();
+        assert!(!g.shown.contains(r"\\?\"), "回显路径不该带前缀：{}", g.shown);
+    }
+
+    #[test]
+    fn display_path_strips_verbatim_prefix() {
+        #[cfg(windows)]
+        {
+            assert_eq!(display_path(Path::new(r"\\?\D:\桌面\a.txt")), r"D:\桌面\a.txt");
+            assert_eq!(
+                display_path(Path::new(r"\\?\UNC\server\share\a")),
+                r"\\server\share\a"
+            );
+        }
+        // 本来就没有前缀的路径原样返回
+        assert_eq!(display_path(Path::new(r"D:\桌面\a.txt")), r"D:\桌面\a.txt");
+    }
+
     #[test]
     fn non_existent_nested_path_still_resolves_inside() {
         // 新建多级路径：末尾几段不存在，也必须能判定并通过
@@ -826,7 +888,8 @@ mod tests {
         let target = temp_root().join("x.txt");
         let quoted = format!("\"{}\"", target.display());
         let g = guard_with(&roots(), &[], &quoted).unwrap();
-        assert_eq!(g.shown, target.to_string_lossy());
+        // 回显走展示层，所以与 display_path 比（verbatim 前缀会被剥掉）
+        assert_eq!(g.shown, display_path(&target));
     }
 
     // ---------- 后缀 / 文件名策略 ----------
