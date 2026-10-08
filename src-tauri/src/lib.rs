@@ -69,6 +69,21 @@ mod trash;
 #[path = "trash_linux.rs"]
 mod trash;
 
+// 关网页（小助手"关掉那个 B站页面"）：Windows 走 UI Automation 找标签页并点它的
+// 关闭按钮；macOS 走 AppleScript；Linux 如实不支持（Wayland 拿不到窗口列表）。
+#[cfg(windows)]
+mod webpage;
+#[cfg(target_os = "macos")]
+#[path = "webpage_mac.rs"]
+mod webpage;
+#[cfg(target_os = "linux")]
+#[path = "webpage_linux.rs"]
+mod webpage;
+
+// 文件能力（小助手"建个文件/读一下/改一下"）：纯 std::fs，三平台同一份实现，
+// 安全边界（允许根 + 禁止表 + .git + 后缀策略）都在 files.rs 里。
+mod files;
+
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -3288,6 +3303,106 @@ fn open_url(url: String) -> Result<(), String> {
     launch::open_url(&url)
 }
 
+// ==================== 小助手的文件能力 ====================
+//
+// 这些命令是"把写磁盘的能力交给 AI"的入口，安全判定全部在 files.rs 里
+// （只接受绝对路径、必须落在桌面/文档/下载之内、禁止表与 .git 一律拒绝）。
+// `deny_paths` 由前端从设置里带过来（一行一个的「文件禁止目录」）。
+
+/// 新建文件夹或文件。
+#[tauri::command]
+fn create_entry(
+    app: AppHandle,
+    path: String,
+    is_dir: bool,
+    content: Option<String>,
+    deny_paths: Option<Vec<String>>,
+) -> Result<String, String> {
+    files::create_entry(&app, &path, is_dir, content, &deny_paths.unwrap_or_default())
+}
+
+/// 读文本文件（可按行区间取一段）。
+#[tauri::command]
+fn read_text_file(
+    app: AppHandle,
+    path: String,
+    start_line: Option<usize>,
+    max_lines: Option<usize>,
+    deny_paths: Option<Vec<String>>,
+) -> Result<files::ReadResult, String> {
+    files::read_text_file(
+        &app,
+        &path,
+        &deny_paths.unwrap_or_default(),
+        start_line,
+        max_lines,
+    )
+}
+
+/// 写文件（覆盖或追加；覆盖前自动备份）。
+#[tauri::command]
+fn write_text_file(
+    app: AppHandle,
+    path: String,
+    content: String,
+    mode: Option<String>,
+    deny_paths: Option<Vec<String>>,
+) -> Result<String, String> {
+    files::write_text_file(
+        &app,
+        &path,
+        &content,
+        mode.as_deref().unwrap_or("overwrite"),
+        &deny_paths.unwrap_or_default(),
+    )
+}
+
+/// 精确替换文件内容（old_string 必须完全一致；覆盖前自动备份）。
+#[tauri::command]
+fn edit_text_file(
+    app: AppHandle,
+    path: String,
+    old_string: String,
+    new_string: String,
+    replace_all: Option<bool>,
+    deny_paths: Option<Vec<String>>,
+) -> Result<String, String> {
+    files::edit_text_file(
+        &app,
+        &path,
+        &old_string,
+        &new_string,
+        replace_all.unwrap_or(false),
+        &deny_paths.unwrap_or_default(),
+    )
+}
+
+/// 列目录（目录在前，同类按名字排序）。
+#[tauri::command]
+fn list_directory(
+    app: AppHandle,
+    path: String,
+    deny_paths: Option<Vec<String>>,
+) -> Result<files::ListResult, String> {
+    files::list_directory(&app, &path, &deny_paths.unwrap_or_default())
+}
+
+/// 关闭浏览器里用户指定的那个标签页（小助手「把那个 B站页面关了」用）。
+///
+/// 走 spawn_blocking：UI Automation 要遍历无障碍树（实测一个浏览器窗口几十到几百
+/// 毫秒），同步调用会占住运行时线程 —— 与 capture_screen 同理。
+///
+/// 注意这里**不能加 pub**：`#[tauri::command]` 对 pub 命令会额外生成
+/// `#[macro_export] macro_rules!`，而 macro_export 落在 crate 根部 —— 与紧随其后的
+/// `pub use __cmd__xxx;` 同名冲突（E0255）。capture_screen 是 pub 也没事，因为它在
+/// capture 模块里。lib.rs 根部的命令一律私有，与 launch_application / open_url 一致。
+#[tauri::command]
+async fn close_web_page(keyword: String) -> webpage::ClosePageResult {
+    tauri::async_runtime::spawn_blocking(move || webpage::close_web_page(&keyword))
+        .await
+        .unwrap_or_else(|e| webpage::ClosePageResult::failed(format!("关网页任务异常：{e}")))
+}
+
 /// 清除移动目标（拖动/停止漫游时）。
 #[tauri::command]
 fn clear_pet_target(state: State<'_, PetMotion>) {
@@ -3736,7 +3851,8 @@ pub fn run() {
             model_resource_path, delete_imported_model, set_audio_enabled,
             set_pet_target, set_pet_target_speed, set_pet_tracking, clear_pet_target,
             drag_start, set_model_bounds, drag_end, set_window_size,
-            run_shell, launch_application, open_url, active_window_title,
+            run_shell, launch_application, open_url, close_web_page, active_window_title,
+            create_entry, read_text_file, write_text_file, edit_text_file, list_directory,
             get_idle_seconds, get_system_proxy,
             set_api_key, get_api_key, send_feedback, export_feedback, feedback_text,
             get_autostart, set_autostart, sync_interaction_regions,

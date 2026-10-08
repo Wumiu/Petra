@@ -3345,6 +3345,19 @@ async function toggleAssistantSettings() {
     nickname.value = settings.assistant.nickname ?? "";
     mkRow("对用户的称呼", nickname);
 
+    // 文件禁止目录：小助手只能读写 桌面/文档/下载，这里额外拉黑
+    const denyPaths = document.createElement("textarea");
+    denyPaths.className = "as-input as-persona";
+    denyPaths.rows = 3;
+    denyPaths.placeholder = "例如：\nD:\\桌面\\桌宠\n# 一行一个，# 开头是注释";
+    denyPaths.value = (settings.fileDenyPaths ?? []).join("\n");
+    mkRow("文件禁止目录", denyPaths);
+    const denyHint = document.createElement("div");
+    denyHint.className = "as-privacy";
+    denyHint.textContent =
+      "小助手读写文件只允许在 桌面 / 文档 / 下载 之内；这里填的目录（含其子目录）一律拒绝 —— 建议把项目源码目录加进来";
+    host.appendChild(denyHint);
+
     // 天气城市：填了就按城市查，不会再被代理出口 IP 带偏
     const weatherCity = document.createElement("input");
     weatherCity.className = "as-input";
@@ -3495,6 +3508,10 @@ async function toggleAssistantSettings() {
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
       settings.assistant.outputLanguage = langSelect.value;
+      settings.fileDenyPaths = denyPaths.value
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l !== "" && !l.startsWith("#"));
       settings.gameTalk = gameTalk.checked;
       // 天气城市变了就清掉缓存，下次打开信息板立刻重新取
       const cityNext = weatherCity.value.trim();

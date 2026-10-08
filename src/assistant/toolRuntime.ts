@@ -33,7 +33,15 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
   cancel_shutdown: {},
   search_web: { required: ["query"] },
   open_url: { required: ["url"] },
+  // 结果里可能带"当前开着的标签页"候选列表，给宽一点的截断上限
+  close_web_page: { required: ["keyword"], maxResultChars: 1200 },
   open_path: { required: ["path"] },
+  // 文件类：读/列是只读的；写类要走确认气泡（免确认开关持久化在 settings.allowAllFileWrite）
+  create_entry: { required: ["path", "is_dir"], maxResultChars: 500, confirm: true },
+  read_text_file: { required: ["path"], maxResultChars: 6000, readOnly: true },
+  edit_text_file: { required: ["path", "old_string", "new_string"], maxResultChars: 600, confirm: true },
+  write_text_file: { required: ["path", "content"], maxResultChars: 600, confirm: true },
+  list_directory: { required: ["path"], maxResultChars: 3000, readOnly: true },
   list_installed_apps: { maxResultChars: 2000, readOnly: true },
   active_window_title: { maxResultChars: 400, readOnly: true },
   capture_screen: { readOnly: true },

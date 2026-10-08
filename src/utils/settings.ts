@@ -69,6 +69,14 @@ export interface Settings {
   passthrough: boolean;
   /** 免确认 shell（持久化，重启后保持） */
   allowAllShell: boolean;
+  /** 免确认写文件（持久化）：勾过确认气泡里的「以后不再确认」就置真 */
+  allowAllFileWrite: boolean;
+  /**
+   * 文件禁止目录（一行一个，支持 # 注释）。
+   * 小助手只能读写 桌面/文档/下载，这里是**额外**拉黑的目录 —— 例如把项目源码目录
+   * 加进来，免得它改到自己头上。内置敏感项（AppData/.ssh/.git…）不依赖这项。
+   */
+  fileDenyPaths: string[];
   assistant: AssistantSettings;
   diary: DiarySettings;
   dailyCard: DailyCardSettings;
@@ -114,6 +122,8 @@ const DEFAULTS: Settings = {
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
   allowAllShell: false,
+  allowAllFileWrite: false,
+  fileDenyPaths: [],
   assistant: {
     enabled: false,
     provider: "deepseek",
@@ -175,6 +185,10 @@ export function loadSettings(): Settings {
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
     s.gameMusic = s.gameMusic !== false;
     s.gameMusicVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameMusicVolume)) ? Number(s.gameMusicVolume) : DEFAULTS.gameMusicVolume));
+    // 禁止目录：存档可能被手改坏，这里兜一层类型
+    s.fileDenyPaths = Array.isArray(s.fileDenyPaths)
+      ? s.fileDenyPaths.filter((p): p is string => typeof p === "string" && p.trim() !== "")
+      : [];
     currentFactor = ACTIVITY_FACTOR[s.activity] ?? ACTIVITY_FACTOR.mid;
     currentLevel = s.activity ?? DEFAULTS.activity;
     return s;

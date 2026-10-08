@@ -41,7 +41,10 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 
-# Windows 专属：WASAPI 回环、SMTC 媒体会话、注册表代理、Win32 窗口操作、回收站
+# Windows 专属：WASAPI 回环、SMTC 媒体会话、注册表代理、Win32 窗口操作、回收站、
+# UI Automation（关网页用的无障碍接口，见 src/webpage.rs）
+# Win32_Globalization：文件读写要在系统 ANSI 代码页（简中即 GBK）与 UTF-8 之间转换，
+# 见 src/files.rs —— 中文用户的老 .txt 多是 GBK，按 UTF-8 硬读就是乱码
 # （必须放在 cfgs 里，否则 macOS 上根本编不过）
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -49,6 +52,7 @@ windows = { version = "0.58", features = [
     "Foundation_Collections",
     "Media_Control",
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
     "Win32_Security_Cryptography",
@@ -57,6 +61,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_Accessibility",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
