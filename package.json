@@ -17,9 +17,11 @@
     "test:diary": "tsc src/features/diary/DiaryManager.ts src/features/diary/DiaryEventTracker.ts src/features/diary/DiaryDigest.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/diary.test.js",
     "test:assistant": "tsc src/assistant/toolRuntime.ts src/assistant/AssistantClient.ts src/assistant/EmotionEngine.ts src/ui/bubbleTiming.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/assistant-tools.test.js && node tests/screen-vision.test.js",
     "test:tts": "tsc src/tts/TTSPlayer.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/tts-mute.test.js && node tests/tts-order.test.js",
+    "test:asr": "tsc src/asr/asrLogic.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/asr-logic.test.js",
     "test:lang": "tsc src/utils/outputLanguage.ts src/assistant/proactivePrompts.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/output-language.test.js",
     "test:weather": "tsc src/features/weather/WeatherFormat.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/weather.test.js",
-    "test:hourly": "tsc src/features/hourly/HourlyChime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/hourly.test.js"
+    "test:hourly": "tsc src/features/hourly/HourlyChime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/hourly.test.js",
+    "test:visible": "tsc src/ui/visible.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/visible-clamp.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

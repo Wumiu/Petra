@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		语音输入的录音权限说明。
+		macOS 上 WKWebView 调 getUserMedia 之前，系统会先检查 Info.plist 里有没有
+		这一项：缺了会直接拒绝（且不给任何可点的授权弹窗），用户只看到
+		「麦克风启动失败」。Tauri 会把本文件与自动生成的 Info.plist 合并。
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Petra 需要用麦克风把你的语音转成文字，录音只在你说完后发送识别，不会保存到本地。</string>
+</dict>
+</plist>

@@ -12,6 +12,9 @@ src-tauri/target/
 .env
 .env.*
 
+# Cargo 本地配置：PETRA_ASR_KEY 等编译期注入的密钥放这里，绝不入库
+.cargo/
+
 # API Key 加密文件（本地敏感数据，即使在用户目录也不跟踪）
 api_key.bin
 

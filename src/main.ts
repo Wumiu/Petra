@@ -34,7 +34,7 @@ import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 import { toast } from "./ui/Toast";
 import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
-import { setVisibleRect } from "./ui/visible";
+import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
 import { infoPanelPlacement } from "./ui/infoPanelPlacement";
 import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
@@ -42,6 +42,7 @@ import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settin
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
+import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
@@ -1888,13 +1889,40 @@ async function toggleModelPanel() {
   }
 }
 
+/**
+ * 把弹窗整体挪进"屏幕上真正看得见的那块区域"。
+ *
+ * 桌宠窗口固定 700×700、但可以贴到屏幕边缘（部分出屏）。弹窗按窗口居中时，
+ * 出屏那一半连带着弹窗一起看不见 —— 用户看到的就是"窗口显示不全"。
+ * 这里做两件事：先按可见区给尺寸上限（可见区比弹窗还窄时让它缩，别硬撑出屏），
+ * 再把左上角钳进可见区。调用前必须已经 append 到 body，否则量不到尺寸。
+ */
+function keepDialogFullyVisible(dlg: HTMLElement, margin = 8): void {
+  const vr = getWindowVisibleRect();
+  const { maxWidth, maxHeight } = fitSizeInRect(vr, margin);
+  dlg.style.maxWidth = `${Math.round(maxWidth)}px`;
+  dlg.style.maxHeight = `${Math.round(maxHeight)}px`;
+  dlg.style.overflow = "auto";
+  const r = dlg.getBoundingClientRect(); // 量"缩小之后"的真实尺寸
+  const pos = clampIntoRect(
+    { left: r.left, top: r.top, width: r.width, height: r.height },
+    vr,
+    margin,
+  );
+  dlg.style.transform = "none"; // 清掉 translate(-50%,-50%)，改用 left/top 直接定位
+  dlg.style.left = `${Math.round(pos.left)}px`;
+  dlg.style.top = `${Math.round(pos.top)}px`;
+}
+
 /** 语音设置弹窗 */
 function showTtsDialog(savedKey: string) {
   document.getElementById("tts-dlg")?.remove();
   const dlg = document.createElement("div");
   dlg.id = "tts-dlg";
   dlg.setAttribute("data-petra-interactive", "true");
-  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;min-width:320px;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
+  // 用 width 而不是 min-width：min-width 的优先级高于 max-width，
+  // keepDialogFullyVisible 给的上限会被它顶掉，弹窗就还是缩不下来
+  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
   dlg.innerHTML = `
     <div style="font-weight:bold;font-size:16px;margin-bottom:16px;">语音设置</div>
     <div style="color:#999;margin-bottom:4px;">API Key</div>
@@ -1907,6 +1935,7 @@ function showTtsDialog(savedKey: string) {
     </div>
   `;
   document.body.appendChild(dlg);
+  keepDialogFullyVisible(dlg);
   const close = () => { dlg.remove(); };
   (dlg.querySelector("#tts-c") as HTMLElement).onclick = close;
   (dlg.querySelector("#tts-ok") as HTMLElement).onclick = async () => {
@@ -1919,6 +1948,53 @@ function showTtsDialog(savedKey: string) {
     ttsPlayer.setConfig(settings.tts.enabled, k, s, settings.assistant.outputLanguage ?? "");
     close();
     toast("语音设置已保存");
+  };
+}
+
+/**
+ * 语音识别（ASR）设置弹窗。
+ *
+ * 只有"在线识别"这一条路需要用户提供 Key：Windows 的浏览器原生识别不需要，
+ * Mac/Linux（以及原生识别被判定不可用后的 Windows）走 Rust 侧转发硅基流动。
+ * Key 交给 Rust 存（DPAPI / 钥匙串 / 600 文件），跟 TTS / 聊天 Key 一个待遇，
+ * 前端只在弹窗里读回来做回填。
+ */
+async function showAsrDialog() {
+  document.getElementById("asr-dlg")?.remove();
+  const savedKey = await invoke<string>("get_asr_key").catch(() => "");
+  const online = getSpeechRecognizer().getBackendName() === "siliconflow";
+  const backendLine = online
+    ? "在线识别（硅基流动）—— 已内置默认 Key，开箱即用；填自己的会覆盖默认（加密存在本机）。"
+    : "浏览器原生识别（Windows）—— 不需要 Key。若原生识别不可用会自动切到在线识别。";
+  const inputStyle = "width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:18px;outline:none;";
+  const dlg = document.createElement("div");
+  dlg.id = "asr-dlg";
+  dlg.setAttribute("data-petra-interactive", "true");
+  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:340px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
+  dlg.innerHTML = `
+    <div style="font-weight:bold;font-size:16px;margin-bottom:12px;">语音识别设置</div>
+    <div style="color:#999;margin-bottom:14px;line-height:1.6;">${backendLine}</div>
+    <div style="color:#999;margin-bottom:4px;">硅基流动 API Key（留空 = 用内置默认）</div>
+    <input id="asr-k" type="password" placeholder="sk-..." value="${savedKey.replace(/"/g, "&quot;")}" style="${inputStyle}">
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="asr-c" style="padding:8px 20px;border-radius:6px;border:none;background:#555;color:#fff;cursor:pointer;">取消</button>
+      <button id="asr-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;">保存</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  keepDialogFullyVisible(dlg);
+  const close = () => { dlg.remove(); };
+  (dlg.querySelector("#asr-c") as HTMLElement).onclick = close;
+  (dlg.querySelector("#asr-ok") as HTMLElement).onclick = async () => {
+    const k = (dlg.querySelector("#asr-k") as HTMLInputElement).value.trim();
+    try {
+      await invoke("set_asr_key", { apiKey: k });
+    } catch (e) {
+      toast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+      return;
+    }
+    close();
+    toast(k ? "语音识别 Key 已保存" : "已清除语音识别 Key");
   };
 }
 
@@ -2189,6 +2265,11 @@ function buildMenu(engine: BehaviorEngine) {
         ttsPlayer.pushDelta(testText[lang] ?? "你好，语音测试成功。");
         ttsPlayer.flush();
       },
+    },
+    {
+      id: "asr-config",
+      label: "🎤 语音识别设置",
+      onPick: () => void showAsrDialog(),
     },
     {
       id: "chat-history",
@@ -3520,9 +3601,9 @@ async function toggleAssistantSettings() {
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
-      // 间隔真变了就重设计时锚点：否则新值要等"距上次问候"的旧节奏走完才生效，
-      // 用户会以为设置没起作用（改短了当场不生效、改长了又按老周期弹）。
-      if (nextGreetInterval !== settings.assistant.greetInterval) resyncGreetingSchedule();
+      // 每次保存都重设计时锚点：不管间隔变没变，从保存这一刻开始重新计时，
+      // 避免"保存前已经累积的时长到了，刚保存就被问候一下"。
+      resyncGreetingSchedule();
       settings.assistant.greetInterval = nextGreetInterval;
       saveSettings(settings);
       // API Key 存 Rust 侧（DPAPI 加密）

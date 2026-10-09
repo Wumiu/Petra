@@ -1215,6 +1215,52 @@ fn get_tts_key(app: AppHandle) -> Result<String, String> {
     String::from_utf8(dec).map_err(|e| e.to_string())
 }
 
+/// 语音识别（ASR）密钥单独存一份：与聊天密钥、TTS 密钥互不覆盖
+/// （聊天换供应商时不该把语音识别一起清掉，反之亦然）。
+#[cfg(windows)]
+fn asr_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("asr_key.bin"))
+}
+
+/// 存 ASR 密钥（Windows/DPAPI）。空字符串 = 清除。
+#[cfg(windows)]
+#[tauri::command]
+fn set_asr_key(app: AppHandle, api_key: String) -> Result<(), String> {
+    if api_key.is_empty() {
+        let _ = std::fs::remove_file(asr_key_path(&app)?);
+        return Ok(());
+    }
+    let enc = dpapi_protect(api_key.as_bytes())?;
+    std::fs::write(asr_key_path(&app)?, enc).map_err(|e| e.to_string())
+}
+
+/// 读**用户自己存的** ASR 密钥（Windows/DPAPI）。没存过、存坏了都返回空串。
+///
+/// 刻意不套内置默认值：这条只用来给设置弹窗回填，绝不能把内置默认 Key 显示到界面上
+/// （否则用户一复制，内置 Key 就流出去被刷额度了）。"能不能用"由 asr_key_ready 回答。
+#[cfg(windows)]
+fn read_stored_asr_key(app: &AppHandle) -> String {
+    let Ok(path) = asr_key_path(app) else { return String::new() };
+    let Ok(enc) = std::fs::read(&path) else { return String::new() };
+    if enc.is_empty() { return String::new(); }
+    // 解密失败也当"没有自己的 Key"：下一步会回退到内置默认值，功能照样能用，
+    // 没必要为此把整条语音链卡死
+    dpapi_unprotect(&enc)
+        .ok()
+        .and_then(|d| String::from_utf8(d).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_asr_key(app: AppHandle) -> Result<String, String> {
+    Ok(read_stored_asr_key(&app))
+}
+
 /// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
 #[cfg(windows)]
 #[tauri::command]
@@ -1294,6 +1340,77 @@ fn get_tts_key() -> Result<String, String> {
         .map_err(|_| "TTS API Key 编码无效".to_string())
 }
 
+/// 语音识别（ASR）用独立的 Keychain 项，与聊天密钥、TTS 密钥互不覆盖。
+#[cfg(target_os = "macos")]
+const ASR_KEYCHAIN_SERVICE: &str = "com.wumiu.petra.asrkey";
+
+/// 存 ASR 密钥（macOS/Keychain）。空字符串 = 删掉该项。
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn set_asr_key(_app: AppHandle, api_key: String) -> Result<(), String> {
+    if api_key.is_empty() {
+        // 删除不存在的项会返回非零，这里按"清干净了"看待，不打扰用户
+        let _ = hidden_command("/usr/bin/security")
+            .args([
+                "delete-generic-password",
+                "-a",
+                KEYCHAIN_ACCOUNT,
+                "-s",
+                ASR_KEYCHAIN_SERVICE,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        return Ok(());
+    }
+    let status = hidden_command("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            ASR_KEYCHAIN_SERVICE,
+            "-w",
+            api_key.as_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("写入语音识别钥匙串失败: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("写入语音识别钥匙串失败（security 退出码 {status}）"))
+    }
+}
+
+/// 读**用户自己存的** ASR 密钥（macOS/Keychain）。没存过返回空串，见 Windows 版注释。
+#[cfg(target_os = "macos")]
+fn read_stored_asr_key(_app: &AppHandle) -> String {
+    hidden_command("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            ASR_KEYCHAIN_SERVICE,
+            "-w",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn get_asr_key(app: AppHandle) -> Result<String, String> {
+    Ok(read_stored_asr_key(&app))
+}
+
 /// 存储 API Key 到 Keychain（-U 表示已存在就更新，避免堆出重复项）。
 ///
 /// 参数以数组传给 security，不经过 shell，key 里的特殊字符不会被展开；
@@ -1363,7 +1480,7 @@ const SECRET_TOOL_ACCOUNT: &str = "api_key";
 
 /// API Key 的降级落盘位置：$XDG_CONFIG_HOME/petra/api_key（默认 ~/.config/petra/api_key）。
 #[cfg(target_os = "linux")]
-fn linux_api_key_file() -> Result<std::path::PathBuf, String> {
+fn linux_key_file(name: &str) -> Result<std::path::PathBuf, String> {
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
         _ => std::env::var_os("HOME")
@@ -1371,19 +1488,30 @@ fn linux_api_key_file() -> Result<std::path::PathBuf, String> {
             .ok_or_else(|| "无法确定配置目录（HOME 未设置）".to_string())?
             .join(".config"),
     };
-    Ok(base.join("petra").join("api_key"))
+    Ok(base.join("petra").join(name))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_api_key_file() -> Result<std::path::PathBuf, String> {
+    linux_key_file("api_key")
+}
+
+/// 语音识别密钥的降级落盘位置：~/.config/petra/asr_key（同样 600 权限）。
+#[cfg(target_os = "linux")]
+fn linux_asr_key_file() -> Result<std::path::PathBuf, String> {
+    linux_key_file("asr_key")
 }
 
 /// 从 Secret Service 读密码：键不存在、keyring 没运行、secret-tool 没装都返回 None。
 #[cfg(target_os = "linux")]
-fn secret_tool_lookup() -> Option<String> {
+fn secret_tool_lookup_for(account: &str) -> Option<String> {
     let out = hidden_command("secret-tool")
         .args([
             "lookup",
             "service",
             SECRET_TOOL_SERVICE,
             "username",
-            SECRET_TOOL_ACCOUNT,
+            account,
         ])
         .output()
         .ok()?;
@@ -1398,17 +1526,22 @@ fn secret_tool_lookup() -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn secret_tool_lookup() -> Option<String> {
+    secret_tool_lookup_for(SECRET_TOOL_ACCOUNT)
+}
+
 /// 把密码写进 Secret Service：值走 stdin，不经过 shell，也不会出现在进程命令行里。
 #[cfg(target_os = "linux")]
-fn secret_tool_store(api_key: &str) -> bool {
+fn secret_tool_store_for(account: &str, label: &str, secret: &str) -> bool {
     let spawned = hidden_command("secret-tool")
         .args([
             "store",
-            "--label=Petra API Key",
+            &format!("--label={label}"),
             "service",
             SECRET_TOOL_SERVICE,
             "username",
-            SECRET_TOOL_ACCOUNT,
+            account,
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -1419,9 +1552,87 @@ fn secret_tool_store(api_key: &str) -> bool {
     };
     if let Some(mut si) = child.stdin.take() {
         // 写完就 drop，关掉管道；否则 secret-tool 会一直等 EOF
-        let _ = si.write_all(api_key.as_bytes());
+        let _ = si.write_all(secret.as_bytes());
     }
     matches!(child.wait(), Ok(s) if s.success())
+}
+
+#[cfg(target_os = "linux")]
+fn secret_tool_store(api_key: &str) -> bool {
+    secret_tool_store_for(SECRET_TOOL_ACCOUNT, "Petra API Key", api_key)
+}
+
+/// 把密钥写进 600 权限文件（Secret Service 不可用时的退路）。
+/// 抽出来是因为 API Key 和语音识别密钥走完全一样的落盘语义。
+#[cfg(target_os = "linux")]
+fn write_private_file(path: &std::path::Path, secret: &str) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // mode(0o600) 让文件从出现的第一刻起就只有本用户可读写，
+        // 避免"先创建、再 chmod"之间那段可被同机其它用户读到的窗口。
+        // 注意：文件已存在时 open 的 mode 不生效，所以下面再补一次 set_permissions。
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("写入密钥失败: {e}"))?;
+        f.write_all(secret.as_bytes())
+            .map_err(|e| format!("写入密钥失败: {e}"))?;
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// 语音识别的 Secret Service 账号名，与聊天密钥分开存。
+#[cfg(target_os = "linux")]
+const ASR_SECRET_ACCOUNT: &str = "asr_key";
+
+/// 存 ASR 密钥（Linux）：优先 Secret Service，失败落 600 权限文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn set_asr_key(_app: AppHandle, api_key: String) -> Result<(), String> {
+    let path = linux_asr_key_file()?;
+    if api_key.is_empty() {
+        if !secret_tool_store_for(ASR_SECRET_ACCOUNT, "Petra ASR Key", "") {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Ok(());
+    }
+    if secret_tool_store_for(ASR_SECRET_ACCOUNT, "Petra ASR Key", &api_key) {
+        let _ = std::fs::remove_file(&path);
+        log_line("set_asr_key: 已写入 Secret Service");
+        return Ok(());
+    }
+    write_private_file(&path, &api_key)?;
+    log_line("set_asr_key: Secret Service 不可用，已写入 ~/.config/petra/asr_key（权限 600）");
+    Ok(())
+}
+
+/// 读**用户自己存的** ASR 密钥（Linux）：先 Secret Service，再降级文件，都没有返回空串。
+#[cfg(target_os = "linux")]
+fn read_stored_asr_key(_app: &AppHandle) -> String {
+    if let Some(v) = secret_tool_lookup_for(ASR_SECRET_ACCOUNT) {
+        return v;
+    }
+    linux_asr_key_file()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn get_asr_key(app: AppHandle) -> Result<String, String> {
+    Ok(read_stored_asr_key(&app))
 }
 
 /// 存储 API Key（Linux）：优先 Secret Service，失败落 600 权限文件。
@@ -1436,29 +1647,7 @@ fn set_api_key(api_key: String) -> Result<(), String> {
         log_line("set_api_key: 已写入 Secret Service");
         return Ok(());
     }
-    let path = linux_api_key_file()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    }
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // mode(0o600) 让文件从出现的第一刻起就只有本用户可读写，
-        // 避免"先创建、再 chmod"之间那段可被同机其它用户读到的窗口。
-        // 注意：文件已存在时 open 的 mode 不生效，所以下面再补一次 set_permissions。
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|e| format!("写入 API Key 失败: {e}"))?;
-        f.write_all(api_key.as_bytes())
-            .map_err(|e| format!("写入 API Key 失败: {e}"))?;
-    }
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    write_private_file(&linux_api_key_file()?, &api_key)?;
     log_line("set_api_key: Secret Service 不可用，已写入 ~/.config/petra/api_key（权限 600）");
     Ok(())
 }
@@ -2822,6 +3011,136 @@ async fn tts_synthesize(
     Ok(combined)
 }
 
+/// 语音识别的服务端点与模型：与 TTS 同一路子 —— 请求从 Rust 侧发出，
+/// 密钥只存在于 Rust（DPAPI / Keychain / 600 权限文件），前端只拿到转写出来的文本。
+const ASR_API_URL: &str = "https://api.siliconflow.cn/v1/audio/transcriptions";
+const ASR_MODEL: &str = "FunAudioLLM/SenseVoiceSmall";
+
+/// 内置的默认 ASR Key：**编译期**从环境变量注入，源码与仓库里都没有这个字符串。
+///
+/// 为什么允许内置：硅基流动的语音模型是免费的，内置一个默认 Key 才能让用户开箱即用、
+/// 不必自己注册（这正是它原本被写死在代码里的原因）。但免费模型的 Rate Limits 是
+/// **固定的** —— Key 一旦进公开仓库就容易被人刷满额度，而且没法花钱提额，只能换 Key。
+/// 所以走 `option_env!`：值来自构建时的 PETRA_ASR_KEY（见根目录 .cargo/config.toml，
+/// 那个文件在 .gitignore 里），仓库保持干净，打出来的应用里仍然带着它。
+///
+/// 换 Key：改 .cargo/config.toml 里那一行，然后 `cargo clean -p petra` 强制重编
+/// （option_env! 变了 cargo 不一定能感知）。注入为空时自动退化成"要用户自己填 Key"。
+///
+/// 这里必须用 match 而不是 `option_env!(...).unwrap_or("")`：后者在 const 上下文里
+/// 还没稳定（E0658 cannot call conditionally-const method in constants）。
+const DEFAULT_ASR_KEY: &str = match option_env!("PETRA_ASR_KEY") {
+    Some(key) => key,
+    None => "",
+};
+
+/// 用户没存自己的 Key → 回退到内置默认值；存了就用用户自己的。
+fn asr_key_or_default(stored: String) -> String {
+    if stored.trim().is_empty() {
+        DEFAULT_ASR_KEY.trim().to_string()
+    } else {
+        stored
+    }
+}
+
+/// 现在到底有没有可用的识别 Key（用户自己的或内置默认的）。
+///
+/// 前端点麦克风前先问它：没有就直接提示去配置，别白录一轮再报错。
+/// 注意别用 get_asr_key 做这件事 —— 那个只报"用户自己填的"，内置默认是隐藏的。
+#[tauri::command]
+fn asr_key_ready(app: AppHandle) -> bool {
+    !asr_key_or_default(read_stored_asr_key(&app)).is_empty()
+}
+
+/// 单次录音上限：超过这个大小大概率是 VAD 没判出静音、录了一大段环境音，
+/// 与其把几十兆传上去等超时，不如当场给一句人话。
+const ASR_MAX_AUDIO_BYTES: usize = 20 * 1024 * 1024;
+
+/// 转写一段 WebM/Opus 录音（base64 传入）。
+///
+/// 为什么手拼 multipart：`reqwest` 的 multipart 要额外开 feature（会拉进 mime_guess
+/// 一串新 crate），而这里只需要一个固定的 form-data 体，手拼不到 20 行。
+#[tauri::command]
+async fn asr_transcribe(app: AppHandle, audio: String) -> Result<String, String> {
+    use base64::Engine as _;
+    // 用户自己的 Key 优先，其次编译期注入的内置默认 Key
+    let api_key = asr_key_or_default(read_stored_asr_key(&app));
+    if api_key.trim().is_empty() {
+        return Err("未配置语音识别 API Key（右键菜单 →「🎤 语音识别设置」）".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio.as_bytes())
+        .map_err(|e| format!("录音数据解码失败: {e}"))?;
+    if bytes.is_empty() {
+        return Err("这段录音是空的".to_string());
+    }
+    if bytes.len() > ASR_MAX_AUDIO_BYTES {
+        return Err(format!(
+            "录音太大（{} MB），请说得短一点",
+            bytes.len() / 1024 / 1024
+        ));
+    }
+
+    let boundary = format!(
+        "----petra{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 512);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{ASR_MODEL}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.webm\"\r\nContent-Type: audio/webm\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+    let resp = client
+        .post(ASR_API_URL)
+        .header("Authorization", format!("Bearer {}", api_key.trim()))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("语音识别请求失败: {e}"))?;
+
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取识别结果失败: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "语音识别服务返回 {status}: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("识别结果解析失败: {e}"))?;
+    Ok(json
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string())
+}
+
 /// 列出可启动的应用（macOS 扫 /Applications，Linux 扫 freedesktop 的 .desktop）。
 #[cfg(unix)]
 #[tauri::command]
@@ -3794,6 +4113,45 @@ fn unregister_assistant_shortcut(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Linux：WebKitGTK 默认**不允许网页抓麦克风**，这里把这一条放开。
+///
+/// 两件事缺一不可：
+///   1. `enable-media-stream` —— WebKitGTK 默认是关的，关着时 `getUserMedia`
+///      连权限请求都不会发出来，直接以失败告终；
+///   2. `permission-request` 信号 —— 默认处理是"拒绝"，必须自己接住并 allow，
+///      否则同样拿不到音频流。
+///
+/// 只放行**纯音频**请求：摄像头（is_for_video_device）照旧走 WebKit 的默认处理，
+/// 不替用户做主；页面上目前也没有任何地方会请求摄像头。
+#[cfg(target_os = "linux")]
+fn allow_media_permission(window: &tauri::WebviewWindow) {
+    use webkit2gtk::glib::prelude::Cast;
+    use webkit2gtk::{
+        PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+        UserMediaPermissionRequestExt, WebViewExt,
+    };
+    let result = window.with_webview(|wv| {
+        let view = wv.inner();
+        if let Some(settings) = view.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        view.connect_permission_request(|_, req| {
+            let Some(media) = req.downcast_ref::<UserMediaPermissionRequest>() else {
+                return false; // 其它权限（定位 / 通知 / 指针锁…）交回默认处理
+            };
+            if media.is_for_audio_device() && !media.is_for_video_device() {
+                media.allow();
+                true
+            } else {
+                false
+            }
+        });
+    });
+    if let Err(e) = result {
+        log_line(&format!("allow_media_permission: 挂权限回调失败: {e}"));
+    }
+}
+
 pub fn run() {
     let builder = tauri::Builder::default();
     // updater 插件在 dev / release 都注册，使 tauri dev 下也能真实测试 check() 网络链路。
@@ -3863,6 +4221,7 @@ pub fn run() {
             schedule_shutdown, cancel_shutdown,
             register_assistant_shortcut, unregister_assistant_shortcut,
             tts_synthesize, set_tts_key, get_tts_key,
+            asr_transcribe, set_asr_key, get_asr_key, asr_key_ready,
             capture_screen,
         ])
         .setup(|app| {
@@ -3897,6 +4256,13 @@ pub fn run() {
             // AppHandle 才能查显示器工作区，这里先登记一份。
             #[cfg(unix)]
             screen::remember_app(app.handle().clone());
+
+            // Linux：放开 WebKitGTK 的麦克风（语音输入用），必须在页面调用
+            // getUserMedia 之前挂好，所以放在 setup 里、窗口刚建出来的时候。
+            #[cfg(target_os = "linux")]
+            if let Some(win) = app.get_webview_window("main") {
+                allow_media_permission(&win);
+            }
 
             let handle = app.handle().clone();
             setup_tray(app)?;
