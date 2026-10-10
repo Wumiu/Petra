@@ -88,6 +88,12 @@ export interface Settings {
   musicLyrics: boolean;
   /** 歌词翻译：在原文下方显示中文翻译（来源提供译文时才显示） */
   lyricsTranslate: boolean;
+  /**
+   * 歌词同步微调（**按歌记忆**）：键 = `标题|歌手`，值 = 毫秒，正数表示"歌词提前"。
+   * 在线歌词是社区贡献的，不同歌的时间戳本身就参差不齐（同一首歌也可能偏半秒），
+   * 全局提前量救不了这种差异，只能让用户按歌校准一次、之后一直准。
+   */
+  lyricOffsets: Record<string, number>;
   /** 麻将桌上的 AI 实时互动（需要配置 API Key；有节流与每局/每场上限） */
   gameTalk: boolean;
   /** 整点播报：每到整点让桌宠报一次时间（本地文案，零 token） */
@@ -103,6 +109,15 @@ export interface Settings {
     enabled: boolean;
     apiKey: string;
     speakerId: string;
+  };
+  /** 语音识别（输入）配置 */
+  asr: {
+    /**
+     * 麦克风权限开关（应用内，立即生效）。
+     * 关掉后点 🎤 直接提示权限已关闭、不会去开麦克风；
+     * 同时在「🎤 语音识别设置」里会一并同步到 Windows 的麦克风隐私设置。
+     */
+    micAllowed: boolean;
   };
 }
 
@@ -146,6 +161,7 @@ const DEFAULTS: Settings = {
   modelAuto: {},
   musicLyrics: true,
   lyricsTranslate: true,
+  lyricOffsets: {},
   gameTalk: false,
   hourlyChime: true,
   hourlyChimeQuiet: true,
@@ -155,6 +171,9 @@ const DEFAULTS: Settings = {
     enabled: false,
     apiKey: "",
     speakerId: "",
+  },
+  asr: {
+    micAllowed: true,
   },
 };
 
@@ -180,6 +199,7 @@ export function loadSettings(): Settings {
       diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
       dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
       tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },
+      asr: { ...DEFAULTS.asr, ...(parsed.asr ?? {}) },
     };
     s.gameSound = s.gameSound !== false;
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));

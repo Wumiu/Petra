@@ -83,6 +83,7 @@ PETRA_ASR_KEY = "sk-..."
 | `npm run test:riichi-sound` | 麻将音效 |
 | `npm run test:music` | LRC 解析、歌词时钟 |
 | `npm run test:diary` | 日记 |
+| `npm run test:app` | 前台窗口（"主人在用什么软件"，桌宠自己要被排除） |
 | `npm run test:weather` | 天气格式化 |
 | `npm run test:hourly` | 整点报时 |
 | `npm run test:chat-history` | 对话历史 |

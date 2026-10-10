@@ -8,6 +8,7 @@ import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from ".
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
 import { buildLanguageInstruction, buildLanguageReminder, langNameOf, splitTranslation } from "../utils/outputLanguage";
+import { appNameFromTitle, frontWindowForModel, isOwnWindow } from "../utils/foregroundApp";
 import {
   buildCardCommentPrompt,
   buildGreetingPrompt,
@@ -46,6 +47,11 @@ let lifecycleOnClose: (() => void) | null = null;
  * 麦克风就一直亮着），而且说完还会触发一次发送，气泡在输入框已经隐藏的情况下冒出来。
  */
 let recognizer: SpeechRecognizer | null = null;
+/**
+ * 本次语音是"按了键盘被暂停"的：识别到的内容只放进输入框，**不自动发送**
+ * （用户按下任意键 = 想自己看一眼/改一改再发）。会话结束时清掉。
+ */
+let voicePausedByKey = false;
 let micBtn: HTMLButtonElement | null = null;
 
 /** 麦克风图标：细描边的胶囊 + 拾音弧 + 支架，24 网格便于缩放 */
@@ -436,6 +442,15 @@ function wireRecognizer(): SpeechRecognizer {
       const t = text.trim();
       resetTimer();
       if (!t) return;
+      // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
+      if (voicePausedByKey) {
+        voicePausedByKey = false;
+        setInputValue(t);
+        input.focus();
+        keepInputBarOnScreen();
+        toast("已暂停识别，内容留在输入框，回车发送", "warn");
+        return;
+      }
       if (busy) {
         // send() 忙的时候会直接 return；不留住的话用户刚说的话就凭空消失了
         setInputValue(t);
@@ -450,7 +465,14 @@ function wireRecognizer(): SpeechRecognizer {
     },
     onRecordingStart: () => { input.placeholder = "正在听…"; },
     // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
-    onNoSpeech: () => { toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn"); },
+    onNoSpeech: () => {
+      if (voicePausedByKey) {
+        voicePausedByKey = false;
+        toast("已暂停语音识别", "warn");
+        return;
+      }
+      toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
+    },
     onError: (msg) => { toast(msg, "warn"); },
     onStateChange: (recording) => {
       if (!micBtn) return;
@@ -459,12 +481,46 @@ function wireRecognizer(): SpeechRecognizer {
       micBtn.classList.toggle("as-mic-recording", recording);
       micBtn.setAttribute("aria-pressed", recording ? "true" : "false");
       micBtn.title = recording
-        ? "正在听…（再点一下取消）"
-        : "语音输入（说完自动发送，再点一下取消）";
-      input.placeholder = recording ? "正在听…" : "问点什么…";
+        ? "正在听…（说完 5 秒自动发送；按任意键暂停、内容留在输入框；再点一下取消）"
+        : "语音输入（说完 5 秒自动发送；按任意键暂停不发送）";
+      input.placeholder = recording ? "正在听…（按任意键暂停）" : "问点什么…";
+      if (recording) {
+        // 新一轮开始才重置"按键盘暂停"的标记。
+        // 注意不能在 recording=false 时重置 —— stop() 会先触发 onStateChange(false)
+        // 再调 onFinal，那样标记会在 onFinal 读到之前就被清掉（等于没生效）。
+        voicePausedByKey = false;
+        document.addEventListener("keydown", onVoiceKeydown, true);
+      } else {
+        document.removeEventListener("keydown", onVoiceKeydown, true);
+      }
     },
   });
   return r;
+}
+
+/**
+ * 正在听语音时敲键盘：**暂停识别，但不自动发送**。
+ *
+ * 挂在 document 的**捕获阶段**：要比输入框自己的 Enter 处理器先拿到事件，
+ * 否则那一下 Enter 会被当成"发送输入框里的内容"。
+ * 用 preventDefault 吞掉默认动作 —— 不然按的字母会同时被塞进输入框。
+ * 两种例外：Esc 走取消（丢弃不发送）；其余键都是"暂停"，识别到的话
+ * 会落在输入框里由用户自己改、自己回车发（见 voicePausedByKey 的用法）。
+ */
+function onVoiceKeydown(e: KeyboardEvent): void {
+  const r = recognizer;
+  if (!r?.isRecording()) return;
+  // 单按 Shift/Ctrl/Alt 这种修饰键不算"敲了键"，别误触发
+  if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") {
+    r.cancel();
+    toast("已取消这次语音输入", "warn");
+    return;
+  }
+  voicePausedByKey = true; // 让 onFinal 知道：这次是"暂停"，别自动发送
+  r.stop(); // 停止并提交 → onFinal → 把内容放进输入框等用户确认
 }
 
 /** 点麦克风：没在听就开始听，正在听就取消（取消 = 丢弃，不发送） */
@@ -473,6 +529,12 @@ async function toggleVoiceInput(): Promise<void> {
   resetTimer(); // 碰麦克风也算"人在互动"，别让空闲超时把面板收走
   if (r.isRecording()) {
     r.cancel();
+    return;
+  }
+  // 应用内的麦克风权限开关（在「🎤 语音识别设置」里关掉后，这里直接拦住，
+  // 既不去开麦克风、也不去申请权限）
+  if (!loadSettings().asr.micAllowed) {
+    toast("麦克风权限已关闭：右键 →「🎤 语音识别设置」→ 麦克风权限", "warn");
     return;
   }
   // 在线识别（Mac/Linux，以及原生识别降级后的 Windows）要有可用的 Key，
@@ -949,9 +1011,15 @@ async function send(text: string) {
       const split = splitTranslation(rawText);
       const mainText = split.main;
       let transText = split.trans;
-      // 历史只存中文翻译（或中文原文）
-      history.push({ role: "assistant", content: transText || mainText });
-      // 情感反馈
+      // 历史里**原文放前面**、中文翻译跟在 `---` 后面。
+      // 只存中文翻译的话，模型看到自己历轮发言全是中文，下一轮就顺着中文回
+      // （"设置日语却回中文"的一半原因）；留引用是为了下面异步翻译回来时改这一条。
+      const assistantEntry: ChatMessage = {
+        role: "assistant",
+        content: transText ? `${mainText}\n---\n${transText}` : mainText,
+      };
+      history.push(assistantEntry);
+      saveHistory();      // 情感反馈
       const finalEmo = classifyAssistantEmotion(mainText);
       const aiEmo = finalEmo !== "neutral" ? finalEmo : streamEmo;
       setBubbleText(loading, "");
@@ -966,7 +1034,8 @@ async function send(text: string) {
         const transDiv = document.createElement("div");
         transDiv.style.cssText = "font-size:11px;opacity:0.55;margin-top:4px;white-space:pre-wrap;";
         transDiv.textContent = "翻译中...";
-        loading.appendChild(transDiv);
+        // 挂进正文层（不是气泡根）：译文要跟原文一起滚，否则长回复里译文会跑到滚动区外面
+        bubbleBody(loading).appendChild(transDiv);
         (async () => {
           try {
             const t = await chatStream(
@@ -977,7 +1046,11 @@ async function send(text: string) {
             );
             transText = t.text.trim();
             transDiv.textContent = transText;
-            history[history.length - 1].content = transText;
+            // 历史里**原文必须留着**：只存中文翻译的话，模型看到自己历轮发言全是中文，
+            // 下一轮就顺着中文继续说（"设置日语却回中文"的另一半原因）。
+            // 用条目引用而不是 history[最后一条] —— 翻译是异步的，期间可能已经又插了新消息。
+            assistantEntry.content = `${mainText}\n---\n${transText}`;
+            saveHistory();
           } catch {
             transDiv.remove();
           }
@@ -1065,11 +1138,19 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
   });
 
   /** 通用工具调用：invoke 后 push 结果到 history */
-  const invokeTool = async (tcItem: ToolCall, name: string, args: Record<string, unknown> = {}) => {
+  const invokeTool = async (
+    tcItem: ToolCall,
+    name: string,
+    args: Record<string, unknown> = {},
+    // 有些命令的原始结果不该直接喂给模型（例如前台窗口就是桌宠自己），
+    // 在这里过一道再入历史
+    shape?: (text: string) => string,
+  ) => {
     try {
       const result = await invoke<string>(name, args);
       // tool 消息的 content 必须是字符串：数字/对象类返回值（如空闲秒数）统一转成文本
-      const text = typeof result === "string" ? result : JSON.stringify(result);
+      let text = typeof result === "string" ? result : JSON.stringify(result);
+      if (shape) text = shape(text);
       history.push({ role: "tool", tool_call_id: tcItem.id, content: text });
     } catch (e) {
       history.push({ role: "tool", tool_call_id: tcItem.id, content: `失败：${e}` });
@@ -1341,7 +1422,8 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       await invokeTool(tc, "list_installed_apps");
     }
     if (tc.name === "active_window_title") {
-      await invokeTool(tc, "active_window_title");
+      // 前台是桌宠自己时就如实说是自己，别让模型把它当成主人正在用的软件
+      await invokeTool(tc, "active_window_title", {}, frontWindowForModel);
     }
     if (tc.name === "capture_screen") {
       try {
@@ -1581,13 +1663,13 @@ export async function triggerProactive() {
   try {
     currentTitle = await invoke<string>("active_window_title");
   } catch { /* 忽略 */ }
-  const tl = currentTitle.toLowerCase();
-  if (tl.includes("code") || tl.includes("vscode")) currentApp = "VS Code";
-  else if (tl.includes("chrome") || tl.includes("edge") || tl.includes("firefox")) currentApp = "浏览器";
-  else if (tl.includes("wechat") || tl.includes("微信")) currentApp = "微信";
-  else if (tl.includes("steam")) currentApp = "Steam";
-  else if (tl.includes("bilibili") || tl.includes("哔哩哔哩")) currentApp = "B站";
-  else if (tl.includes("netease") || tl.includes("网易云")) currentApp = "网易云音乐";
+  // 桌宠自己置顶，用户点它 / 用小助手时它就是前台窗口 —— 那不是"主人在用别的软件"，
+  // 否则问候里会说"Petra 还开着呢"（它自己就是 Petra）
+  if (isOwnWindow(currentTitle)) {
+    currentTitle = "";
+  } else {
+    currentApp = appNameFromTitle(currentTitle);
+  }
 
   const now = new Date();
   const hour = now.getHours();

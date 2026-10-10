@@ -3052,6 +3052,115 @@ fn asr_key_ready(app: AppHandle) -> bool {
     !asr_key_or_default(read_stored_asr_key(&app)).is_empty()
 }
 
+// =============== 麦克风权限（Windows 的隐私开关） ===============
+
+/// 系统里的麦克风权限状态：`allow` / `deny` / `unset`（没设过=跟随上一层）/ `unsupported`
+#[derive(serde::Serialize)]
+struct MicPermission {
+    /// 全局总开关（设置 → 隐私和安全性 → 麦克风 最上面那个）
+    global: String,
+    /// 本应用（WebView2 宿主进程）的逐应用开关
+    app: String,
+}
+
+#[cfg(windows)]
+const MIC_CONSENT_KEY: &str =
+    r"HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+
+#[cfg(windows)]
+fn norm_perm(v: &str) -> String {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "allow" => "allow".to_string(),
+        "deny" => "deny".to_string(),
+        _ => "unset".to_string(),
+    }
+}
+
+/// 列出 `ConsentStore\microphone\NonPackaged` 下所有 WebView2 的项。
+///
+/// 为什么要枚举而不是拼一个固定路径：键名里带着 WebView2 的**版本号目录**
+/// （…\EdgeWebView\Application\154.0.4258.62\msedgewebview2.exe，`\` 换成 `#`），
+/// 运行时一旦升级，路径就变了；枚举能同时覆盖新旧几份。
+#[cfg(windows)]
+fn webview2_mic_keys() -> Vec<String> {
+    let Ok(out) = hidden_command("reg")
+        .args(["query", &format!("{MIC_CONSENT_KEY}\\NonPackaged")])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| l.to_ascii_lowercase().contains("msedgewebview2.exe"))
+        .collect()
+}
+
+#[cfg(windows)]
+#[tauri::command]
+fn get_mic_permission() -> MicPermission {
+    let global = norm_perm(&read_reg_value(MIC_CONSENT_KEY, "Value"));
+    // 任一 WebView2 项是 Deny 就算"本应用被拒"（逐应用项会覆盖全局）
+    let mut app = "unset".to_string();
+    for key in webview2_mic_keys() {
+        match norm_perm(&read_reg_value(&key, "Value")).as_str() {
+            "deny" => {
+                app = "deny".to_string();
+                break;
+            }
+            "allow" => app = "allow".to_string(),
+            _ => {}
+        }
+    }
+    MicPermission { global, app }
+}
+
+/// 改系统里的麦克风权限。
+///
+/// 开启：全局置 Allow（否则逐应用放行也没用）+ 删掉逐应用的覆盖项，让它跟随全局 ——
+///       这样用户以后自己在 Windows 设置里关掉总开关，本应用也会一起被关。
+/// 关闭：**只**把本应用（WebView2）的逐应用项设成 Deny，不动全局，免得影响其它软件。
+///
+/// ⚠️ 对**已经在跑的** WebView2 进程，系统这一层不一定立刻生效（实测：设成 Deny 后
+/// getUserMedia 照样拿得到麦克风，页面 reload 也不行）—— 所以真正的即时开关在应用内
+/// （settings.asr.micAllowed），这里只是把系统设置同步成一致的状态、重启后由系统兜底。
+#[cfg(windows)]
+#[tauri::command]
+fn set_mic_permission(allow: bool) -> Result<String, String> {
+    let keys = webview2_mic_keys();
+    if allow {
+        let _ = hidden_command("reg")
+            .args(["add", MIC_CONSENT_KEY, "/v", "Value", "/t", "REG_SZ", "/d", "Allow", "/f"])
+            .output();
+        for key in &keys {
+            let _ = hidden_command("reg").args(["delete", key, "/v", "Value", "/f"]).output();
+        }
+        return Ok("已在系统里允许麦克风".to_string());
+    }
+    if keys.is_empty() {
+        return Err("没找到本应用在系统里的麦克风权限项，请到 Windows 设置的麦克风页面里关".to_string());
+    }
+    for key in &keys {
+        let _ = hidden_command("reg")
+            .args(["add", key, "/v", "Value", "/t", "REG_SZ", "/d", "Deny", "/f"])
+            .output();
+    }
+    Ok("已在系统里拒绝麦克风".to_string())
+}
+
+/// macOS 的麦克风权限由系统 TCC 托管，应用只能请求、不能替用户改；Linux 没有对应概念。
+#[cfg(not(windows))]
+#[tauri::command]
+fn get_mic_permission() -> MicPermission {
+    MicPermission { global: "unsupported".to_string(), app: "unsupported".to_string() }
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn set_mic_permission(_allow: bool) -> Result<String, String> {
+    Err("当前系统的麦克风权限只能在系统设置里改".to_string())
+}
+
 /// 单次录音上限：超过这个大小大概率是 VAD 没判出静音、录了一大段环境音，
 /// 与其把几十兆传上去等超时，不如当场给一句人话。
 const ASR_MAX_AUDIO_BYTES: usize = 20 * 1024 * 1024;
@@ -4222,6 +4331,7 @@ pub fn run() {
             register_assistant_shortcut, unregister_assistant_shortcut,
             tts_synthesize, set_tts_key, get_tts_key,
             asr_transcribe, set_asr_key, get_asr_key, asr_key_ready,
+            get_mic_permission, set_mic_permission,
             capture_screen,
         ])
         .setup(|app| {

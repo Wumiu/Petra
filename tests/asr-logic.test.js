@@ -39,11 +39,18 @@ check(
 );
 
 // ---------- 错误分类 ----------
-for (const code of ["network", "service-not-allowed", "not-allowed", "audio-capture"]) {
-  check(`「用不了」级别的错误：${code}`, logic.isFatalWebSpeechError(code) === true);
+for (const code of ["network", "service-not-allowed", "language-not-supported"]) {
+  check(`「换个后端再试」级别的错误：${code}`, logic.isFatalWebSpeechError(code) === true);
+  check(`这类不是麦克风问题：${code}`, logic.isMicProblemError(code) === false);
+}
+// 麦克风权限/设备问题必须单独归类：换后端一样拿不到麦克风，不能降级
+for (const code of ["not-allowed", "audio-capture"]) {
+  check(`★ 麦克风权限/设备问题：${code}`, logic.isMicProblemError(code) === true);
+  check(`★ 它不算「降级到在线识别」：${code}`, logic.isFatalWebSpeechError(code) === false);
 }
 for (const code of ["no-speech", "aborted"]) {
   check(`不是「用不了」，只是这次没听清：${code}`, logic.isFatalWebSpeechError(code) === false);
+  check(`也不是麦克风问题：${code}`, logic.isMicProblemError(code) === false);
   check(`也别弹给用户看：${code}`, logic.isReportableWebSpeechError(code) === false);
 }
 check("network 要弹给用户看", logic.isReportableWebSpeechError("network") === true);
@@ -80,6 +87,13 @@ for (let i = 0; i < loud.length; i++) loud[i] = i % 2 === 0 ? 255 : 1;
 const loudRms = logic.rmsFromTimeDomain(loud);
 check("满幅波形 RMS 接近 1", loudRms > 0.95, String(loudRms));
 check("静音低于阈值而满幅高于阈值（判决确实分得开）", 0 < 0.015 && loudRms > 0.015);
+
+// ---------- 默认时长（用户要求"类似 Windows 语音输入"）----------
+// 这几个数是产品要求，别随手改：说完停 5 秒自动发送是用户点名要的手感
+check("★ 说完停 5 秒才收尾", logic.DEFAULT_LISTEN_TIMING.silenceMs === 5000, String(logic.DEFAULT_LISTEN_TIMING.silenceMs));
+check("默认：还没出结果时宽限 6 秒", logic.DEFAULT_LISTEN_TIMING.firstResultMs === 6000);
+check("默认：一直没声音 8 秒放弃", logic.DEFAULT_LISTEN_TIMING.giveUpMs === 8000);
+check("默认：硬上限 60 秒", logic.DEFAULT_LISTEN_TIMING.maxMs === 60000);
 
 // ---------- 何时收尾（★ 锁"点了麦克风说话没反应"这个 bug） ----------
 const T = { silenceMs: 2500, firstResultMs: 6000, giveUpMs: 8000, maxMs: 60000 };

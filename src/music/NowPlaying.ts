@@ -6,11 +6,12 @@
  *   主循环音频能量 → noteAudioLevel() → 时钟锚点（起播/循环/失准）
  *   每 500ms tick → 当前行号 → 歌词气泡
  */
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { LyricClock } from "./LyricClock";
-import { lineIndexAt, lookupTranslation, cleanTitle, type LyricLine } from "./LrcParser";
+import { lineIndexAt, lookupTranslation, cleanTitle, lyricQueryPosition, sourceForPlayer, type LyricLine } from "./LrcParser";
 import { LyricFollower } from "./LyricFollow";
-import { loadSettings } from "../utils/settings";
+import { loadSettings, saveSettings } from "../utils/settings";
 import { getLyrics } from "./Lyrics";
 import {
   showLyricLine,
@@ -50,6 +51,13 @@ let lines: LyricLine[] | null = null;
 let transLines: LyricLine[] | null = null;
 /** 翻译开关（启动时读设置，菜单切换后立即生效） */
 let translateOn = true;
+/**
+ * 本首的同步微调（毫秒，正数=歌词提前）。
+ * 按歌从设置里读一次缓存住 —— tick 每 200ms 跑一次，不能每次都去解析设置 JSON。
+ */
+let lyricOffsetMs = 0;
+/** 微调步长：一次点按调整这么多（3 下≈1 秒，够快也够细） */
+export const LYRIC_OFFSET_STEP_MS = 300;
 let currentKey = "";
 /** 播放器是否在播放（用于"跟唱"状态） */
 let playing = false;
@@ -86,8 +94,15 @@ function resetTrackState(): void {
 }
 
 /** 取歌词：成功则启用；接口失败则后台重试；确认无歌词/纯音乐才提示一次 */
-function loadLyricsFor(key: string, title: string, artist: string, durationMs: number, force = false): void {
-  void getLyrics(title, artist, durationMs, force).then((res) => {
+function loadLyricsFor(
+  key: string,
+  title: string,
+  artist: string,
+  durationMs: number,
+  preferredSource: string | null,
+  force = false,
+): void {
+  void getLyrics(title, artist, durationMs, force, preferredSource).then((res) => {
     if (currentKey !== key) return; // 已换歌，丢弃结果
 
     if (res.lines && res.lines.length > 0) {
@@ -104,7 +119,7 @@ function loadLyricsFor(key: string, title: string, artist: string, durationMs: n
         if (retryTimer !== null) clearTimeout(retryTimer);
         retryTimer = window.setTimeout(() => {
           retryTimer = null;
-          if (currentKey === key) loadLyricsFor(key, title, artist, durationMs);
+          if (currentKey === key) loadLyricsFor(key, title, artist, durationMs, preferredSource);
         }, delay);
         return;
       }
@@ -145,6 +160,8 @@ async function onMedia(p: MediaPayload): Promise<void> {
     clock.markPendingOnset(lastAudioLevel < 0.03);
     lines = null;
     transLines = null;
+    // 每首歌的歌词时间戳偏差都不一样：这首的微调从设置里取（没有就是 0）
+    lyricOffsetMs = loadSettings().lyricOffsets?.[key] ?? 0;
     // 换歌立刻允许显示新歌的第一行（旧代码在这里没清节流时间戳，新歌首行常被吃掉）
     follower.reset();
     noLyrics = false;
@@ -154,7 +171,9 @@ async function onMedia(p: MediaPayload): Promise<void> {
     showSongBubble(title, artist);
     if (p.durationMs > 0 && p.positionMs > 0) clock.setServerPosition(p.positionMs);
 
-    loadLyricsFor(key, title, artist, p.durationMs);
+    // 优先用"正在播放的那个播放器自家"的歌词：它和正在响的音频是同一次对齐，
+    // 跨来源混用会让整首歌偏掉（用户报的"有时候快有时候慢"里最普遍的一条）
+    loadLyricsFor(key, title, artist, p.durationMs, sourceForPlayer(p.appId));
   }
 
   playing = p.playing === true;
@@ -187,7 +206,7 @@ function tick(): void {
     return;
   }
 
-  const idx = lineIndexAt(lines, c.positionMs() + LYRIC_LEAD_MS);
+  const idx = lineIndexAt(lines, lyricQueryPosition(c.positionMs(), LYRIC_LEAD_MS, lyricOffsetMs));
   const show = follower.next(idx, Date.now(), c.generationCount);
   if (show === null) return;
   const line = lines[show];
@@ -230,6 +249,43 @@ export function stopMusicLyrics(): void {
 /** 翻译开关（菜单切换后调用，立即生效） */
 export function setLyricsTranslate(on: boolean): void {
   translateOn = on;
+}
+
+/** 当前这首歌的同步微调（毫秒，正数=提前） */
+export function getLyricOffsetMs(): number {
+  return lyricOffsetMs;
+}
+
+/**
+ * 调整当前这首歌的歌词同步：delta 为正 = 歌词提前，为 0 = 复位。
+ *
+ * 为什么是"按歌记"：在线歌词来自社区（LRCLIB），同一首歌的时间戳可能整体偏半秒，
+ * 换一首又刚好准 —— 一个全局提前量永远救不全。用户按歌调一次，之后这首歌一直准。
+ * 返回调整后的值（毫秒）。
+ */
+export function adjustLyricOffset(deltaMs: number): number {
+  const key = currentKey;
+  if (!key) {
+    showLyricHint("先在放一首歌，再调同步", 2500);
+    return 0;
+  }
+  const next = deltaMs === 0 ? 0 : Math.max(-10000, Math.min(10000, lyricOffsetMs + deltaMs));
+  lyricOffsetMs = next;
+  const s = loadSettings();
+  if (!s.lyricOffsets) s.lyricOffsets = {};
+  if (next === 0) delete s.lyricOffsets[key];
+  else s.lyricOffsets[key] = next;
+  saveSettings(s);
+  // 立刻按新偏移重画这一行，别等下一句
+  follower.reset();
+  tick();
+  showLyricHint(
+    next === 0
+      ? "🎯 歌词同步已复位（本首）"
+      : `🎯 歌词${next > 0 ? "提前" : "延后"} ${(Math.abs(next) / 1000).toFixed(1)}s（本首记住）`,
+    2500,
+  );
+  return next;
 }
 
 /** 主循环喂入音频能量（0~1）与帧间隔，用于起播/循环/失准判定 */

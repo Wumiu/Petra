@@ -19,8 +19,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  DEFAULT_LISTEN_TIMING,
   decideListenStop,
   isFatalWebSpeechError,
+  isMicProblemError,
   isReportableWebSpeechError,
   isTooShort,
   pickBackend,
@@ -32,25 +34,16 @@ import {
 } from "./asrLogic";
 
 // ---------- 配置 ----------
-/** 说完停顿多久算"说完了"，自动收尾发送 */
-const SILENCE_MS = 2500;
-/** 还没拿到任何结果时允许多等多久 —— 实测引擎连服务到第一个 result 要 6 秒 */
-const FIRST_RESULT_MS = 6000;
-/** 一直没听到声音时等多久就给用户一句交代（而不是一直挂着麦克风） */
-const NO_SPEECH_GIVEUP_MS = 8000;
-/** 单次监听硬上限：引擎死活不出结果也不能让麦克风一直开着 */
-const MAX_LISTEN_MS = 60000;
+/**
+ * 收尾时长统一放在 asrLogic 的 DEFAULT_LISTEN_TIMING 里（默认：说完停 **5 秒** 收尾，
+ * 跟 Windows 语音输入一个手感）。放那边是为了能被单测锁住，
+ * 也避免"网页原生识别"和"录音 VAD"两条路各写一套数。
+ */
+const LISTEN_TIMING: ListenTiming = DEFAULT_LISTEN_TIMING;
 /** 录音后端 VAD：音量 RMS 低于此值算静音 */
 const SILENCE_THRESHOLD = 0.015;
 /** 最短录音时长，太短丢弃 */
 const MIN_RECORD_MS = 500;
-
-const LISTEN_TIMING: ListenTiming = {
-  silenceMs: SILENCE_MS,
-  firstResultMs: FIRST_RESULT_MS,
-  giveUpMs: NO_SPEECH_GIVEUP_MS,
-  maxMs: MAX_LISTEN_MS,
-};
 
 // ---------- 浏览器原生 SpeechRecognition 类型 ----------
 interface SpeechRecognitionResultItem { transcript: string; confidence: number; }
@@ -226,6 +219,9 @@ export class SpeechRecognizer {
     rec.onsoundend = () => { this.listen.speaking = false; markActivity(); };
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
+      // 收尾之后引擎还会补一两个迟到的结果（停麦的那一瞬），别再写回输入框 ——
+      // 否则用户刚发出去，输入框里又冒出半句没头没尾的话
+      if (this.finishing || this.recognition !== rec) return;
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -240,6 +236,16 @@ export class SpeechRecognizer {
     };
     rec.onerror = (e) => {
       const err = e.error || "unknown";
+      if (isMicProblemError(err)) {
+        // 麦克风权限/设备问题：换后端也一样拿不到麦克风，别再降级，直接告诉用户去哪开
+        this.handlers.onError?.(
+          err === "audio-capture"
+            ? "找不到麦克风设备：确认设备插好并在系统里启用"
+            : "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」",
+        );
+        this.finishWebSpeech(false); // 丢弃这一轮，不再继续等
+        return;
+      }
       if (isFatalWebSpeechError(err)) {
         // 这台机器上原生识别根本用不了：别再让用户对着红点干等
         this.degradeToSiliconFlow(`浏览器语音识别不可用（${err}）`, true);
@@ -385,8 +391,14 @@ export class SpeechRecognizer {
       // 否则麦克风一直亮着、AudioContext 也一直占着
       this.cleanupAudio();
       this.handlers.onStateChange?.(false);
+      // NotAllowedError / NotFoundError 都是"麦克风这一层"的问题，直接指到权限开关去
+      const name = e instanceof DOMException ? e.name : "";
       this.handlers.onError?.(
-        `麦克风启动失败：${e instanceof Error ? e.message : String(e)}`,
+        name === "NotAllowedError" || name === "SecurityError"
+          ? "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」"
+          : name === "NotFoundError"
+            ? "找不到麦克风设备：确认设备插好并在系统里启用"
+            : `麦克风启动失败：${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       if (token === this.startToken) this.starting = false;
@@ -418,12 +430,12 @@ export class SpeechRecognizer {
         } else if (!this.listen.heardSound) {
           // 一直没听到人声：给足时间（用户可能正在组织语言），到点收尾并提示，
           // 别像以前那样点一下 2.5 秒就悄悄停掉（那条路上用户同样什么都看不到）
-          if (now - this.listen.startedAt >= NO_SPEECH_GIVEUP_MS) { this.stop(); return; }
+          if (now - this.listen.startedAt >= LISTEN_TIMING.giveUpMs) { this.stop(); return; }
         } else {
           if (this.silenceSince === 0) this.silenceSince = now;
-          else if (now - this.silenceSince >= SILENCE_MS) { this.stop(); return; }
+          else if (now - this.silenceSince >= LISTEN_TIMING.silenceMs) { this.stop(); return; }
         }
-        if (now - this.listen.startedAt >= MAX_LISTEN_MS) { this.stop(); return; }
+        if (now - this.listen.startedAt >= LISTEN_TIMING.maxMs) { this.stop(); return; }
         this.vadTimer = window.setTimeout(tick, 100);
       };
       tick();

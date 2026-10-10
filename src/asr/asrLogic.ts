@@ -13,10 +13,21 @@ export type AsrBackend = "web-speech" | "siliconflow";
 const FATAL_WEB_SPEECH_ERRORS = [
   "network", // 在线识别服务连不上（国内 WebView2 最常见）
   "service-not-allowed",
-  "not-allowed", // 系统/WebView 层面禁了麦克风
-  "audio-capture", // 找不到麦克风设备
   "language-not-supported",
 ];
+
+/**
+ * 这些错误是**麦克风本身**的问题（权限被关 / 没有设备）。
+ *
+ * 必须跟上面那组分开：那组是"换个识别后端再试"，而麦克风拿不到时换后端也一样失败
+ * （在线识别同样要 getUserMedia），继续降级只会把用户绕晕。这组要走"提示去开权限"。
+ */
+const MIC_PROBLEM_ERRORS = ["not-allowed", "audio-capture"];
+
+/** 是不是"麦克风权限/设备"问题（而不是识别服务问题） */
+export function isMicProblemError(code: string): boolean {
+  return MIC_PROBLEM_ERRORS.includes(code);
+}
 
 /**
  * 选后端。
@@ -96,6 +107,18 @@ export interface ListenTiming {
   /** 单次监听硬上限：引擎死活不出结果时也不能让麦克风一直开着 */
   maxMs: number;
 }
+
+/**
+ * 默认时长（用户要求"类似 Windows 语音输入"）：
+ * 说完停 **5 秒** 收尾并自动发送；还没出结果时给 6 秒宽限；
+ * 一直没声音 8 秒放弃并提示；硬上限 60 秒。
+ */
+export const DEFAULT_LISTEN_TIMING: ListenTiming = {
+  silenceMs: 5000,
+  firstResultMs: 6000,
+  giveUpMs: 8000,
+  maxMs: 60000,
+};
 
 /**
  * 该不该收尾。
