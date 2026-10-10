@@ -69,9 +69,14 @@ export async function getLyrics(
   artist: string,
   durationMs = 0,
   force = false,
+  /** 正在播放的播放器对应的歌词来源（见 sourceForPlayer）：同等匹配下优先它 */
+  preferredSource: string | null = null,
 ): Promise<LyricsResult> {
-  const key = normalizeKey(title) + "|" + normalizeKey(artist);
-  if (key === "|") return { lines: null, reason: "notfound" };
+  // 缓存键带上来源：同一首歌在不同播放器里可能该用不同版本的时间轴，
+  // 混用同一份缓存会把"按播放器选来源"这件事抵消掉
+  const key =
+    normalizeKey(title) + "|" + normalizeKey(artist) + (preferredSource ? "|" + preferredSource : "");
+  if (key.replace(/\|/g, "") === "") return { lines: null, reason: "notfound" };
 
   const now = Date.now();
   const cache = loadCache();
@@ -100,7 +105,7 @@ export async function getLyrics(
     return { lines: null, reason: "error", detail: "歌词数据解析失败" };
   }
 
-  const best = pickBestLyrics(items, title, artist, durationMs);
+  const best = pickBestLyrics(items, title, artist, durationMs, preferredSource);
   if (best && best.syncedLyrics) {
     const lines = stripTitleLines(parseLrc(best.syncedLyrics), title);
     if (lines.length > 0) {

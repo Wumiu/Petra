@@ -10,10 +10,20 @@
  * 运行：npm run test:diary
  */
 const Module = require("module");
-// DiaryManager 会 invoke("get_api_key")，测试里直接桩掉 Tauri API
+const nodeFs = require("node:fs");
+const nodePath = require("node:path");
+// DiaryManager 会 invoke("get_api_key")，测试里直接桩掉 Tauri API。
+// 另外 DiaryManager → AssistantClient 会 import Vite 专属的 `CHANGELOG.md?raw`，
+// 纯 node 解析不了（以前这条测试链就因此直接崩掉），这里一并桩上。
 const origLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === "@tauri-apps/api/core") return { invoke: async () => "" };
+  if (request === "../../CHANGELOG.md?raw") {
+    return { default: nodeFs.readFileSync(nodePath.join(__dirname, "../CHANGELOG.md"), "utf8") };
+  }
+  if (request === "../../package.json") {
+    return { default: JSON.parse(nodeFs.readFileSync(nodePath.join(__dirname, "../package.json"), "utf8")) };
+  }
   return origLoad.apply(this, arguments);
 };
 

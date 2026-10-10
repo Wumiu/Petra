@@ -62,6 +62,18 @@ npm run build                    # 前端：sync:vendor + tsc + vite build
 cd src-tauri && cargo check      # 后端
 ```
 
+**语音识别的内置 Key（可选）**：仓库里没有任何 API Key，语音识别用的默认 Key 是编译期从
+环境变量 `PETRA_ASR_KEY` 注入的（见 `src-tauri/src/lib.rs` 的 `DEFAULT_ASR_KEY`）。
+本地要带上它，就在仓库根目录建 `.cargo/config.toml`（该路径已在 `.gitignore` 里）：
+
+```toml
+[env]
+PETRA_ASR_KEY = "sk-..."
+```
+
+改完记得 `cargo clean -p petra` 强制重编 —— `option_env!` 变了 cargo 不一定能感知。
+不配也能构建，只是 Mac / Linux 用户得自己在「🎤 语音识别设置」里填 Key。
+
 单元测试按模块拆分，没有聚合命令，改到哪块就跑哪块：
 
 | 命令 | 覆盖范围 |
@@ -71,10 +83,13 @@ cd src-tauri && cargo check      # 后端
 | `npm run test:riichi-sound` | 麻将音效 |
 | `npm run test:music` | LRC 解析、歌词时钟 |
 | `npm run test:diary` | 日记 |
+| `npm run test:app` | 前台窗口（"主人在用什么软件"，桌宠自己要被排除） |
 | `npm run test:weather` | 天气格式化 |
 | `npm run test:hourly` | 整点报时 |
 | `npm run test:chat-history` | 对话历史 |
 | `npm run test:info-panel` | 信息面板定位 |
+| `npm run test:asr` | 语音识别后端选择、停顿判定、收尾取词 |
+| `npm run test:visible` | 浮层钳进窗口可见区（贴边时弹窗不被切） |
 
 ## 五、变更日志
 

@@ -114,6 +114,7 @@ function resolveBase(provider: AssistantProvider, customBaseUrl: string): string
 
 const BASE_PROMPT =
   "严格按照上面的人格设定说话，每一句话都符合该人设的语气、口吻、用词和情绪。不要像客服，不要像AI，你就是那个人。\n" +
+  "【你是谁】Petra 是你自己的名字（应用名，你的第二名字）；你的第一名字是用户给你起的、写在上面人格设定里的那个，自称用第一名字。窗口标题或进程里出现 Petra、petra.exe、桌宠，都是**你自己的窗口**，不是主人在用别的软件，别提它、也别问「Petra 是什么」。\n" +
   "【工具能力】用户需要时可以：打开软件、查天气、调音量、搜网页、开网址、关网页、设提醒、锁屏、关机、查当前窗口、在桌面/文档/下载里新建文件或文件夹、读文件内容、改文件（改前自动备份）。改文件前先读一遍，改完说清楚改了什么、备份在哪。工具只在意图明确时调用，结果用符合人设的口语转述，失败就如实说。\n" +
   "【记忆】用户透露偏好/习惯/情绪就调用 remember。\n" +
   "不要主动提工具能力，不要说\"作为AI\"之类的话。";
@@ -485,7 +486,8 @@ function buildVersionInfo(): string {
   return _versionInfoCache;
 }
 
-function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): string {
+/** 组装 system prompt。导出是为了让测试能锁住"语言指令必须在最后"这条顺序（见 tests/assistant-tools.test.js）。 */
+export function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): string {
   let mem = "";
   if (memory.length > 0) {
     // 按重要度排序，核心记忆在前，超限截断
@@ -498,7 +500,10 @@ function systemPrompt(persona: string, memory: MemoryStore, extraContext = ""): 
         return `- [${m.category}] ${m.content} ${timeNote}`;
       }).join("\n");
   }
-  return `${persona ? persona + "\n\n" : ""}${extraContext ? extraContext + "\n\n" : ""}${BASE_PROMPT}${mem}`;
+  // extraContext 放**最后**：它里面压着语言指令（"必须全程用日语回复"）。
+  // 之前它排在 BASE_PROMPT 和记忆前面，后面紧跟着一大段中文，模型就顺着中文继续说中文
+  // （"设置日语却回中文"的根因）。指令要放尾部，模型对末尾最敏感。
+  return `${persona ? persona + "\n\n" : ""}${BASE_PROMPT}${mem}${extraContext ? "\n\n" + extraContext : ""}`;
 }
 
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
