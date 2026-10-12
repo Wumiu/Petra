@@ -34,7 +34,7 @@ import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 import { toast } from "./ui/Toast";
 import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
-import { setVisibleRect } from "./ui/visible";
+import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
 import { infoPanelPlacement } from "./ui/infoPanelPlacement";
 import { clamp } from "./utils/math";
 import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
@@ -42,7 +42,13 @@ import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settin
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
+import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
+import {
+  adjustLyricOffset,
+  getLyricOffsetMs,
+  LYRIC_OFFSET_STEP_MS,
+} from "./music/NowPlaying";
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
@@ -63,6 +69,7 @@ import {
   type LogicalRect,
   type PhysicalInteractiveRegion,
 } from "./input/regions";
+import { appNameFromTitle, isOwnWindow } from "./utils/foregroundApp";
 
 
 /**
@@ -870,15 +877,38 @@ async function setupAssistantHotkeyListener() {
   }
 }
 
-/** 上次主动问候的时刻（ms）。0 = 本次运行还没问候过。 */
-let lastGreetAt = 0;
+/**
+ * 上次主动问候的时刻（ms）。0 = 从没问候过。
+ *
+ * **必须持久化**：只放内存的话，每次刷新页面 / 重启应用锚点都会归零，
+ * `sinceGreet` 变成天文数字 → 一分钟后就补一次问候。实测（调试时反复刷新）：
+ * 问候间隔从设置的 20 分钟变成 1~6 分钟，而且每次都是一次真请求 + 一次朗读。
+ */
+const LAST_GREET_KEY = "petra-last-greet-at";
+let lastGreetAt = (() => {
+  try {
+    return Number(localStorage.getItem(LAST_GREET_KEY) || 0) || 0;
+  } catch {
+    return 0;
+  }
+})();
+
+/** 记一次问候（内存 + 落盘），所有触发点都走这里，别再直接赋值 */
+function markGreeted(at: number): void {
+  lastGreetAt = at;
+  try {
+    localStorage.setItem(LAST_GREET_KEY, String(at));
+  } catch {
+    /* 忽略 */
+  }
+}
 
 /**
  * 用户在设置里改了问候间隔后调用：把计时锚点重设到当下，
  * 让新间隔从改动这一刻起算，而不是继续沿用"距上次问候"的旧节奏。
  */
 function resyncGreetingSchedule() {
-  lastGreetAt = Date.now();
+  markGreeted(Date.now());
 }
 
 async function boot() {
@@ -999,7 +1029,7 @@ async function boot() {
         // 回归问候：离开超过 15 分钟才触发
         const awayMs = now - lastActiveAt;
         if (awayMs > 15 * 60 * 1000 && now - lastGreetAt > 15 * 60 * 1000) {
-          lastGreetAt = now;
+          markGreeted(now);
           void triggerProactive();
           trackEvent({ type: "greeting", summary: "主动问候了用户" });
           return;
@@ -1009,7 +1039,6 @@ async function boot() {
     }
 
     const sinceGreet = now - lastGreetAt;
-    const hour = new Date().getHours();
     // 用户设置的问候间隔（分钟→毫秒）
     const greetIntervalMs = (settings.assistant.greetInterval ?? 20) * 60 * 1000;
 
@@ -1017,19 +1046,16 @@ async function boot() {
     // 这里原先是"场景触发"，门槛分别为久坐 90 分钟 + 间隔×3、熬夜 30 分钟、
     // 心情 45 分钟、兜底 60 分钟 —— 全都远高于设置值本身，导致设置项形同虚设。
     if (sinceGreet > greetIntervalMs && !wasIdle) {
-      lastGreetAt = now;
+      markGreeted(now);
       void triggerProactive();
       trackEvent({ type: "greeting", summary: "主动问候了用户" });
       return;
     }
 
-    // 早晨首次
-    if (hour >= 6 && hour < 10 && lastGreetAt === 0) {
-      lastGreetAt = now;
-      void triggerProactive();
-      trackEvent({ type: "greeting", summary: "主动问候了用户" });
-      return;
-    }
+    // 原先这里还有一条"早晨首次（6~10 点且 lastGreetAt===0）"：锚点持久化后它永远不会命中
+    // （间隔分支先跑，且 lastGreetAt 极少为 0），而且它在用户**离开**时也会触发 —— 删掉。
+    // 早上第一次见到用户由上面两条覆盖：隔夜没问候必然超过间隔（间隔分支），
+    // 从"离开"回到"活跃"时走回归问候，两处的 prompt 里都带着当前时间。
   }, 60 * 1000);
 
   // 光标/工作区轮询：独立定时器，避免渲染热路径 await IPC
@@ -1888,13 +1914,40 @@ async function toggleModelPanel() {
   }
 }
 
+/**
+ * 把弹窗整体挪进"屏幕上真正看得见的那块区域"。
+ *
+ * 桌宠窗口固定 700×700、但可以贴到屏幕边缘（部分出屏）。弹窗按窗口居中时，
+ * 出屏那一半连带着弹窗一起看不见 —— 用户看到的就是"窗口显示不全"。
+ * 这里做两件事：先按可见区给尺寸上限（可见区比弹窗还窄时让它缩，别硬撑出屏），
+ * 再把左上角钳进可见区。调用前必须已经 append 到 body，否则量不到尺寸。
+ */
+function keepDialogFullyVisible(dlg: HTMLElement, margin = 8): void {
+  const vr = getWindowVisibleRect();
+  const { maxWidth, maxHeight } = fitSizeInRect(vr, margin);
+  dlg.style.maxWidth = `${Math.round(maxWidth)}px`;
+  dlg.style.maxHeight = `${Math.round(maxHeight)}px`;
+  dlg.style.overflow = "auto";
+  const r = dlg.getBoundingClientRect(); // 量"缩小之后"的真实尺寸
+  const pos = clampIntoRect(
+    { left: r.left, top: r.top, width: r.width, height: r.height },
+    vr,
+    margin,
+  );
+  dlg.style.transform = "none"; // 清掉 translate(-50%,-50%)，改用 left/top 直接定位
+  dlg.style.left = `${Math.round(pos.left)}px`;
+  dlg.style.top = `${Math.round(pos.top)}px`;
+}
+
 /** 语音设置弹窗 */
 function showTtsDialog(savedKey: string) {
   document.getElementById("tts-dlg")?.remove();
   const dlg = document.createElement("div");
   dlg.id = "tts-dlg";
   dlg.setAttribute("data-petra-interactive", "true");
-  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;min-width:320px;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
+  // 用 width 而不是 min-width：min-width 的优先级高于 max-width，
+  // keepDialogFullyVisible 给的上限会被它顶掉，弹窗就还是缩不下来
+  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
   dlg.innerHTML = `
     <div style="font-weight:bold;font-size:16px;margin-bottom:16px;">语音设置</div>
     <div style="color:#999;margin-bottom:4px;">API Key</div>
@@ -1907,6 +1960,7 @@ function showTtsDialog(savedKey: string) {
     </div>
   `;
   document.body.appendChild(dlg);
+  keepDialogFullyVisible(dlg);
   const close = () => { dlg.remove(); };
   (dlg.querySelector("#tts-c") as HTMLElement).onclick = close;
   (dlg.querySelector("#tts-ok") as HTMLElement).onclick = async () => {
@@ -1920,6 +1974,110 @@ function showTtsDialog(savedKey: string) {
     close();
     toast("语音设置已保存");
   };
+}
+
+/**
+ * 语音识别（ASR）设置弹窗。
+ *
+ * 只有"在线识别"这一条路需要用户提供 Key：Windows 的浏览器原生识别不需要，
+ * Mac/Linux（以及原生识别被判定不可用后的 Windows）走 Rust 侧转发硅基流动。
+ * Key 交给 Rust 存（DPAPI / 钥匙串 / 600 文件），跟 TTS / 聊天 Key 一个待遇，
+ * 前端只在弹窗里读回来做回填。
+ */
+async function showAsrDialog() {
+  document.getElementById("asr-dlg")?.remove();
+  const savedKey = await invoke<string>("get_asr_key").catch(() => "");
+  const online = getSpeechRecognizer().getBackendName() === "siliconflow";
+  const backendLine = online
+    ? "在线识别（硅基流动）—— 已内置默认 Key，开箱即用；填自己的会覆盖默认（加密存在本机）。"
+    : "浏览器原生识别（Windows）—— 不需要 Key。若原生识别不可用会自动切到在线识别。";
+  const inputStyle = "width:100%;padding:8px;border-radius:6px;border:1px solid #555;background:#333;color:#fff;box-sizing:border-box;margin-bottom:18px;outline:none;";
+  const dlg = document.createElement("div");
+  dlg.id = "asr-dlg";
+  dlg.setAttribute("data-petra-interactive", "true");
+  dlg.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#2a2a2a;color:#fff;padding:24px;border-radius:12px;z-index:999999;width:340px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto;";
+  dlg.innerHTML = `
+    <div style="font-weight:bold;font-size:16px;margin-bottom:12px;">语音识别设置</div>
+    <div style="color:#999;margin-bottom:14px;line-height:1.6;">${backendLine}</div>
+    <div style="color:#999;margin-bottom:4px;">麦克风权限</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <div id="asr-perm-state" style="flex:1;line-height:1.5;"></div>
+      <button id="asr-perm-btn" style="padding:6px 14px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;white-space:nowrap;"></button>
+    </div>
+    <div id="asr-perm-note" style="color:#888;font-size:11.5px;line-height:1.5;margin-bottom:16px;"></div>
+    <div style="color:#999;margin-bottom:4px;">硅基流动 API Key（留空 = 用内置默认）</div>
+    <input id="asr-k" type="password" placeholder="sk-..." value="${savedKey.replace(/"/g, "&quot;")}" style="${inputStyle}">
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button id="asr-c" style="padding:8px 20px;border-radius:6px;border:none;background:#555;color:#fff;cursor:pointer;">取消</button>
+      <button id="asr-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;">保存</button>
+    </div>
+  `;
+  document.body.appendChild(dlg);
+  keepDialogFullyVisible(dlg);
+  const close = () => { dlg.remove(); };
+
+  // ---- 麦克风权限：应用内开关（立即生效）+ 同步 Windows 隐私设置 ----
+  const stateEl = dlg.querySelector("#asr-perm-state") as HTMLElement;
+  const btnEl = dlg.querySelector("#asr-perm-btn") as HTMLButtonElement;
+  const noteEl = dlg.querySelector("#asr-perm-note") as HTMLElement;
+  const renderPermission = async () => {
+    // 读模块级 settings（而不是 loadSettings() 的副本）：这里和别处的保存
+    // 都写同一个对象，避免"改完又被别的 saveSettings(settings) 覆盖回去"
+    const allowed = settings.asr.micAllowed;
+    const os = await invoke<{ global: string; app: string }>("get_mic_permission").catch(() => null);
+    stateEl.innerHTML = allowed
+      ? '<span style="color:#6c6;">已开启</span>'
+      : '<span style="color:#e08;">已关闭</span><span style="color:#999;">（点 🎤 会直接提示权限已关）</span>';
+    btnEl.textContent = allowed ? "关闭麦克风" : "开启麦克风";
+    btnEl.style.background = allowed ? "#555" : "#5a9";
+    const bits: string[] = [];
+    if (os && os.global === "deny") bits.push("⚠ 系统总开关是「拒绝」，语音输入用不了 —— 点「开启麦克风」会一并改回允许");
+    if (os && os.app === "deny") bits.push("⚠ Windows 里本应用被设为「拒绝」（开启时会清掉）");
+    if (os && os.global === "unsupported") bits.push("当前系统不支持在应用内改权限（macOS 只能在“系统设置 → 隐私与安全性 → 麦克风”里改）");
+    bits.push("应用内开关立即生效，同时会同步到 Windows 的麦克风隐私设置（对已经在跑的窗口，系统那一层要重启应用后才算数）");
+    noteEl.textContent = bits.join("\n");
+    noteEl.style.whiteSpace = "pre-line";
+  };
+  btnEl.onclick = async () => {
+    const next = !settings.asr.micAllowed;
+    settings.asr.micAllowed = next; // 先改模块级对象再落盘（否则会被别处的 settings 写回）
+    saveSettings(settings);
+    if (!next) getSpeechRecognizer().cancel(); // 关掉时顺手停掉正在听的
+    let osMsg = "";
+    try {
+      osMsg = await invoke<string>("set_mic_permission", { allow: next });
+    } catch (e) {
+      osMsg = `应用内已${next ? "开启" : "关闭"}，但系统权限没改成：${e instanceof Error ? e.message : String(e)}`;
+    }
+    await renderPermission();
+    toast(next ? `麦克风已开启（${osMsg}）` : `麦克风已关闭（${osMsg}）`);
+  };
+  await renderPermission();
+
+  (dlg.querySelector("#asr-c") as HTMLElement).onclick = close;
+  (dlg.querySelector("#asr-ok") as HTMLElement).onclick = async () => {
+    const k = (dlg.querySelector("#asr-k") as HTMLInputElement).value.trim();
+    try {
+      await invoke("set_asr_key", { apiKey: k });
+    } catch (e) {
+      toast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+      return;
+    }
+    close();
+    toast(k ? "语音识别 Key 已保存" : "已清除语音识别 Key");
+  };
+}
+
+/** 歌词同步微调的显示文案：0 就是"正常"，正数=提前 */
+function fmtLyricOffset(ms: number): string {
+  if (!ms) return "正常";
+  return `${ms > 0 ? "提前" : "延后"} ${(Math.abs(ms) / 1000).toFixed(1)}s`;
+}
+
+/** 调一次歌词同步（0 = 复位），并把结果告诉用户 —— 静默改数值等于让用户以为没生效 */
+function nudgeLyricOffset(deltaMs: number): void {
+  const v = adjustLyricOffset(deltaMs);
+  toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}（本首记住）`);
 }
 
 function buildMenu(engine: BehaviorEngine) {
@@ -2004,6 +2162,28 @@ function buildMenu(engine: BehaviorEngine) {
                   toast("歌词气泡已关闭");
                 }
               },
+            },
+            {
+              id: "lyrics-sync",
+              label: "歌词同步微调（本首）",
+              state: fmtLyricOffset(getLyricOffsetMs()),
+              submenu: [
+                {
+                  id: "lyrics-sync-earlier",
+                  label: "提前 0.3 秒",
+                  onPick: () => nudgeLyricOffset(LYRIC_OFFSET_STEP_MS),
+                },
+                {
+                  id: "lyrics-sync-later",
+                  label: "延后 0.3 秒",
+                  onPick: () => nudgeLyricOffset(-LYRIC_OFFSET_STEP_MS),
+                },
+                {
+                  id: "lyrics-sync-reset",
+                  label: "复位（本首）",
+                  onPick: () => nudgeLyricOffset(0),
+                },
+              ],
             },
             // 歌词翻译依赖"另一份译文数据"：Windows 是从网易云拿 tlyric 合并进 LRCLIB 结果的，
             // mac/Linux 上只查 LRCLIB（它没有译文），留着这个开关就是个按了没反应的假开关，所以隐藏。
@@ -2189,6 +2369,11 @@ function buildMenu(engine: BehaviorEngine) {
         ttsPlayer.pushDelta(testText[lang] ?? "你好，语音测试成功。");
         ttsPlayer.flush();
       },
+    },
+    {
+      id: "asr-config",
+      label: "🎤 语音识别设置",
+      onPick: () => void showAsrDialog(),
     },
     {
       id: "chat-history",
@@ -2573,38 +2758,7 @@ function toggleModelAdjustPanel() {
 }
 
 // ---------- 日记素材采样 ----------
-/**
- * 从窗口标题猜"主人在用哪个软件"。
- * Windows 标题惯例是 "文档名 - 应用名"，取最后一段；常见软件统一成短名字，
- * 这样日记里的时间线读起来是"你在 VS Code 里泡了一下午"，而不是一串文件名。
- */
-function appNameFromTitle(title: string): string {
-  const raw = (title || "").trim();
-  if (!raw) return "";
-  const seg = raw.split(" - ").pop()?.trim() || raw;
-  const tl = seg.toLowerCase();
-  const known: Array<[string[], string]> = [
-    [["visual studio code", "vscode", "code.exe"], "VS Code"],
-    [["chrome", "edge", "firefox", "brave"], "浏览器"],
-    [["wechat", "微信"], "微信"],
-    [["qq"], "QQ"],
-    [["steam"], "Steam"],
-    [["bilibili", "哔哩哔哩"], "B站"],
-    [["netease", "网易云"], "网易云音乐"],
-    [["word"], "Word"],
-    [["excel"], "Excel"],
-    [["powerpoint"], "PowerPoint"],
-    [["powershell", "terminal", "cmd", "windows terminal"], "终端"],
-    [["explorer", "文件资源管理器"], "文件管理器"],
-    [["typora", "obsidian", "notion"], "笔记"],
-  ];
-  for (const [keys, name] of known) {
-    if (keys.some((k) => tl.includes(k))) return name;
-  }
-  return seg.slice(0, 20);
-}
-
-/** 每 5 分钟采样一次前台应用；人离开（空闲 > 5 分钟）时不记 */
+/** 每 5 分钟采样一次前台应用；人离开（空闲 > 5 分钟）时不记，桌宠自己的窗口也不记 */
 function startActivitySampling(): void {
   const SAMPLE_MINUTES = 5;
   const sample = async () => {
@@ -2612,6 +2766,8 @@ function startActivitySampling(): void {
       const idle = await invoke<number>("get_idle_seconds");
       if (idle > 300) return;
       const title = await invoke<string>("active_window_title");
+      // 桌宠窗口置顶，用户点它时它就是前台 —— 那不是"主人用了什么软件"，别记进日记
+      if (isOwnWindow(title)) return;
       const app = appNameFromTitle(title);
       if (app) trackAppUse(app, SAMPLE_MINUTES);
     } catch {
@@ -3520,9 +3676,9 @@ async function toggleAssistantSettings() {
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
-      // 间隔真变了就重设计时锚点：否则新值要等"距上次问候"的旧节奏走完才生效，
-      // 用户会以为设置没起作用（改短了当场不生效、改长了又按老周期弹）。
-      if (nextGreetInterval !== settings.assistant.greetInterval) resyncGreetingSchedule();
+      // 每次保存都重设计时锚点：不管间隔变没变，从保存这一刻开始重新计时，
+      // 避免"保存前已经累积的时长到了，刚保存就被问候一下"。
+      resyncGreetingSchedule();
       settings.assistant.greetInterval = nextGreetInterval;
       saveSettings(settings);
       // API Key 存 Rust 侧（DPAPI 加密）

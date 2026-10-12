@@ -3284,6 +3284,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "webkit2gtk",
  "windows 0.58.0",
  "xcap",
 ]

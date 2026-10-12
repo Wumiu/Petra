@@ -33,7 +33,13 @@ const BACKWARD_SEEK_MS = 1200;
 
 const DEFAULTS: Required<ClockOptions> = {
   repeatGapMs: 1600,
-  seekGapMs: 600,
+  /**
+   * 中等静音判定"疑似拖动进度"的阈值。
+   * 原来是 600ms —— 实测太敏感：一次"完全静音"的 0.6 秒（电音的静默拍、段间留白、
+   * 换输出设备/切歌空隙）就会被当成拖动，于是**整首歌都不再显示歌词**（用户报的
+   * "老是出问题"里就有这一条）。真拖动进度条通常伴随播放器缓冲，静音更长，1.2 秒够用。
+   */
+  seekGapMs: 1200,
   levelThreshold: 0.02,
   deepSilenceLevel: 0.004,
   onsetThreshold: 0.03,

@@ -50,6 +50,59 @@ ok("pickBestLyrics tolerates non-array", P.pickBestLyrics(null, "a", "b", 0) ===
 ok("pickBestLyrics rejects unrelated title", P.pickBestLyrics([{ trackName: "完全无关的歌", artistName: "别人", syncedLyrics: "[00:01.00]x" }], "晴天", "周杰伦", 0) === null);
 ok("pickBestLyrics accepts title with extra suffix", P.pickBestLyrics([{ trackName: "夜明けを乞う。", artistName: "酔シグレ", syncedLyrics: "[00:01.00]x" }], "夜明けを乞う。 (feat. むト)", "酔シグレ", 0) !== null);
 
+// ---------- 按播放器挑歌词来源（同一次母带对齐，最可能准） ----------
+const sp = P.sourceForPlayer;
+ok("★ 网易云 → netease", sp("cloudmusic.exe") === "netease", sp("cloudmusic.exe"));
+ok("网易云的 AppId 变体也认", sp("NeteaseCloudMusic") === "netease");
+ok("QQ 音乐 → qq", sp("QQMusic.exe") === "qq", sp("QQMusic.exe"));
+ok("酷狗 → kugou", sp("KuGou.exe") === "kugou");
+ok("浏览器不指定来源", sp("msedge.exe") === null);
+ok("空 AppId 不炸", sp("") === null);
+
+const mkItem = (source, dur, title) => ({
+  source: source,
+  duration: dur,
+  trackName: title || "歌",
+  artistName: "歌手",
+  syncedLyrics: "[00:01.00]x",
+});
+// 标题/艺人都一样、时长也一样时：正在播放的播放器自家那份必须赢
+const sameTier = [mkItem("qq", 200), mkItem("netease", 200), mkItem("lrclib", 200)];
+ok(
+  "★ 同等条件下优先播放器自家来源（网易云）",
+  P.pickBestLyrics(sameTier, "歌", "歌手", 200000, "netease").source === "netease",
+  P.pickBestLyrics(sameTier, "歌", "歌手", 200000, "netease").source,
+);
+ok(
+  "不指定来源时按原顺序取第一条",
+  P.pickBestLyrics(sameTier, "歌", "歌手", 200000).source === "qq",
+);
+// 但"自家来源"不能盖过明显的版本错误（时长差 30 秒 → 必是别的版本）
+const mixed = [mkItem("netease", 230), mkItem("qq", 200)];
+ok(
+  "★ 自家来源但时长差太多时，仍选时长吻合的那份",
+  P.pickBestLyrics(mixed, "歌", "歌手", 200000, "netease").source === "qq",
+  P.pickBestLyrics(mixed, "歌", "歌手", 200000, "netease").source,
+);
+// 时长几乎一致（同版本）优先于"标题相似但版本不同"
+const byDur = [mkItem("lrclib", 205), mkItem("lrclib", 260)];
+ok("时长最接近的版本优先", P.pickBestLyrics(byDur, "歌", "歌手", 200000).duration === 205);
+
+// ---------- 按歌微调：查行用的进度 = 时钟 + 全局提前量 + 本首偏移 ----------
+// 在线歌词（LRCLIB 社区贡献）时间戳参差不齐，同一首歌偏半秒、换个来源又刚好，
+// 所以除了全局提前量，还要能按歌校准。
+const q = P.lyricQueryPosition;
+ok("lyricQueryPosition 只加提前量", q(10000, 200, 0) === 10200, q(10000, 200, 0));
+ok("★ 微调为正 = 歌词提前（更早命中下一行）", q(10000, 200, 500) === 10700, q(10000, 200, 500));
+ok("★ 微调为负 = 歌词延后", q(10000, 200, -500) === 9700, q(10000, 200, -500));
+ok("进度不会算成负数", q(100, 200, -500) === 0, q(100, 200, -500));
+ok("偏移默认值就是全局提前量", q(1234, 200) === 1434, q(1234, 200));
+// 跟 lineIndexAt 串起来看：同一份歌词，偏移把命中的行往前挪
+const twoLines = [{ timeMs: 10000, text: "A" }, { timeMs: 11000, text: "B" }];
+ok("偏移前在第 1 行", P.lineIndexAt(twoLines, q(10800, 0, 0)) === 0);
+ok("★ 提前 500ms 后命中第 2 行", P.lineIndexAt(twoLines, q(10800, 0, 500)) === 1);
+ok("延后 500ms 后仍在第 1 行", P.lineIndexAt(twoLines, q(10800, 0, -500)) === 0);
+
 // ---------- LyricClock ----------
 let now = 1000000;
 const clock = new LyricClock(function () { return now; });
@@ -71,12 +124,12 @@ clock.noteAudio(0.001, 2000);
 clock.noteAudio(0.5, 16);
 ok("long silence resets clock (repeat)", clock.positionMs() < 200, clock.positionMs());
 
-// 疑似拖动：静音 800ms（介于 seek/repeat 之间）
+// 疑似拖动：深度静音 1.3s（落在 seekGap(1.2s) 与 repeatGap(1.6s) 之间）
 const c2 = new LyricClock(function () { return now; });
 c2.setTrack("歌2", "人2");
 c2.setPlaying(true);
 c2.noteAudio(0.5, 16);
-c2.noteAudio(0.001, 800);
+c2.noteAudio(0.001, 1300);
 c2.noteAudio(0.5, 16);
 ok("medium silence marks drift", c2.drift === true && c2.trusted === false);
 c2.alignTo(60000);
@@ -218,11 +271,19 @@ const c9 = new LyricClock(function () { return n6; });
 c9.setTrack("歌10", "人10");
 c9.setPlaying(true);
 c9.noteAudio(0.5, 16);
+// 0.8 秒的"完全静音"**不再**算拖动：电音的静默拍、段间留白都长这样，
+// 误判会让整首歌都不显示歌词（用户报的"老是出问题"之一）
 n6 += 800;
 c9.noteAudio(0, 800);
 n6 += 16;
 c9.noteAudio(0.5, 16);
-ok("true silence still marks drift", c9.drift === true);
+ok("★ 0.8s 深度静音不再误判为拖动", c9.drift === false);
+// 1.2 秒以上才算"真拖动进度"（真要拖进度条，播放器缓冲的静音通常更长）
+n6 += 200;
+c9.noteAudio(0, 1200);
+n6 += 16;
+c9.noteAudio(0.5, 16);
+ok("1.2s 深度静音仍判定拖动", c9.drift === true);
 
 // 失准后：重播（长深度静音）要能恢复跟唱
 let n9 = 1200000;
@@ -232,7 +293,7 @@ const genA = c12.generationCount;
 c12.setPlaying(true);
 c12.noteAudio(0.5, 16);
 n9 += 800;
-c12.noteAudio(0, 800);
+c12.noteAudio(0, 1200);
 n9 += 16;
 c12.noteAudio(0.5, 16);
 ok("drift set before replay", c12.drift === true);
@@ -251,7 +312,7 @@ c13.setTrack("歌15", "人15");
 c13.setPlaying(true);
 c13.noteAudio(0.5, 16);
 n10 += 800;
-c13.noteAudio(0, 800);
+c13.noteAudio(0, 1200);
 n10 += 16;
 c13.noteAudio(0.5, 16);
 ok("drift set before timeline", c13.drift === true);

@@ -159,5 +159,19 @@ check("undefined Key 不炸", ac.isProviderReady({ provider: "deepseek" }, undef
 check("本机自定义端点空 Key 就绪", ac.isProviderReady({ provider: "custom", customBaseUrl: "http://127.0.0.1:11434/v1" }, "") === true);
 check("远端自定义端点空 Key 不就绪", ac.isProviderReady({ provider: "custom", customBaseUrl: "https://x.example/v1" }, "") === false);
 
+// ---------- system prompt 的顺序：语言指令必须压在最后 ----------
+// 锁住"设置日语却回中文"那个 bug：语言指令后面若还跟着中文（BASE_PROMPT、中文记忆），
+// 模型会顺着后面那段中文继续说中文。extraContext（里面装着语言指令）必须排在最末尾。
+const jaLine = "【最高优先级·最终指令】你必须全程用日语回复用户，不管用户说什么语言。回复中绝对不要夹杂中文。";
+const fakeMem = [
+  { id: "m1", category: "preference", content: "用户喜欢咖啡", importance: 2, createdAt: Date.now() },
+];
+const sys = ac.systemPrompt("你是猫娘", fakeMem, `[环境] 现在：周一13点\n\n${jaLine}`);
+check("★ 语言指令排在 system prompt 最末尾", sys.trimEnd().endsWith(jaLine));
+check("★ 中文 BASE_PROMPT 不再压在语言指令后面", sys.indexOf("严格按照上面的人格设定") < sys.indexOf("你必须全程用日语"));
+check("人格设定仍在最前面", sys.startsWith("你是猫娘"));
+check("中文记忆块也排在语言指令之前", sys.indexOf("关于用户的记忆") < sys.indexOf("你必须全程用日语"));
+check("中文输出时不带语言指令也不炸", ac.systemPrompt("人格", [], "").includes("严格按照上面的人格设定"));
+
 console.log("assistant-tools: pass=" + (fail === 0 ? "all" : "has failures") + " fail=" + fail);
 process.exit(fail ? 1 : 0);

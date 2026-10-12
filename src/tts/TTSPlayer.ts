@@ -29,6 +29,14 @@ class TTSPlayer {
   onIdle(cb: () => void) { this.idleCallbacks.push(cb); }
 
   /**
+   * 现在有没有声音正在播。
+   *
+   * 语音输入要用它做「抢话」判断：麦克风开着的同时 TTS 在响，识别会把桌宠
+   * 自己的声音也听进去（回声），必须先停掉再开麦。
+   */
+  isSpeaking(): boolean { return this.speaking; }
+
+  /**
    * 实时静音开关：立刻作用于**正在播的这一段**，不用等下一句。
    *
    * 用 volume=0 而不是 pause()：静音期间队列要继续走完（气泡的消失时机、

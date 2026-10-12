@@ -161,6 +161,16 @@ export function normalizeKey(s: string): string {
     .trim();
 }
 
+/**
+ * 实际用来查行的进度 = 时钟 + 全局提前量 + **本首微调**。
+ *
+ * 提前量为正表示"让歌词早一点出现"。微调是按歌记的：在线歌词（LRCLIB 是社区贡献）
+ * 时间戳参差不齐，同一首歌偏半秒、另一首又刚好，全局常量救不了，只能按歌校准。
+ */
+export function lyricQueryPosition(clockMs: number, leadMs: number, offsetMs = 0): number {
+  return Math.max(0, clockMs + leadMs + offsetMs);
+}
+
 /** 歌名清理：只去掉已知后缀括号，保留正常歌名 */
 export function cleanTitle(title: string): string {
   const t = (title || "").trim();
@@ -172,7 +182,24 @@ export function cleanTitle(title: string): string {
 }
 
 /**
- * 从 LRCLIB 结果中挑最合适的一条：必须有同步歌词；标题/艺人匹配优先，时长接近加分。
+ * 正在播放的播放器 → 它的歌词来源。
+ *
+ * 为什么要按播放器选来源：歌词是"和某一版母带对齐"的，不同版本的前奏/间奏长度不一样，
+ * 拿别家的时间轴去配这家的音频，整首歌就会整体偏移（用户看到的"这首歌偏半秒、
+ * 那首歌又刚好"）。播放器自家的歌词和它自家的音频是同一次对齐，最可能准。
+ */
+export function sourceForPlayer(appId: string): string | null {
+  const a = (appId || "").toLowerCase();
+  if (!a) return null;
+  if (a.includes("cloudmusic") || a.includes("netease") || a.includes("music.163")) return "netease";
+  if (a.includes("qqmusic") || a.includes("qq music") || a.includes("tencent")) return "qq";
+  if (a.includes("kugou")) return "kugou";
+  return null;
+}
+
+/**
+ * 从多来源结果里挑最合适的一条：必须有同步歌词；标题/艺人匹配优先，时长接近加分，
+ * **正在播放的那个播放器自家的来源再加一档**（它和它的音频是同一次对齐）。
  * 时长未知（0）时不参与打分。
  */
 export function pickBestLyrics(
@@ -180,6 +207,7 @@ export function pickBestLyrics(
   title: string,
   artist: string,
   durationMs = 0,
+  preferredSource: string | null = null,
 ): LrclibItem | null {
   if (!Array.isArray(items)) return null;
   const wantTitle = normalizeKey(title);
@@ -205,10 +233,14 @@ export function pickBestLyrics(
     const d = typeof it.duration === "number" ? it.duration * 1000 : 0;
     if (wantDur > 0 && d > 0) {
       const diff = Math.abs(d - wantDur);
-      if (diff <= 3000) score += 25;
+      // 同一版本（时长几乎一致）几乎可以断定时间轴对得上，权重给得比"标题匹配"更高
+      if (diff <= 1000) score += 35;
+      else if (diff <= 3000) score += 25;
       else if (diff <= 10000) score += 10;
       else score -= 15;
     }
+    // 正在播放的播放器自家的歌词优先：它和正在响的音频才是同一次对齐
+    if (preferredSource && (it.source ?? "").toLowerCase() === preferredSource) score += 30;
     if (score > bestScore) {
       bestScore = score;
       best = it;
