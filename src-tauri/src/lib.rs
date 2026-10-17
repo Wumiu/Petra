@@ -496,11 +496,50 @@ fn sync_interaction_regions(
     Ok(())
 }
 
+/// 窗口偏好文件路径：app_data_dir/window-state.json
+/// 只存用户明确改过的窗口状态（目前是置顶开关）；放应用数据目录，卸装/重装仍保留。
+fn window_state_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("window-state.json"))
+}
+
+/// 读回用户上次选的置顶状态；没有文件（首次运行）→ None。
+fn load_topmost_pref(app: &AppHandle) -> Option<bool> {
+    let p = window_state_path(app).ok()?;
+    let raw = std::fs::read_to_string(p).ok()?;
+    topmost_from_json(&raw)
+}
+
+/// 写入置顶状态，**保留文件里的其它字段**（以后再加别的窗口状态不会互相覆盖）。
+/// 写失败只丢一次记忆，不影响本次置顶效果，因此不向上报错。
+fn save_topmost_pref(app: &AppHandle, on: bool) {
+    let Ok(path) = window_state_path(app) else {
+        return;
+    };
+    let mut obj = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert("topmost".into(), serde_json::Value::Bool(on));
+    if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(obj)) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
 #[tauri::command]
 fn hide_pet(app: AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
+}
+
+/// 从已存的窗口状态 JSON 里读 topmost；缺字段 / 文件损坏 → None（由调用方定默认值）。
+/// 纯函数，便于单测（不碰文件系统与 AppHandle）。
+fn topmost_from_json(raw: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    v.get("topmost")?.as_bool()
 }
 
 #[tauri::command]
@@ -511,6 +550,9 @@ fn set_topmost(app: AppHandle, state: State<'_, TopmostState>, on: bool) -> bool
         // 直接 Win32 立即生效
         screen::set_topmost(&win, on);
         state.enabled.store(on, Ordering::SeqCst);
+        // 落盘：以前只存在内存里，重启必然回到配置里的 alwaysOnTop=true，
+        // 于是「取消置顶」每次重开都失效。这里记住用户的选择，setup 里读回来。
+        save_topmost_pref(&app, on);
         return true;
     }
     false
@@ -4379,6 +4421,16 @@ pub fn run() {
             spawn_clickthrough_watcher(handle.clone());
             spawn_pet_mover(handle.clone());
             spawn_drag_follower(handle.clone());
+            // 置顶：先按落盘的选择校准窗口与看门狗状态，再启动看门狗。
+            // 顺序不能反 —— 看门狗看到 enabled=true 会立刻把窗口推回置顶。
+            let topmost = load_topmost_pref(app.handle()).unwrap_or(true);
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_always_on_top(topmost);
+                screen::set_topmost(&win, topmost);
+            }
+            app.state::<TopmostState>()
+                .enabled
+                .store(topmost, Ordering::SeqCst);
             spawn_topmost_watcher(handle.clone());
 
             // 正在播放媒体信息（SMTC）：与播放器窗口是否可见无关
@@ -4568,3 +4620,27 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod window_state_tests {
+    use super::*;
+
+    #[test]
+    fn topmost_reads_persisted_bool() {
+        assert_eq!(topmost_from_json(r#"{"topmost": false}"#), Some(false));
+        assert_eq!(topmost_from_json(r#"{"topmost": true}"#), Some(true));
+    }
+
+    #[test]
+    fn topmost_missing_or_corrupt_is_none() {
+        // 缺字段 / 空文件 / 坏 JSON / 类型不对 → None，不 panic、不误判成置顶
+        assert_eq!(topmost_from_json("{}"), None);
+        assert_eq!(topmost_from_json(""), None);
+        assert_eq!(topmost_from_json("not json"), None);
+        assert_eq!(topmost_from_json(r#"{"topmost": "yes"}"#), None);
+        // 其它窗口状态字段存在也不影响
+        assert_eq!(
+            topmost_from_json(r#"{"x": 1, "topmost": false}"#),
+            Some(false)
+        );
+    }
+}

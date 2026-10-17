@@ -21,7 +21,6 @@ import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
-const MAX_BUBBLES = 2;
 /** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
 const IDLE_HIDE_MS = 20000;
 const HIST_KEY = "live2d-pet-assistant-history";
@@ -343,21 +342,82 @@ export function setModelRectProvider(fn: () => { left: number; top: number; righ
   modelRectProvider = fn;
 }
 
+/** 气泡正文（滚动层）的高度上限：先给满，放不下再按角色头顶的余量收。
+ *  真正起作用的约束是「头顶还剩多少」（见 fitBubbleHeights），这里只是个防呆上限。 */
+const BUBBLE_BODY_MAX = 360;
+/** 收也不能收成一条缝：再挤也留 4 行可读（12.5px × 1.5 = 18.75px/行，正好整行不切字） */
+const BUBBLE_BODY_MIN = 75;
+
+/** 当前生效的正文高度上限：只在数值变化时才写样式，免得每帧改 style 触发重排 */
+let bubbleBodyMax = BUBBLE_BODY_MAX;
+/** 上次据以计算上限的可用高度：角色呼吸会让它每帧抖几像素，用它做滞回 */
+let lastFitRoom = -1;
+
+/**
+ * 按「还剩多少高度」给气泡限高，返回气泡区当前总高。
+ *
+ * 用户反馈「气泡会挡住人物」：窗口只有 700x700，角色头顶到窗口顶也就 190px 上下，
+ * 正文给满 200px 时气泡必然往下压到头上（两条气泡时更是糊住半个身子）。
+ * 所以调用方把「头顶余量」传进来，按超出量收正文上限（滚动条在正文层，
+ * 见 style.css 的 .as-bubble-body），先保证不压住角色；长回复在气泡里滚动。
+ *
+ * **两条硬约束**（都是踩过的坑）：
+ * ① 每帧都会调（main.ts 的 positionFloatingUi 是权威定位入口），所以绝不能每次
+ *    先 apply 满高再收 —— 那样每帧「长高→缩回」，滚动容器的高度跟着变，
+ *    Chrome 会把用户刚滚到的 scrollTop 夹回去，表现为「滚不动 + 一直抖」。
+ * ② roomTotal 来自角色实时包围盒，模型呼吸就抖几像素；只有变化超过一行才重算，
+ *    否则上限在两个整行值之间反复横跳，同样是肉眼可见的抖动。
+ */
+export function fitBubbleHeights(roomTotal: number): number {
+  if (!bubbles) return 0;
+  const bodies = Array.from(bubbles.querySelectorAll<HTMLElement>(".as-bubble-body"));
+  if (bodies.length === 0) return bubbles.offsetHeight || 0;
+
+  // 新气泡还没吃到上限时补一次；已在用的就别动它（每帧改 style = 抖动来源）
+  if (bodies.some((b) => b.style.maxHeight === "")) {
+    for (const b of bodies) b.style.maxHeight = `${bubbleBodyMax}px`;
+  }
+
+  if (roomTotal > 0 && (lastFitRoom < 0 || Math.abs(roomTotal - lastFitRoom) >= 16)) {
+    lastFitRoom = roomTotal;
+    const bodyEl = bodies[bodies.length - 1];
+    const bubbleEl = bodyEl.parentElement;
+    // 气泡除正文外还有内边距和静音键，这部分高度是固定的
+    const chrome = bubbleEl ? Math.max(0, bubbleEl.offsetHeight - bodyEl.offsetHeight) : 0;
+    const lh = parseFloat(getComputedStyle(bodyEl).lineHeight) || 19;
+    // 取整到整行：不取整会把最后一行字从中间切掉，看着像坏了
+    const lines = Math.floor(Math.max(0, roomTotal - chrome) / lh);
+    const next = Math.max(BUBBLE_BODY_MIN, Math.min(BUBBLE_BODY_MAX, lines * lh));
+    if (next !== bubbleBodyMax) {
+      bubbleBodyMax = next;
+      for (const b of bodies) b.style.maxHeight = `${next}px`;
+    }
+  }
+  return bubbles.offsetHeight;
+}
+
 /**
  * 给气泡区定位：优先放在**模型上方**，上方放不下就放到下方/可见区内，
  * 并整体钳制在可见区内。以前气泡固定贴在窗口底部中间，正好把桌宠挡住。
  *
  * 例外：「对话记录」面板（#chat-history-panel）打开时，气泡一律挪到面板正下方，
  * 绝不遮挡面板内容；下方放不下才退到面板上方。
+ *
+ * 限高（用户反馈「气泡会挡住人物」）：窗口只有 700x700，角色头顶到窗口顶也就 190px 上下，
+ * 正文给满 200px 时气泡必然往下压到头上（两条气泡时更是糊住半个身子）。
+ * 所以这里按「头顶/脚下还剩多少地方」动态收正文上限，先保证不压住角色；
+ * 长回复在气泡里滚动（正文层本来就有 overflow-y）。
  */
 function positionBubbles() {
   if (!bubbles) return;
   const vr = getVisibleRect();
   const availW = Math.max(140, vr.right - vr.left - 16);
-  const width = Math.min(300, availW);
+  // 窗口 700×700，**高度才是稀缺资源**（角色头顶只剩 ~190px），横向反而富余：
+  // 宽 300 时长回复要 12 行、必被截断；放到 420 只要 8 行就能整段放下。
+  const width = Math.min(420, availW);
   bubbles.style.width = `${width}px`;
 
-  const h = bubbles.offsetHeight || 80;
+  let h = bubbles.offsetHeight || 80;
   const clampLeft = (l: number) => Math.min(Math.max(l, vr.left + 8), Math.max(vr.left + 8, vr.right - width - 8));
   const clampTop = (t: number) => Math.min(Math.max(t, vr.top + 8), Math.max(vr.top + 8, vr.bottom - h - 8));
 
@@ -381,14 +441,21 @@ function positionBubbles() {
     return;
   }
 
-  const above = rect.top - h - 8;
   // 往下放时要躲开输入条（输入条就在模型下方），否则气泡会压在输入框上
   const inputOpen = inputBar !== null && !inputBar.classList.contains("hidden");
   const below = rect.bottom + 8 + (inputOpen ? (inputBar!.offsetHeight || 60) + 8 : 0);
-  const canAbove = above >= vr.top + 8;
-  const canBelow = below + h <= vr.bottom - 8;
-  const top = canAbove ? above : canBelow ? below : clampTop(above);
-  bubbles.style.left = `${clampLeft(rect.left)}px`;
+  // 两侧余量（各留 8px 边距）：气泡只占「更宽的那一侧」，所以先把正文收到它放得下
+  const spaceAbove = rect.top - vr.top - 16;
+  const spaceBelow = vr.bottom - below - 8;
+  const room = Math.max(spaceAbove, spaceBelow);
+  const hh = fitBubbleHeights(room) || h;
+  h = hh; // clampTop 闭包里用的是 h，收高之后必须同步，否则会被按旧高度夹住
+  // 收完仍放不下（角色把窗口占满这类极端情况）：退回余量大的一侧夹紧，别把气泡推出窗口
+  const above = rect.top - hh - 8;
+  const canAbove = hh <= spaceAbove;
+  const canBelow = hh <= spaceBelow;
+  const top = canAbove ? above : canBelow ? below : clampTop(spaceAbove >= spaceBelow ? above : below);
+  bubbles.style.left = `${clampLeft(rect.left + (rect.right - rect.left) / 2 - width / 2)}px`;
   bubbles.style.top = `${clampTop(top)}px`;
 }
 
@@ -653,8 +720,8 @@ function addBubble(kind: "ai" | "sys" | "confirm" | "user", text: string): HTMLE
   b.appendChild(body);
   // 对话类气泡给一个「×」；确认类气泡（自带允许/拒绝）不走这里，也就没有叉
   if (kind !== "confirm") attachBubbleClose(b);
+  trimBubbles(); // 先挤掉上一条，再挂新的（顺序不能反：trim 会清掉所有普通气泡）
   bubbles!.appendChild(b);
-  trimBubbles();
   positionBubbles(); // 气泡数量变化会改高度，重新算一次位置
   return b;
 }
@@ -697,10 +764,16 @@ function scheduleFade(el: HTMLElement, ms: number) {
   arm();
 }
 
+/**
+ * 只留一条气泡：用户要求「下一句出来的时候上一句的气泡要消失」，
+ * 以前留 2 条会叠成一面墙把桌宠整个挡住。
+ *
+ * **确认气泡不能挤掉**（`.as-confirm` 在等用户点「允许/拒绝」）：
+ * 它被删掉后那个 Promise 永远不 resolve，工具调用会一直卡着。
+ */
 function trimBubbles() {
-  const kids = Array.from(bubbles!.children);
-  while (kids.length > MAX_BUBBLES) {
-    kids.shift()?.remove();
+  for (const kid of Array.from(bubbles!.children)) {
+    if (!(kid as HTMLElement).classList.contains("as-confirm")) kid.remove();
   }
   positionBubbles();
 }
@@ -1105,8 +1178,22 @@ async function send(text: string) {
       void extractMemoriesFromChat(s, apiKey);
     }
     if (!getBubbleText(loading).trim()) setBubbleText(loading, "(空回复)");
-    // AI 回复气泡不自动消失，一直留着；新气泡进来会自动挤掉旧的（MAX_BUBBLES=2），
-    // 关闭助手时整体清空，或者用户点右上角的叉手动删掉。TTS 播完也不淡。
+    // 回复说完就淡出（用户要求：「两段话说完了气泡也没有消失」）。
+    // 以前这里刻意不淡出，气泡就一直挂到下一轮、把桌宠挡个正着。
+    // 语音开着就等这一段播完再按字数计时（onIdle 只在「队列空且未在播」时触发一次，
+    // 合成失败/没排上队时永不触发 -> 120 秒兜底）；语音关着直接按字数计时。
+    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+      let armed = false;
+      const arm = () => {
+        if (armed) return;
+        armed = true;
+        scheduleFade(loading, readingHoldMs(getBubbleText(loading), 4000));
+      };
+      ttsPlayer.onIdle(arm);
+      window.setTimeout(arm, 120000);
+    } else {
+      scheduleFade(loading, readingHoldMs(getBubbleText(loading), 5000));
+    }
   } catch (e) {
     setBubbleText(loading, friendlyApiError(e));
     loading.dataset.emotion = "worried";
