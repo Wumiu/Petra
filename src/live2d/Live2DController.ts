@@ -236,15 +236,27 @@ export class Live2DController implements PetView {
     if (this.model) this.fit();
   }
 
+  /**
+   * 「调整模型边界」面板给的四边松紧（正=放大、负=收紧），默认全 0 = 和原来完全一致。
+   * PSD 那条链路（Rigged2DView）早就有这个能力，标准 Live2D 以前只有 `?.` 空转，
+   * 于是滑条拖了没反应 —— 两边现在行为一致。
+   */
+  private boundsPad = { left: 0, right: 0, top: 0, bottom: 0 };
+
+  setBoundsPadding(p: { left: number; right: number; top: number; bottom: number }) {
+    this.boundsPad = p;
+  }
+
   /** 标准 Live2D 在 700×700 Pixi stage 内的真实可见 bounds。 */
   getCharacterBounds(): { left: number; top: number; right: number; bottom: number } | null {
     const m = this.model;
     if (!m || !m.parent) return null;
     const bounds = m.getBounds();
-    const left = bounds.x - this.modelOffsetX;
-    const top = bounds.y - this.modelOffsetY;
-    const right = left + bounds.width;
-    const bottom = top + bounds.height;
+    const pad = this.boundsPad;
+    const left = bounds.x - this.modelOffsetX - pad.left;
+    const top = bounds.y - this.modelOffsetY - pad.top;
+    const right = left + bounds.width + pad.left + pad.right;
+    const bottom = top + bounds.height + pad.top + pad.bottom;
     if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
     return { left, top, right, bottom };
   }

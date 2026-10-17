@@ -41,7 +41,7 @@ import { loadSettings, saveSettings, type Settings, type AssistantProvider } fro
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
-import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights } from "./assistant/AssistantPanel";
 import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
 import {
@@ -323,20 +323,39 @@ function toggleDebugBorder() {
   el?.classList.toggle("hidden", !debugBorderVisible);
 }
 
-/** 调试模型边框开关（绿框勾勒角色边界，验证"模型不出屏"） */
+/**
+ * 绿框（角色边界面）元素：**按需惰性创建**。
+ *
+ * 以前这个 div 只在 `import.meta.env.DEV` 的 boot 分支里创建，可「调整模型边界」是
+ * 面向用户的正式功能（右键 → 模型 → 调整模型边界，打开面板会自动显示绿框）——
+ * 于是打包版里打开面板只有滑条、屏幕上根本没有绿框；dev 里一切正常，所以一直没被发现。
+ * 现在改成谁用谁创建：菜单开关、打开边界面板、每帧定位都走这里。
+ */
+function ensureModelBoundsEl(): HTMLElement {
+  let el = document.getElementById("model-bounds");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "model-bounds";
+    el.className = "hidden";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+/** 模型边框开关（绿框勾勒角色边界：调边界面板会自动打开，也可从菜单「显示模型边框」手动开） */
 function toggleModelBounds() {
   debugModelBoundsVisible = !debugModelBoundsVisible;
-  const el = document.getElementById("model-bounds");
-  el?.classList.toggle("hidden", !debugModelBoundsVisible);
+  ensureModelBoundsEl().classList.toggle("hidden", !debugModelBoundsVisible);
 }
 
 /** 每帧更新模型边框绿框位置（窗口坐标 = modelOffset + 角色边界） */
 function updateModelBounds(bounds?: { left: number; top: number; right: number; bottom: number } | null) {
-  const el = document.getElementById("model-bounds");
-  if (!el || !debugModelBoundsVisible) {
+  // 关着就什么都不做（连元素都不建，免得多一个节点参与布局）
+  if (!debugModelBoundsVisible) {
     engine.lastBoundsOnScreen = null;
     return;
   }
+  const el = ensureModelBoundsEl();
   if (!bounds) {
     el.classList.add("hidden");
     engine.lastBoundsOnScreen = null;
@@ -421,7 +440,13 @@ function positionFloatingUi(
     const visibleW = vr.right - vr.left - 8;
     bubbles.style.maxWidth = `${Math.max(80, visibleW)}px`;
     const bw = bubbles.offsetWidth || 214;
-    const bh = bubbles.offsetHeight || 60;
+    // 用户反馈「气泡会挡住人物」：定位前先按「头顶还剩多少」给气泡限高（长回复在气泡里滚动），
+    // 这样气泡只会贴在头顶上方，不会压到角色身上。这里是每帧的权威定位入口，
+    // 所以限高也必须在这里做 —— 只在 AssistantPanel 里做会被本函数覆盖掉。
+    const bubbleRoom = chatRect
+      ? Math.max(0, vr.bottom - (chatRect.bottom + 8) - 8)
+      : Math.max(0, mr.top - vr.top - 16);
+    const bh = fitBubbleHeights(bubbleRoom) || bubbles.offsetHeight || 60;
     // 计算气泡中心位置（transform: translateX(-50%) 使气泡居中于 cx）
     const idealCx = mr.left + mr.width / 2;
     const minCx = vr.left + bw / 2 + 4; // 左边界：气泡左边缘不超出可见区
@@ -578,22 +603,28 @@ function positionInfoPanelNearModel(
   vr: { left: number; top: number; right: number; bottom: number },
 ) {
   el.style.boxSizing = "border-box";
-  el.style.width = `${Math.min(270, Math.max(140, vr.right - vr.left))}px`;
-  el.style.maxHeight = `${Math.max(0, vr.bottom - vr.top)}px`;
   const inputBar = document.getElementById("as-inputbar");
   const inputRect = inputBar && !inputBar.classList.contains("hidden")
     ? inputBar.getBoundingClientRect() : undefined;
-  const placement = infoPanelPlacement(mr, vr, {
-    width: el.offsetWidth || 270,
-    height: el.offsetHeight || 200,
-  }, inputRect);
-  // 极限缩放/贴边时没有足够的空闲区域；保留显示状态，拖回后可重新定位。
-  el.style.visibility = placement ? "" : "hidden";
-  if (!placement) return;
-  el.style.width = `${placement.width}px`;
-  el.style.maxHeight = `${placement.height}px`;
-  el.style.left = `${placement.left}px`;
-  el.style.top = `${placement.top}px`;
+
+  // 拿「模型旁边那块空闲区域」的真实尺寸：故意传一个远超内容的高度，
+  // 布局函数就会把 region 撑满可用空间返回，于是返回的 box 就是这块地方的四边。
+  //
+  // 为什么不再按内容高度去算（历史坑，用户截图里"面板出现滚动条、陪伴时间被切一半"）：
+  // 面板高度是内容决定的，而内容（天气/待办）是异步来的；一旦用「当前量到的高度」去设
+  // max-height，就会被上一帧的上限反锁住 —— 内容变高也撑不开，只能出滚动条。
+  // 现在改成**只把 max-height 设成 region 高度**，面板自己随内容伸缩，永远不会自锁。
+  const box = infoPanelPlacement(mr, vr, { width: 270, height: 100000 }, inputRect);
+  el.style.visibility = box ? "" : "hidden";
+  if (!box) return;
+  const boxH = Math.max(60, box.bottom - box.top);
+  el.style.width = `${box.width}px`;
+  el.style.maxHeight = `${boxH}px`;
+  el.style.left = `${Math.round(box.left)}px`;
+  // 高度由内容决定，量出来再把它垂直居中到 region 里（放不下就顶上）
+  const h = el.offsetHeight || 200;
+  const top = Math.max(box.top, Math.min(box.top + (boxH - h) / 2, Math.max(box.top, box.bottom - h)));
+  el.style.top = `${Math.round(top)}px`;
 }
 
 /** 将通知定位到模型头顶（不挡住模型） */
@@ -946,18 +977,19 @@ async function boot() {
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
   void applyModelScale(settings.modelScale);
   if (import.meta.env.DEV) {
-    // 红框/绿框只在 dev 构建创建，release 不显示调试边界。
+    // 红框是纯调试用的（窗口边界），只在 dev 建；
+    // 绿框（角色边界）是「调整模型边界」面板要用的，改成按需创建，见 ensureModelBoundsEl。
     const border = document.createElement("div");
     border.id = "debug-border";
     border.className = "hidden";
     document.body.appendChild(border);
-    const mb = document.createElement("div");
-    mb.id = "model-bounds";
-    mb.className = "hidden";
-    document.body.appendChild(mb);
   }
   // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
   setModelRectProvider(getModelRect);
+  if (import.meta.env.DEV) {
+    // dev 调试钩子：CDP 里直接读角色包围盒/绿框状态，排查"气泡位置/绿框不对"时不用再临时改代码
+    (window as any).__petraDebug = { getModelRect, getWindowVisibleRect };
+  }
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
     () => engine.suspend(3600_000),
