@@ -899,22 +899,32 @@ fn set_window_size(app: AppHandle, width: u32, height: u32) {
 
 /// 8ms 循环：拖动中直接 GetCursorPos → SetWindowPos 跟随鼠标（像素级、无 IPC 每帧延迟）。
 fn spawn_drag_follower(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(8));
-        let Some(drag) = app.try_state::<DragState>() else {
-            continue;
-        };
-        if !drag.active.load(Ordering::SeqCst) {
-            continue;
+    std::thread::spawn(move || {
+        // scale_factor 每 8ms 问一次 tao 会跟主线程的渲染循环抢锁，实测是拖拽"发涩"的来源之一；
+        // 拖拽期间缩放几乎不会变，缓存起来每 ~0.5 秒刷一次就够
+        let mut scale = 1.0f64;
+        let mut scale_tick = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            let Some(drag) = app.try_state::<DragState>() else {
+                continue;
+            };
+            if !drag.active.load(Ordering::SeqCst) {
+                scale_tick = 0; // 下次开始拖拽时立刻取一次
+                continue;
+            }
+            let Some(win) = app.get_webview_window("main") else {
+                continue;
+            };
+            let off = *drag.offset.lock().unwrap();
+            let locked = *drag.locked_y.lock().unwrap();
+            let bounds = *drag.model_bounds.lock().unwrap();
+            if scale_tick == 0 {
+                scale = get_window_scale_factor(&app);
+            }
+            scale_tick = (scale_tick + 1) % 60;
+            screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
         }
-        let Some(win) = app.get_webview_window("main") else {
-            continue;
-        };
-        let off = *drag.offset.lock().unwrap();
-        let locked = *drag.locked_y.lock().unwrap();
-        let bounds = *drag.model_bounds.lock().unwrap();
-        let scale = get_window_scale_factor(&app);
-        screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
     });
 }
 
@@ -3956,7 +3966,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "settings" => {} // 占位：之后再接设置面板
+            // 托盘「设置」：前端 boot 里 listen("open-settings") 会打开设置窗口
+            "settings" => {
+                let _ = app.emit("open-settings", ());
+            }
             "restart" => {
                 app.restart();
             }

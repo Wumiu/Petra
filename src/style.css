@@ -2451,3 +2451,118 @@ body.mg-active #stage canvas { pointer-events: none !important; }
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* ---------- 设置窗口（右键菜单精简后收纳全部功能） ---------- */
+.settings-window {
+  width: 320px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sw-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(90, 60, 110, 0.14);
+}
+.sw-title { font-weight: 700; font-size: 14px; color: #3a2a45; }
+.sw-close {
+  border: none; background: transparent; cursor: pointer;
+  color: #9a8a9a; font-size: 14px; line-height: 1; padding: 4px 7px;
+  border-radius: 8px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sw-close:hover { background: rgba(208, 106, 154, 0.16); color: #c93b6b; }
+.sw-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 8px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 100, 140, 0.3) transparent;
+}
+.sw-body::-webkit-scrollbar { width: 4px; }
+.sw-body::-webkit-scrollbar-track { background: transparent; }
+.sw-body::-webkit-scrollbar-thumb { background: rgba(120, 100, 140, 0.3); border-radius: 4px; }
+.sw-group { margin: 2px 0 8px; }
+.sw-group-title {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  color: #9a8a9a; margin: 4px 8px;
+}
+.sw-subgroup {
+  margin: 2px 0 4px 6px;
+  padding-left: 8px;
+  border-left: 1px dashed rgba(90, 60, 110, 0.16);
+}
+.sw-subgroup-title { font-size: 11.5px; color: #8a7a95; margin: 4px 8px 2px; }
+.sw-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 32px; padding: 5px 10px; border-radius: 10px;
+  font-size: 13px; color: #3a2a45; cursor: pointer;
+  transition: background 0.15s ease;
+}
+.sw-row:hover { background: rgba(214, 156, 190, 0.18); }
+.sw-row.is-child { min-height: 28px; font-size: 12.5px; }
+.sw-row.is-danger { color: #c93b6b; }
+.sw-row.is-danger:hover { background: rgba(201, 59, 107, 0.14); }
+.sw-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-state { flex: none; font-size: 12px; color: #8a7a8a; white-space: nowrap; }
+.sw-state.is-clickable { cursor: pointer; text-decoration: underline dotted; }
+.sw-state.is-clickable:hover { color: #c93b6b; }
+.sw-state.is-on { color: #2f8f6a; }
+.sw-state.is-off { color: #a294a6; }
+.sw-group + .sw-group { border-top: 1px solid rgba(90, 60, 110, 0.08); padding-top: 6px; }
+.sw-sep { height: 1px; margin: 4px 8px; background: rgba(90, 60, 110, 0.12); }
+
+/* ---------- 半拟态开关（设置窗口 + 右键菜单共用） ----------
+   轨道：内凹双层阴影 + 极浅渐变；旋钮：径向渐变 + 外投影，开时右移并染成主题粉。 */
+.sw-switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 21px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #e6dfeb 0%, #f8f6fa 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(60, 40, 80, 0.30),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.9),
+    0 1px 1px rgba(255, 255, 255, 0.65);
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+  cursor: pointer;
+}
+.sw-switch::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #ffffff 0%, #e6e0ec 62%, #cfc7d8 100%);
+  box-shadow: 0 1px 2px rgba(60, 40, 80, 0.35), 0 0 0 0.5px rgba(90, 60, 110, 0.12);
+  transition: transform 0.18s cubic-bezier(0.4, 1.5, 0.6, 1), background 0.18s ease;
+}
+.sw-switch.is-on {
+  background: linear-gradient(180deg, #f6b3cd 0%, #e2699a 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(150, 40, 85, 0.38),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.34),
+    0 0 9px rgba(226, 105, 154, 0.38);
+}
+.sw-switch.is-on::after {
+  background: radial-gradient(circle at 34% 28%, #ffffff 0%, #fff7fb 60%, #f2d7e3 100%);
+  transform: translateX(17px);
+}
+.sw-switch:hover { filter: brightness(1.03); }
+.sw-switch:active::after { transform: scale(0.92); }
+.sw-switch.is-on:active::after { transform: translateX(17px) scale(0.92); }
+/* 右键菜单里矮一点 */
+.sw-switch-sm { width: 34px; height: 19px; }
+.sw-switch-sm::after { width: 14px; height: 14px; }
+.sw-switch-sm.is-on::after { transform: translateX(15px); }
+.sw-switch-sm:active::after { transform: scale(0.92); }
+.sw-switch-sm.is-on:active::after { transform: translateX(15px) scale(0.92); }
