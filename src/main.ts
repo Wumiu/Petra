@@ -23,7 +23,8 @@ import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
 import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
-import { setupContextMenu } from "./ui/ContextMenu";
+import { setupContextMenu, type MenuItemSpec } from "./ui/ContextMenu";
+import { openSettingsPanel, closeSettingsPanel } from "./ui/SettingsPanel";
 import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "./features/diary/DiaryEventTracker";
 import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
@@ -1126,7 +1127,7 @@ async function boot() {
   setupReminder();
 
   setupContextMenu(
-    () => buildMenu(engine),
+    () => buildCompactMenu(engine),
     onMenuOpen,
     () => getWindowVisibleRect(),
     (x: number, y: number) => isInsideModel({ clientX: x, clientY: y }),
@@ -2112,7 +2113,7 @@ function nudgeLyricOffset(deltaMs: number): void {
   toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}（本首记住）`);
 }
 
-function buildMenu(engine: BehaviorEngine) {
+function buildMenu(engine: BehaviorEngine): MenuItemSpec[] {
   // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
   if (settings.idleMode) {
     return [
@@ -2566,6 +2567,35 @@ function buildMenu(engine: BehaviorEngine) {
   ];
 }
 
+/**
+ * 右键菜单精简版：只保留 交互 / 语音输出 / 今日抽卡 / 小游戏 / 小助手模式，
+ * 其余全部收纳进「设置」独立窗口（openSettingsPanel）。
+ * buildMenu(engine) 仍是唯一的全量菜单数据源——设置窗口与右键菜单共用同一份
+ * 项定义与 onPick 闭包，保证被转移的功能行为与原来完全一致。
+ */
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "daily-card", "minigames", "assistant"]);
+
+function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
+  const all = buildMenu(engine);
+  // 待机模式保持原样的迷你菜单（待机开关 + 提示），不受精简影响
+  if (settings.idleMode) return all;
+  const kept = all.filter((i) => COMPACT_MENU_KEEP.has(i.id));
+  return [
+    ...kept,
+    { id: "sep", separator: true },
+    {
+      id: "open-settings",
+      label: "⚙️ 设置",
+      onPick: () => openSettingsPanel(() => buildSettingsItems(engine), positionPanelNearModel),
+    },
+  ];
+}
+
+/** 设置窗口内容：全量菜单里除去右键菜单保留项后的全部功能 */
+function buildSettingsItems(engine: BehaviorEngine): MenuItemSpec[] {
+  return buildMenu(engine).filter((i) => !COMPACT_MENU_KEEP.has(i.id) && !i.separator);
+}
+
 async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
@@ -2576,8 +2606,9 @@ async function toggleIdle() {
     infoPanelEl?.classList.add("hidden");
     // 关闭所有面板类元素：模型面板/卡牌/日记/大小/边界/调节等
     document.querySelectorAll(".model-panel:not(.hidden)").forEach(el => el.classList.add("hidden"));
-    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置
+    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置/设置窗口
     document.getElementById("assistant-settings")?.classList.add("hidden");
+    closeSettingsPanel();
     document.getElementById("chat-history-panel")?.classList.add("hidden");
     document.getElementById("feedback-panel")?.classList.add("hidden");
     document.getElementById("action-debug")?.classList.add("hidden");
