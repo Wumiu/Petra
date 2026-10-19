@@ -1442,48 +1442,55 @@ async function boot() {
   }
 /** 显示更新公告弹窗 */
 function showAnnouncement(title: string, lines: string[], version: string) {
+  document.getElementById("announcement-panel")?.remove();
   const panel = document.createElement("div");
   panel.id = "announcement-panel";
-  panel.className = "model-panel";
-  panel.style.width = "300px";
+  // 固定头 + 可滚正文 + 固定按钮（见 style.css 的 .announcement-panel）
+  panel.className = "model-panel announcement-panel";
 
   const titleEl = document.createElement("div");
   titleEl.className = "mp-title";
   titleEl.textContent = title;
   panel.appendChild(titleEl);
 
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "announce-body";
   for (const line of lines) {
     if (!line) {
       const spacer = document.createElement("div");
       spacer.style.height = "6px";
-      panel.appendChild(spacer);
+      bodyEl.appendChild(spacer);
       continue;
     }
     const p = document.createElement("div");
     p.style.cssText = "font-size:12.5px;color:#5a4a65;line-height:1.7;padding:2px 0;";
     // 分节标题（【新增】/【优化】/【未来计划】/【作者的话】）加粗并上色，方便一眼扫过
-    if (/^【.+】$/.test(line)) {
+    if (/^【.+】/.test(line)) {
       p.style.cssText = "font-size:12.5px;font-weight:700;color:#b0658f;line-height:1.7;padding:4px 0 1px;";
     }
     p.textContent = line;
-    panel.appendChild(p);
+    bodyEl.appendChild(p);
   }
+  panel.appendChild(bodyEl);
 
   const btns = document.createElement("div");
-  btns.className = "as-set-btns";
-  btns.style.marginTop = "12px";
+  btns.className = "as-set-btns announce-actions";
   const okBtn = document.createElement("button");
   okBtn.className = "as-btn as-btn-primary";
   okBtn.textContent = "知道了";
   okBtn.addEventListener("click", () => {
     markAnnounced(version, lines);
     panel.remove();
+    requestInteractionRegionSync(true);
   });
   btns.appendChild(okBtn);
   panel.appendChild(btns);
 
   document.body.appendChild(panel);
-  positionPanelNearModel(panel);
+  // 不整块自滚：滚动交给 .announce-body，标题和按钮永远在原位。
+  // 尺寸按可见区钳制（窗口贴边/高 DPI 缩小屏时也不会顶出屏幕）。
+  keepDialogFullyVisible(panel, 8, { selfScroll: false });
+  requestInteractionRegionSync(true);
   // 对话记录面板打开后，让歌词/对话气泡贴到面板下方，不遮挡面板内容
   repositionLyricBubble();
   repositionAssistantBubbles();
@@ -2084,12 +2091,18 @@ async function toggleModelPanel() {
  * 这里做两件事：先按可见区给尺寸上限（可见区比弹窗还窄时让它缩，别硬撑出屏），
  * 再把左上角钳进可见区。调用前必须已经 append 到 body，否则量不到尺寸。
  */
-function keepDialogFullyVisible(dlg: HTMLElement, margin = 8): void {
+function keepDialogFullyVisible(
+  dlg: HTMLElement,
+  margin = 8,
+  opts: { selfScroll?: boolean } = {},
+): void {
   const vr = getWindowVisibleRect();
   const { maxWidth, maxHeight } = fitSizeInRect(vr, margin);
   dlg.style.maxWidth = `${Math.round(maxWidth)}px`;
   dlg.style.maxHeight = `${Math.round(maxHeight)}px`;
-  dlg.style.overflow = "auto";
+  // selfScroll=false 用于「固定头 + 可滚正文」的弹窗：滚动交给内部容器，
+  // 整块面板自己 overflow:hidden 才不会把标题/按钮一起滚走
+  if (opts.selfScroll !== false) dlg.style.overflow = "auto";
   const r = dlg.getBoundingClientRect(); // 量"缩小之后"的真实尺寸
   const pos = clampIntoRect(
     { left: r.left, top: r.top, width: r.width, height: r.height },

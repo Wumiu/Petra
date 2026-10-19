@@ -2566,3 +2566,38 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .sw-switch-sm.is-on::after { transform: translateX(15px); }
 .sw-switch-sm:active::after { transform: scale(0.92); }
 .sw-switch-sm.is-on:active::after { transform: translateX(15px) scale(0.92); }
+
+/* ---------- 更新公告弹窗：固定头 + 可滚正文 + 固定按钮 ----------
+   以前整块 .model-panel 没有 overflow，max-height 一压内容就溢出窗口：
+   用户既看不到「知道了」，溢出的按钮也不在交互区域里（点了没反应）。 */
+.announcement-panel {
+  width: 300px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.announcement-panel .mp-title {
+  flex: none;
+  padding: 10px 12px 8px;
+  margin: 0;
+}
+.announce-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 12px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 100, 140, 0.3) transparent;
+}
+.announce-body::-webkit-scrollbar { width: 4px; }
+.announce-body::-webkit-scrollbar-track { background: transparent; }
+.announce-body::-webkit-scrollbar-thumb { background: rgba(120, 100, 140, 0.3); border-radius: 4px; }
+.announce-actions {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid rgba(90, 60, 110, 0.12);
+  justify-content: flex-end;
+}
