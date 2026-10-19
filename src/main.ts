@@ -431,7 +431,20 @@ function positionFloatingUi(
     const minBottom = window.innerHeight - vr.bottom + 8;
     const maxBottom = window.innerHeight - vr.top - 8;
     const bottom = Math.max(minBottom, Math.min(window.innerHeight - mr.bottom - 10, maxBottom));
-    const cx = Math.max(vr.left + 4, Math.min(mr.left + mr.width / 2, vr.right - 4));
+    // 关键：先把 right 清成 auto，让容器宽度收敛成"最宽的那条提示"。
+    // 原来 CSS 是 left:0;right:0，JS 只改 left —— 容器宽度会变成 innerWidth-cx，
+    // 再叠加 translateX(-50%) 就整体跑偏：角色在右边时宽度只剩几十像素，
+    // 提示会溢到窗口外被裁掉（用户看到"弹窗没对着模型"就是这么来的）。
+    toasts.style.right = "auto";
+    const maxW = Math.max(80, vr.right - vr.left - 16);
+    toasts.style.maxWidth = `${Math.round(maxW)}px`;
+    const tw = Math.min(toasts.offsetWidth || 0, maxW);
+    const idealCx = mr.left + mr.width / 2;
+    const minCx = vr.left + tw / 2 + 4;
+    const maxCx = vr.right - tw / 2 - 4;
+    const cx = minCx <= maxCx
+      ? Math.max(minCx, Math.min(idealCx, maxCx))
+      : (vr.left + vr.right) / 2;
     toasts.style.left = `${Math.round(cx)}px`;
     toasts.style.bottom = `${Math.round(bottom)}px`;
     toasts.style.transform = "translateX(-50%)";
@@ -1451,6 +1464,13 @@ function showAnnouncement(title: string, lines: string[], version: string) {
   const titleEl = document.createElement("div");
   titleEl.className = "mp-title";
   titleEl.textContent = title;
+  // 标题栏右侧也放一个 ✕：万一「知道了」被什么挡住/点了没反应，还有第二条路
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "announce-close";
+  closeBtn.type = "button";
+  closeBtn.setAttribute("aria-label", "关闭");
+  closeBtn.textContent = "×";
+  titleEl.appendChild(closeBtn);
   panel.appendChild(titleEl);
 
   const bodyEl = document.createElement("div");
@@ -1478,11 +1498,6 @@ function showAnnouncement(title: string, lines: string[], version: string) {
   const okBtn = document.createElement("button");
   okBtn.className = "as-btn as-btn-primary";
   okBtn.textContent = "知道了";
-  okBtn.addEventListener("click", () => {
-    markAnnounced(version, lines);
-    panel.remove();
-    requestInteractionRegionSync(true);
-  });
   btns.appendChild(okBtn);
   panel.appendChild(btns);
 
@@ -1491,6 +1506,37 @@ function showAnnouncement(title: string, lines: string[], version: string) {
   // 尺寸按可见区钳制（窗口贴边/高 DPI 缩小屏时也不会顶出屏幕）。
   keepDialogFullyVisible(panel, 8, { selfScroll: false });
   requestInteractionRegionSync(true);
+
+  // ---- 模态期间强制可点 ----
+  // 点击能否落到窗口，取决于 Rust 侧的「交互区域命中」：光标进入面板后要等
+  // 看门狗把 WS_EX_TRANSPARENT 清掉，用户"移过去马上点"会被吃掉；区域同步
+  // 一抖（快照过期、DPI 换算、多屏）也会整窗穿透。公告是必须能关掉的模态，
+  // 所以这期间直接把 renderer_locked 顶住（和右键菜单打开时一个做法），
+  // 并每 400ms 重申一次 —— 其它路径（pointerup 释放 interacting）不会把它清掉。
+  const lockInput = () => { void invoke("set_interacting", { active: true }).catch(() => {}); };
+  lockInput();
+  const lockTimer = window.setInterval(lockInput, 400);
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    window.clearInterval(lockTimer);
+    window.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("keydown", onKey, true);
+    markAnnounced(version, lines);
+    panel.remove();
+    void invoke("set_interacting", { active: false }).catch(() => {});
+    requestInteractionRegionSync(true);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape" || e.key === "Enter") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  okBtn.addEventListener("click", close);
+  closeBtn.addEventListener("click", close);
   // 对话记录面板打开后，让歌词/对话气泡贴到面板下方，不遮挡面板内容
   repositionLyricBubble();
   repositionAssistantBubbles();
