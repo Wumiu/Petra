@@ -4706,6 +4706,50 @@ mod weather_tests {
 mod tests {
     use super::*;
 
+    /// 旧版存的是"一整串 Key"：必须能读出来（当成 __legacy），否则老用户升级后要重填。
+    #[test]
+    fn api_key_store_migrates_legacy_single_key() {
+        let map = api_key_store_parse("sk-legacy-123");
+        assert_eq!(api_key_store_lookup(&map, "deepseek").as_deref(), Some("sk-legacy-123"));
+        assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-legacy-123"));
+    }
+
+    /// 分供应商保存：互不覆盖，读各自的那一份。
+    #[test]
+    fn api_key_store_keeps_providers_separate() {
+        let mut map = ApiKeyStore::new();
+        api_key_store_apply(&mut map, "deepseek", "sk-ds");
+        api_key_store_apply(&mut map, "openai", "sk-oa");
+        assert_eq!(api_key_store_lookup(&map, "deepseek").as_deref(), Some("sk-ds"));
+        assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-oa"));
+        assert_eq!(api_key_store_lookup(&map, "qwen"), None);
+        // 序列化后能原样读回
+        let raw = api_key_store_serialize(&map).unwrap();
+        let back = api_key_store_parse(&raw);
+        assert_eq!(back, map);
+    }
+
+    /// 第一次保存某个供应商时，旧版单 Key 归到它名下，不再作为全局兜底泄漏给别家。
+    #[test]
+    fn api_key_store_absorbs_legacy_on_first_save() {
+        let mut map = api_key_store_parse("sk-legacy-123");
+        api_key_store_apply(&mut map, "openai", "sk-new");
+        assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-new"));
+        // legacy 已被吸收：别的供应商不会拿到它
+        assert_eq!(api_key_store_lookup(&map, "deepseek"), None);
+    }
+
+    /// 保存空串 = 清空该供应商的槽位，不影响其它供应商。
+    #[test]
+    fn api_key_store_clear_only_removes_one_slot() {
+        let mut map = ApiKeyStore::new();
+        api_key_store_apply(&mut map, "deepseek", "sk-ds");
+        api_key_store_apply(&mut map, "openai", "sk-oa");
+        api_key_store_apply(&mut map, "deepseek", "   ");
+        assert_eq!(api_key_store_lookup(&map, "deepseek"), None);
+        assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-oa"));
+    }
+
     /// sanitize_psd_name 必须剥离目录部分并强制 .psd 后缀（路径穿越第一道防线）。
     #[test]
     fn sanitize_strips_directory_and_dots() {
