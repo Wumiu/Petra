@@ -557,12 +557,50 @@ export class Rigged2DView implements PetView {
     const offsetX = (viewW - dw) / 2;
     const offsetY = (viewH - dh) / 2;
     const pad = this.boundsPad;
-    return {
-      left: offsetX + cb.left * s - pad.left,
-      top: offsetY + cb.top * s - pad.top,
-      right: offsetX + cb.right * s + pad.right,
-      bottom: offsetY + cb.bottom * s + pad.bottom,
-    };
+    const rawLeft = offsetX + cb.left * s;
+    const rawTop = offsetY + cb.top * s;
+    const rawRight = offsetX + cb.right * s;
+    const rawBottom = offsetY + cb.bottom * s;
+    let left = rawLeft - pad.left;
+    let top = rawTop - pad.top;
+    let right = rawRight + pad.right;
+    let bottom = rawBottom + pad.bottom;
+
+    /**
+     * 「调整模型边界」的滑条可以拉到很大的负值（左 + 右 = -240 就能超过角色显示宽度）。
+     * 那样 right < left，getModelRect() 返回非法矩形 → isInsideModel() 恒 false、
+     * 交互区域转换返回 null → **宠物彻底点不到**，右键菜单也打不开；而设置是持久化的，
+     * 用户只能从托盘换模型/重置才能恢复。
+     *
+     * 兜底策略：先保证有限；松紧把矩形搞退化（≤ MIN）时**回退到未加松紧的原始包围盒**，
+     * 而不是硬凑一个小方块 —— 用户把滑条拉到极端时，至少还能按角色本体点得到。
+     */
+    if (![left, top, right, bottom].every(Number.isFinite)) return null;
+    const MIN = 8;
+    if (right - left < MIN) {
+      left = rawLeft;
+      right = rawRight;
+    }
+    if (bottom - top < MIN) {
+      top = rawTop;
+      bottom = rawBottom;
+    }
+    // 原始包围盒也退化（空图层等）时，最后兜一个小方块
+    if (right - left < MIN) {
+      const c = (left + right) / 2;
+      left = c - MIN / 2;
+      right = c + MIN / 2;
+    }
+    if (bottom - top < MIN) {
+      const c = (top + bottom) / 2;
+      top = c - MIN / 2;
+      bottom = c + MIN / 2;
+    }
+    left = Math.max(0, Math.min(left, viewW - MIN));
+    top = Math.max(0, Math.min(top, viewH - MIN));
+    right = Math.max(left + MIN, Math.min(right, viewW));
+    bottom = Math.max(top + MIN, Math.min(bottom, viewH));
+    return { left, top, right, bottom };
   }
 
   private boundsPad = { left: 0, right: 0, top: 0, bottom: 0 };
