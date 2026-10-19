@@ -271,12 +271,21 @@ function ensureInput() {
   input.addEventListener("keydown", (e) => {
     // Enter 发送，Shift+Enter 换行（多行框的常规约定）
     if (e.key === "Enter" && !e.shiftKey) {
+      // 输入法组合中的 Enter 是"选词"，不是发送：以前这里只判断 key，
+      // 中文/日文输入法一按回车就把还没 commit 的拼音发出去，候选框也被 preventDefault 吞掉。
+      if (e.isComposing || (e as KeyboardEvent & { keyCode?: number }).keyCode === 229) return;
       e.preventDefault();
       const t = input.value.trim();
-      if (t) {
-        setInputValue("");
-        void send(t);
+      if (!t) return;
+      // busy 时 send() 会直接 return；先清空输入框就等于把这句话丢了。
+      // 和语音路径保持一致：留在输入框里并提示，别让用户以为发出去了。
+      if (busy) {
+        setInputValue(t);
+        toast("上一句还没答完，这句先放进输入框了", "warn");
+        return;
       }
+      setInputValue("");
+      void send(t);
     }
   });
   const btn = document.createElement("button");
@@ -284,10 +293,14 @@ function ensureInput() {
   btn.textContent = "发送";
   btn.addEventListener("click", () => {
     const t = input.value.trim();
-    if (t) {
-      setInputValue("");
-      void send(t);
+    if (!t) return;
+    if (busy) {
+      setInputValue(t);
+      toast("上一句还没答完，这句先放进输入框了", "warn");
+      return;
     }
+    setInputValue("");
+    void send(t);
   });
 
   // 语音输入按钮：点一下开始听，边说边出字，说完停顿自动发送；正在听时再点一下取消。
@@ -651,6 +664,7 @@ async function confirmFileWrite(action: string): Promise<boolean> {
     bubbles!.appendChild(row);
     positionBubbles();
     const finish = (ok: boolean) => {
+      pendingConfirms.delete(finish);
       if (ok && cb.checked) {
         const s = loadSettings();
         s.allowAllFileWrite = true;
@@ -660,6 +674,7 @@ async function confirmFileWrite(action: string): Promise<boolean> {
       positionBubbles();
       resolve(ok);
     };
+    pendingConfirms.add(finish);
     yes.addEventListener("click", () => finish(true));
     no.addEventListener("click", () => finish(false));
   });
@@ -858,8 +873,27 @@ export function closeAssistant() {
   lifecycleOnClose?.();
 }
 
+/**
+ * 未决的「允许 / 拒绝」确认。
+ *
+ * 工具确认是 `await new Promise(...)`，只有点了按钮才 resolve。而进入待机、开小游戏、
+ * 关小助手、清空历史都会走 clearBubbles() 把整个气泡区 innerHTML="" —— 确认气泡被
+ * 连带删掉后 Promise 永远不会 resolve，`handleToolCalls → send` 的 finally 不执行，
+ * busy 永久为 true，之后每条消息都被静默丢弃，只能重启。
+ *
+ * 所以确认气泡都登记到这里，清空气泡区时统一按「拒绝」结清。
+ */
+const pendingConfirms = new Set<(ok: boolean) => void>();
+
+function cancelPendingConfirms() {
+  if (!pendingConfirms.size) return;
+  for (const settle of Array.from(pendingConfirms)) settle(false);
+  pendingConfirms.clear();
+}
+
 /** 清空左上角气泡区（关闭小助手模式时用） */
 export function clearBubbles() {
+  cancelPendingConfirms();
   if (bubbles) bubbles.innerHTML = "";
 }
 
@@ -1370,14 +1404,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
             no.textContent = "拒绝";
             row.append(label, yes, no);
             bubbles!.appendChild(row);
-            yes.addEventListener("click", () => {
+            // 登记到 pendingConfirms：气泡区被 clearBubbles() 清空时按「拒绝」结清，
+            // 否则这个 Promise 永远挂着、busy 永久 true（详见 pendingConfirms 注释）
+            const settle = (ok: boolean) => {
+              pendingConfirms.delete(settle);
               row.remove();
-              resolve(true);
-            });
-            no.addEventListener("click", () => {
-              row.remove();
-              resolve(false);
-            });
+              resolve(ok);
+            };
+            pendingConfirms.add(settle);
+            yes.addEventListener("click", () => settle(true));
+            no.addEventListener("click", () => settle(false));
           });
       let result: string;
       if (!doRun) {

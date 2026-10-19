@@ -454,6 +454,15 @@ const TOOLS = [
 const MAX_MEMORY_IN_PROMPT = 20;
 
 /**
+ * 流式响应两次数据之间的最长等待（毫秒）。
+ *
+ * 断网、代理挂住、服务端发完 [DONE] 却不关连接时，`reader.read()` 会**永远不返回**：
+ * send() 的 finally 不执行 → busy 永久 true → 之后每条消息都被静默丢弃，只能重启。
+ * 60 秒足够覆盖首 token 慢的思考模型，又不会让用户无限期地以为"正在生成"。
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
+
+/**
  * 版本与更新日志注入：让 AI 知道自己当前版本号和最近更新了什么。
  * 取 CHANGELOG 第一个 ## 段（Unreleased 或最新版）的 bullet，截断到合理长度，
  * 避免把整份更新历史塞进 system prompt 烧 token。
@@ -615,9 +624,37 @@ export async function chatStream(
   const toolCalls: { id: string; name: string; args: string }[] = [];
   // 服务端真实 usage（最后一个 chunk 返回，需 include_usage）
   let serverUsage: { input: number; output: number; cached: number } | null = null;
+  // 没有任何新数据超过这个时间就认为连接已死：断网/代理挂住/服务端发完 [DONE] 却不关连接
+  // 都会让 reader.read() 永远不返回，send() 的 finally 不执行 → busy 永久 true，
+  // 之后每条消息都被静默丢弃，只能重启。这里给每次 read 套一个空闲超时。
+  const idleTimeoutMs = requestOptions.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  let sawDone = false;
 
   for (;;) {
-    const { done, value } = await reader.read();
+    if (requestOptions.signal?.aborted) {
+      void reader.cancel().catch(() => {});
+      throw new Error("已取消");
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let chunk: { done: boolean; value?: Uint8Array };
+    try {
+      chunk = await Promise.race([
+        reader.read() as Promise<{ done: boolean; value?: Uint8Array }>,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`响应超时：${Math.round(idleTimeoutMs / 1000)} 秒没有收到新数据（网络或服务端卡住了）`)),
+            idleTimeoutMs,
+          );
+        }),
+      ]);
+    } catch (err) {
+      // 超时/中止后必须把底层流关掉，否则悬挂的 read 会一直占着连接
+      void reader.cancel().catch(() => {});
+      throw err;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    const { done, value } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
@@ -626,7 +663,12 @@ export async function chatStream(
       const line = raw.trim();
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
-      if (data === "[DONE]") continue;
+      if (data === "[DONE]") {
+        // 收到 [DONE] 就主动结束：有的端点在 [DONE] 之后保持连接不关，
+        // 继续 read 会一直挂到超时。
+        sawDone = true;
+        break;
+      }
       try {
         const json = JSON.parse(data);
         const delta = json.choices?.[0]?.delta;
@@ -660,6 +702,11 @@ export async function chatStream(
       } catch {
         /* 忽略不完整 JSON */
       }
+    }
+    if (sawDone) {
+      // [DONE] 之后连接可能还挂着，主动取消读取，别让下一次 read 干等
+      void reader.cancel().catch(() => {});
+      break;
     }
   }
 
@@ -870,6 +917,8 @@ export interface ChatUsage {
 export interface ChatRequestOptions {
   signal?: AbortSignal;
   maxOutputTokens?: number;
+  /** 两次流式数据之间允许的最长间隔（毫秒），默认 60s；超时会中断本次请求并抛错 */
+  idleTimeoutMs?: number;
   onUsage?: (usage: ChatUsage) => void;
   /**
    * 本轮随消息附带的屏幕截图（data URL，形如 `data:image/png;base64,...`）。
