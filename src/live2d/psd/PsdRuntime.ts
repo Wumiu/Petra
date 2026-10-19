@@ -431,6 +431,9 @@ export class PsdRuntime {
   /** 每帧调用。overrides 为外部驱动（音乐/鼠标/点击）目标值 */
   update(dt: number, overrides?: Partial<RigParams>) {
     const gl = this.gl!;
+    // 上下文丢失后所有 GL 调用都是无声 no-op：继续跑物理没有意义，
+    // 而且会给"模型怎么消失了"增加排查噪音。恢复由 main.ts 重建视图负责。
+    if (gl.isContextLost()) return;
     if (!this.layers.length || !this.A) return;
     const now = performance.now() / 1000;
     const t = now;
@@ -846,5 +849,12 @@ export class PsdRuntime {
       gl.deleteBuffer(L.ibo);
     }
     this.layers = [];
+    // 主动让驱动回收 WebGL 上下文：反复换模型时只删纹理不释放上下文，
+    // 浏览器的上下文配额（通常十几个）会被占满，之后新建的模型直接黑屏/不显示。
+    try {
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch {
+      /* 扩展不可用就算了 */
+    }
   }
 }

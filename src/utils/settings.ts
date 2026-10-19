@@ -65,6 +65,14 @@ export interface Settings {
   weatherCity: string;
   /** 天气气泡：点桌宠时弹出的信息面板（天气/待办/陪伴时间）；关掉后一律不弹 */
   weatherBubble: boolean;
+  /**
+   * 每个模型单独记录的角色边界松紧（key = 模型名）。
+   *
+   * 边界松紧本质上是「这个 PSD 的透明留白有多大」，换模型就该换一套；
+   * 以前是全局单值，在模型 A 上拖过滑条再切到 B，B 的绿框/点击区/气泡位置就全偏了。
+   */
+  boundsPaddings: Record<string, BoundsPadding>;
+  /** 旧版的全局边界松紧：只用于首次迁移，新代码请用 boundsPaddings */
   boundsPadding: BoundsPadding;
   passthrough: boolean;
   /** 免确认 shell（持久化，重启后保持） */
@@ -134,6 +142,7 @@ const DEFAULTS: Settings = {
   modelScales: {},
   weatherCity: "",
   weatherBubble: true,
+  boundsPaddings: {},
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
   allowAllShell: false,

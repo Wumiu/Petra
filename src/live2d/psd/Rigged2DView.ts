@@ -144,6 +144,13 @@ export class Rigged2DView implements PetView {
   static async create(bytes: Uint8Array): Promise<Rigged2DView> {
     const canvas = document.createElement("canvas");
     canvas.id = "rig-canvas";
+    // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）后这个画布就再也画不出东西，
+    // 表现为「模型整块消失、UI 还在」，而代码里没有任何恢复路径。
+    // 这里 preventDefault 让浏览器允许恢复，并通知 main.ts 自动重建一次视图。
+    canvas.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      document.dispatchEvent(new CustomEvent("petra:webgl-lost"));
+    });
     const runtime = new PsdRuntime(canvas);
     await runtime.load(bytes);
     const view = new Rigged2DView(canvas, runtime);

@@ -927,6 +927,24 @@ fn spawn_drag_follower(app: AppHandle) {
                 scale_tick = 0; // 下次开始拖拽时立刻取一次
                 continue;
             }
+            // 物理鼠标键自愈：active 只由前端的 pointerup/cancel/blur 清掉，
+            // 一旦松手事件被吞（窗口跟着光标走，前端的"光标出窗"看门狗又不会触发），
+            // 桌宠会一直跟着鼠标跑。这里每 8ms 校验一次左键，松开就自行结束拖拽。
+            #[cfg(windows)]
+            {
+                let down = unsafe {
+                    windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(
+                        windows::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON.0 as i32,
+                    )
+                } as u16
+                    & 0x8000
+                    != 0;
+                if !down {
+                    drag.active.store(false, Ordering::SeqCst);
+                    scale_tick = 0;
+                    continue;
+                }
+            }
             let Some(win) = app.get_webview_window("main") else {
                 continue;
             };

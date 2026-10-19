@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 // 启动错误捕获：崩溃时直接显示在屏幕上
@@ -421,11 +421,23 @@ function getWindowVisibleRect(): { left: number; top: number; right: number; bot
   const wx = engine.windowScreenPos.x;
   const wy = engine.windowScreenPos.y;
   if (!a) return { left: 0, top: 0, right: winSize, bottom: winSize };
+  const left = Math.max(0, a.left - wx);
+  const top = Math.max(0, a.top - wy);
+  const right = Math.min(winSize, a.left + a.width - wx);
+  const bottom = Math.min(winSize, a.top + a.height - wy);
+  /**
+   * 桌宠贴边/待机出屏时，交集可能退化甚至反向（right < left）。
+   * 以前直接把这个区间交给调用方：`maxW = max(60, right-left-40)` 于是被抬到 60，
+   * 面板被压成一条细线；菜单的 `left = x - w - 12` 也可能算出负坐标直接飞出屏幕。
+   * 这里保证区间至少 MIN_SPAN 宽高；真的退化到看不见时退回整个窗口，
+   * 让面板出现在窗口内（部分可见），而不是被摆到屏幕外完全看不见。
+   */
+  const MIN_SPAN = 160;
   return {
-    left: Math.max(0, a.left - wx),
-    top: Math.max(0, a.top - wy),
-    right: Math.min(winSize, a.left + a.width - wx),
-    bottom: Math.min(winSize, a.top + a.height - wy),
+    left: right - left >= MIN_SPAN ? left : 0,
+    top: bottom - top >= MIN_SPAN ? top : 0,
+    right: right - left >= MIN_SPAN ? right : winSize,
+    bottom: bottom - top >= MIN_SPAN ? bottom : winSize,
   };
 }
 
@@ -547,9 +559,10 @@ function positionPanelNearModel(
   panel.style.position = "fixed"; // 确保 fixed 定位
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
-  // 可见区尺寸下限保护（贴边/几乎出屏时不出现负值或 0）
-  const maxW = Math.max(60, vr.right - vr.left - 40);
-  const maxH = Math.max(60, vr.bottom - vr.top - 40);
+  // 可见区尺寸下限保护：60px 时代面板会被压成一条细线（看不清也点不准），
+  // 抬到 200 宽 / 140 高的可用下限；getWindowVisibleRect 已保证区间本身不退化成负值。
+  const maxW = Math.max(200, vr.right - vr.left - 40);
+  const maxH = Math.max(140, vr.bottom - vr.top - 40);
   // 先让面板按自身内容撑开
   panel.style.maxWidth = `${maxW}px`;
   panel.style.maxHeight = `${maxH}px`;
@@ -693,11 +706,32 @@ function positionAboveModel(el: HTMLElement) {
   el.style.transform = "translateX(-50%)";
 }
 
-/** 换模型后重置边界到默认（view 可能还没初始化，安全检查） */
-function resetBoundsOnModelSwitch() {
-  settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
+const ZERO_PADDING = { left: 0, right: 0, top: 0, bottom: 0 };
+
+/** 边界松紧按模型存：key 与 modelScales / modelParams 一致，用模型名 */
+function paddingKey(): string {
+  return currentModel.name ?? "default";
+}
+
+/** 当前模型的边界松紧（没有记录就退到旧版全局值，再退默认 0） */
+function currentBoundsPadding() {
+  return settings.boundsPaddings[paddingKey()] ?? settings.boundsPadding ?? { ...ZERO_PADDING };
+}
+
+/** 写入当前模型的边界松紧并立刻应用到渲染层 */
+function setCurrentBoundsPadding(p: { left: number; right: number; top: number; bottom: number }) {
+  settings.boundsPaddings[paddingKey()] = p;
   saveSettings(settings);
-  if (view) (view as any).setBoundsPadding?.(settings.boundsPadding);
+  (view as any)?.setBoundsPadding?.(p);
+}
+
+/** 换模型后重置当前模型的边界到默认（view 可能还没初始化，安全检查） */
+function resetBoundsOnModelSwitch() {
+  // 清掉的是"当前这个模型"的记录：以前清的是全局单值，在模型 A 上调好的偏移会被
+  // 带到模型 B 上（绿框/点击区/气泡全偏），而换回 A 时又已经丢了。
+  delete settings.boundsPaddings[paddingKey()];
+  saveSettings(settings);
+  if (view) (view as any).setBoundsPadding?.({ ...ZERO_PADDING });
 }
 
 async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
@@ -790,7 +824,7 @@ async function importPsdFromPath(path: string) {
 async function mountView() {
   view = await createView();
   view.setSwayEnabled(settings.audioEnabled);
-  (view as any).setBoundsPadding?.(settings.boundsPadding);
+  (view as any).setBoundsPadding?.(currentBoundsPadding());
   attachView(view);
   // 恢复模型调节参数
   if (view instanceof Rigged2DView) {
@@ -806,7 +840,23 @@ async function mountView() {
   }
 }
 
-async function reloadView() {
+/**
+ * 重新加载模型（换模型 / 拖入新 PSD / WebGL 上下文丢失后重建）。
+ *
+ * **必须串行**：以前 unmount 之后立刻 await mountView，两次调用交错时两边都会 attach
+ * 一个新 canvas —— 后完成的覆盖 view，先完成的那个 canvas 永久留在 #stage 且不再更新
+ * （残影/双模型），旧 WebGL 上下文也一直不释放。这里用一条 Promise 链排队。
+ */
+let viewReloadChain: Promise<void> = Promise.resolve();
+
+function reloadView(): Promise<void> {
+  const run = () => doReloadView();
+  const next = viewReloadChain.then(run, run);
+  viewReloadChain = next.catch(() => {});
+  return next;
+}
+
+async function doReloadView() {
   view.unmount();
   await mountView();
   // 切换模型：恢复该模型自己的大小（无记录用默认 100%）
@@ -814,6 +864,13 @@ async function reloadView() {
   const scale = settings.modelScales[key] ?? 1;
   void applyModelScale(scale, false);
 }
+
+// WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）时模型会整块消失但 UI 还在，
+// 且没有任何自愈路径 —— 只能换模型或重启。这里自动重建一次。
+document.addEventListener("petra:webgl-lost", () => {
+  toast("显示上下文丢失了，正在重新加载模型…", "warn");
+  void reloadView().catch(() => toast("模型重新加载失败，可在菜单里换一个模型", "warn"));
+});
 
 // ---------- 小助手全局呼出快捷键 ----------
 /** 前端监听 Rust 发出的全局快捷键事件名 */
@@ -1093,6 +1150,13 @@ async function boot() {
   let pos = await currentLogicalPos(win);
   if (savedPos) {
     pos = savedPos;
+    // 保存的位置可能属于已拔出/改过布局的显示器：不做校验的话窗口会落在屏幕外，
+    // 表现是"托盘有图标、任务管理器里有进程，但屏幕上根本看不到桌宠"（只能删配置恢复）。
+    const onScreen = await isWindowPosOnScreen(savedPos);
+    if (!onScreen) {
+      pos = await centerOfPrimaryMonitor();
+      toast("上次的位置在已断开的显示器上，已把桌宠放回主屏中间", "info");
+    }
     void win.setPosition(new LogicalPosition(pos.x, pos.y));
   }
 
@@ -1677,6 +1741,56 @@ async function currentLogicalPos(win: Awaited<ReturnType<typeof getCurrentWindow
     const p = await win.outerPosition();
     // outerPosition 返回物理像素 → 转逻辑（引擎内部全逻辑坐标）
     return { x: p.x / scale, y: p.y / scale };
+  } catch {
+    return { x: 100, y: 100 };
+  }
+}
+
+/** 至少要有这么多逻辑像素同时落在某块屏上，才算"看得见" */
+const MIN_VISIBLE_SPAN = 120;
+
+function monitorLogicalRect(m: { position: { x: number; y: number }; size: { width: number; height: number }; scaleFactor: number }) {
+  const s = m.scaleFactor || 1;
+  return {
+    left: m.position.x / s,
+    top: m.position.y / s,
+    width: m.size.width / s,
+    height: m.size.height / s,
+  };
+}
+
+/**
+ * 这个窗口位置还看得见吗？
+ *
+ * 恢复上次保存的位置时用。显示器被拔掉、分辨率/缩放改了、或者笔记本从扩展屏拔下来，
+ * 保存的坐标就可能完全在金外 —— 窗口照常创建、托盘图标也在，但用户什么都看不到。
+ * 混合 DPI 下 monitor.position/size 是物理像素，按各自 scaleFactor 换成逻辑再比。
+ */
+async function isWindowPosOnScreen(p: { x: number; y: number }): Promise<boolean> {
+  try {
+    const monitors = await availableMonitors();
+    if (!monitors.length) return true; // 拿不到信息时不要误判
+    return monitors.some((m) => {
+      const r = monitorLogicalRect(m);
+      const overlapX = Math.min(p.x + WIN, r.left + r.width) - Math.max(p.x, r.left);
+      const overlapY = Math.min(p.y + WIN, r.top + r.height) - Math.max(p.y, r.top);
+      return overlapX >= MIN_VISIBLE_SPAN && overlapY >= MIN_VISIBLE_SPAN;
+    });
+  } catch {
+    return true;
+  }
+}
+
+/** 主屏工作区正中（拿不到信息时退回屏幕坐标 100,100） */
+async function centerOfPrimaryMonitor(): Promise<{ x: number; y: number }> {
+  try {
+    const m = (await primaryMonitor()) ?? (await availableMonitors())[0];
+    if (!m) return { x: 100, y: 100 };
+    const r = monitorLogicalRect(m);
+    return {
+      x: Math.round(r.left + (r.width - WIN) / 2),
+      y: Math.round(r.top + (r.height - WIN) / 2),
+    };
   } catch {
     return { x: 100, y: 100 };
   }
@@ -3480,7 +3594,7 @@ function toggleBoundsPanel() {
       slider.min = "-120";
       slider.max = "120";
       slider.step = "1";
-      slider.value = String(settings.boundsPadding[key]);
+      slider.value = String(currentBoundsPadding()[key]);
       slider.className = "as-input";
       slider.style.flex = "1";
       slider.style.minWidth = "0";
@@ -3488,13 +3602,13 @@ function toggleBoundsPanel() {
       val.className = "as-set-label";
       val.style.minWidth = "38px";
       val.style.textAlign = "right";
-      val.textContent = settings.boundsPadding[key] + "px";
+      val.textContent = currentBoundsPadding()[key] + "px";
       slider.addEventListener("input", () => {
         const v = parseInt(slider.value, 10);
-        settings.boundsPadding[key] = v;
+        // 按模型存：以前写全局 settings.boundsPadding，模型 A 调好的偏移会带到模型 B 上
+        const pad = { ...currentBoundsPadding(), [key]: v };
         val.textContent = v + "px";
-        saveSettings(settings);
-        (view as any).setBoundsPadding?.(settings.boundsPadding);
+        setCurrentBoundsPadding(pad);
       });
       row.append(l, slider, val);
       host.appendChild(row);
@@ -3510,9 +3624,7 @@ function toggleBoundsPanel() {
     reset.className = "as-btn";
     reset.textContent = "重置";
     reset.addEventListener("click", () => {
-      settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
-      saveSettings(settings);
-      (view as any).setBoundsPadding?.(settings.boundsPadding);
+      setCurrentBoundsPadding({ ...ZERO_PADDING });
       closeBoundsPanel();
     });
     const done = document.createElement("button");

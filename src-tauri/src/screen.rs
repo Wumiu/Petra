@@ -275,14 +275,33 @@ pub fn drag_follow(
             let _ = GetWindowRect(hwnd, &mut rect);
             let cw = rect.right - rect.left;
             let ch = rect.bottom - rect.top;
-            let area = work_area_at(nx + cw / 2, ny + ch / 2);
-            if nx + bl < area.left { nx = area.left - bl; }
-            if nx + br > area.left + area.width { nx = area.left + area.width - br; }
-            // y 仅在自由拖拽（locked_y=None）时夹紧；待机滑动 y 由 locked_y 固定，
-            // 否则夹紧会把窗口从贴边待机位置拽出来（"一拽就出来了一点"）
-            if locked_y.is_none() {
-                if ny + bt < area.top - 60 { ny = area.top - 60 - bt; }
-                if ny + bb > area.top + area.height { ny = area.top + area.height - bb; }
+            let center = work_area_at(nx + cw / 2, ny + ch / 2);
+            // 跨显示器拖动时不要夹紧：窗口中心一跨过边界，work_area_at 会立刻切到新屏，
+            // 于是 nx 被设成「新屏左边缘 - 模型左边」，窗口瞬移大半个模型宽度。
+            // 只要窗口四角不完全落在同一个工作区里，就说明正在跨屏/压边界，直接放行。
+            let tl = work_area_at(nx, ny);
+            let br_area = work_area_at(nx + cw - 1, ny + ch - 1);
+            let straddling = tl.left != center.left
+                || tl.top != center.top
+                || br_area.left != center.left
+                || br_area.top != center.top;
+            if !straddling {
+                if nx + bl < center.left {
+                    nx = center.left - bl;
+                }
+                if nx + br > center.left + center.width {
+                    nx = center.left + center.width - br;
+                }
+                // y 仅在自由拖拽（locked_y=None）时夹紧；待机滑动 y 由 locked_y 固定，
+                // 否则夹紧会把窗口从贴边待机位置拽出来（"一拽就出来了一点"）
+                if locked_y.is_none() {
+                    if ny + bt < center.top - 60 {
+                        ny = center.top - 60 - bt;
+                    }
+                    if ny + bb > center.top + center.height {
+                        ny = center.top + center.height - bb;
+                    }
+                }
             }
         }
         let _ = SetWindowPos(
