@@ -1345,22 +1345,86 @@ fn get_asr_key(app: AppHandle) -> Result<String, String> {
     Ok(read_stored_asr_key(&app))
 }
 
-/// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
-#[cfg(windows)]
-#[tauri::command]
-fn set_api_key(app: AppHandle, api_key: String) -> Result<(), String> {
-    let enc = dpapi_protect(api_key.as_bytes())?;
-    std::fs::write(api_key_path(&app)?, enc).map_err(|e| e.to_string())
+/// 按供应商分槽的 API Key 存储：`{"deepseek":"sk-...","openai":"sk-..."}`。
+type ApiKeyStore = std::collections::BTreeMap<String, String>;
+
+/// 解析存储内容。
+///
+/// 旧版本只存"一整串 Key"（不是 JSON）。升级时把它当成 `__legacy`，用户不需要重新填写；
+/// 之后任意一次保存都会把它归入当时选中的供应商（一份 Key 只可能属于一个）。
+fn api_key_store_parse(raw: &str) -> ApiKeyStore {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return ApiKeyStore::new();
+    }
+    if let Ok(map) = serde_json::from_str::<ApiKeyStore>(raw) {
+        return map;
+    }
+    let mut map = ApiKeyStore::new();
+    map.insert("__legacy".to_string(), raw.to_string());
+    map
 }
 
-/// 读取 API Key（DPAPI 解密）。
+fn api_key_store_serialize(map: &ApiKeyStore) -> Result<String, String> {
+    serde_json::to_string(map).map_err(|e| e.to_string())
+}
+
+fn api_key_store_apply(map: &mut ApiKeyStore, scope: &str, api_key: &str) {
+    let scope = if scope.trim().is_empty() { "default" } else { scope.trim() };
+    let key = api_key.trim();
+    if key.is_empty() {
+        map.remove(scope);
+        return;
+    }
+    map.remove("__legacy");
+    map.insert(scope.to_string(), key.to_string());
+}
+
+fn api_key_store_lookup(map: &ApiKeyStore, scope: &str) -> Option<String> {
+    map.get(scope.trim())
+        .or_else(|| map.get("__legacy"))
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
+/// 存储 API Key（DPAPI 加密到应用数据目录，不明文存 localStorage）。
+///
+/// `scope` = 供应商 id（deepseek / openai / custom …）。以前只有一份全局 Key，
+/// 切换供应商后旧 Key 会被直接发给新厂商（401，且 Key 泄露给别家）。
 #[cfg(windows)]
 #[tauri::command]
-fn get_api_key(app: AppHandle) -> Result<String, String> {
-    let path = api_key_path(&app)?;
-    let enc = std::fs::read(&path).map_err(|_| "未设置 API Key".to_string())?;
-    let dec = dpapi_unprotect(&enc)?;
-    String::from_utf8(dec).map_err(|e| e.to_string())
+fn set_api_key(app: AppHandle, scope: String, api_key: String) -> Result<(), String> {
+    let mut map = api_key_store_parse(&read_api_key_store(&app));
+    api_key_store_apply(&mut map, &scope, &api_key);
+    write_api_key_store(&app, &api_key_store_serialize(&map)?)
+}
+
+/// 读取 API Key（DPAPI 解密）。没有该供应商的槽位时回退旧版单 Key。
+#[cfg(windows)]
+#[tauri::command]
+fn get_api_key(app: AppHandle, scope: String) -> Result<String, String> {
+    api_key_store_lookup(&api_key_store_parse(&read_api_key_store(&app)), &scope)
+        .ok_or_else(|| "未设置 API Key".to_string())
+}
+
+#[cfg(windows)]
+fn read_api_key_store(app: &AppHandle) -> String {
+    let Ok(path) = api_key_path(app) else {
+        return String::new();
+    };
+    let Ok(enc) = std::fs::read(&path) else {
+        return String::new();
+    };
+    dpapi_unprotect(&enc)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn write_api_key_store(app: &AppHandle, raw: &str) -> Result<(), String> {
+    let enc = dpapi_protect(raw.as_bytes())?;
+    std::fs::write(api_key_path(app)?, enc).map_err(|e| e.to_string())
 }
 
 /// macOS 上 API Key 存 Keychain（通用密码项），不落盘、也不写 localStorage。
@@ -1501,7 +1565,42 @@ fn get_asr_key(app: AppHandle) -> Result<String, String> {
 /// 全程不把 key 写进日志。
 #[cfg(target_os = "macos")]
 #[tauri::command]
-fn set_api_key(api_key: String) -> Result<(), String> {
+fn set_api_key(scope: String, api_key: String) -> Result<(), String> {
+    let mut map = api_key_store_parse(&read_api_key_store());
+    api_key_store_apply(&mut map, &scope, &api_key);
+    write_api_key_store(&api_key_store_serialize(&map)?)
+}
+
+/// 从 Keychain 读取 API Key（-w 只输出密码本身，不带其它字段）。
+///
+/// 存的内容是"供应商 → Key"的 JSON；旧版本存的是裸 Key，由 api_key_store_parse 兼容。
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn get_api_key(scope: String) -> Result<String, String> {
+    api_key_store_lookup(&api_key_store_parse(&read_api_key_store()), &scope)
+        .ok_or_else(|| "未设置 API Key".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn read_api_key_store() -> String {
+    let out = hidden_command("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-a",
+            KEYCHAIN_ACCOUNT,
+            "-s",
+            KEYCHAIN_SERVICE,
+            "-w",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_api_key_store(raw: &str) -> Result<(), String> {
     let status = hidden_command("/usr/bin/security")
         .args([
             "add-generic-password",
@@ -1511,7 +1610,7 @@ fn set_api_key(api_key: String) -> Result<(), String> {
             "-s",
             KEYCHAIN_SERVICE,
             "-w",
-            api_key.as_str(),
+            raw,
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -1524,27 +1623,6 @@ fn set_api_key(api_key: String) -> Result<(), String> {
     } else {
         Err(format!("写入钥匙串失败（security 退出码 {status}）"))
     }
-}
-
-/// 从 Keychain 读取 API Key（-w 只输出密码本身，不带其它字段）。
-#[cfg(target_os = "macos")]
-#[tauri::command]
-fn get_api_key() -> Result<String, String> {
-    let out = hidden_command("/usr/bin/security")
-        .args([
-            "find-generic-password",
-            "-a",
-            KEYCHAIN_ACCOUNT,
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-w",
-        ])
-        .output()
-        .map_err(|e| format!("读取钥匙串失败: {e}"))?;
-    if !out.status.success() {
-        return Err("未设置 API Key".to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Linux 上 API Key 的两条存储路径：
@@ -1722,8 +1800,34 @@ fn get_asr_key(app: AppHandle) -> Result<String, String> {
 /// 存储 API Key（Linux）：优先 Secret Service，失败落 600 权限文件。
 #[cfg(target_os = "linux")]
 #[tauri::command]
-fn set_api_key(api_key: String) -> Result<(), String> {
-    if secret_tool_store(&api_key) {
+fn set_api_key(scope: String, api_key: String) -> Result<(), String> {
+    let mut map = api_key_store_parse(&read_api_key_store());
+    api_key_store_apply(&mut map, &scope, &api_key);
+    write_api_key_store(&api_key_store_serialize(&map)?)
+}
+
+/// 读取 API Key（Linux）：先 Secret Service，再降级文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn get_api_key(scope: String) -> Result<String, String> {
+    api_key_store_lookup(&api_key_store_parse(&read_api_key_store()), &scope)
+        .ok_or_else(|| "未设置 API Key".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn read_api_key_store() -> String {
+    if let Some(v) = secret_tool_lookup() {
+        return v;
+    }
+    let Ok(path) = linux_api_key_file() else {
+        return String::new();
+    };
+    std::fs::read_to_string(&path).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn write_api_key_store(raw: &str) -> Result<(), String> {
+    if secret_tool_store(raw) {
         // 成功写进 keyring 时顺手清掉旧的降级文件，避免留下两个不一致的副本
         if let Ok(path) = linux_api_key_file() {
             let _ = std::fs::remove_file(&path);
@@ -1731,25 +1835,9 @@ fn set_api_key(api_key: String) -> Result<(), String> {
         log_line("set_api_key: 已写入 Secret Service");
         return Ok(());
     }
-    write_private_file(&linux_api_key_file()?, &api_key)?;
+    write_private_file(&linux_api_key_file()?, raw)?;
     log_line("set_api_key: Secret Service 不可用，已写入 ~/.config/petra/api_key（权限 600）");
     Ok(())
-}
-
-/// 读取 API Key（Linux）：先 Secret Service，再降级文件。
-#[cfg(target_os = "linux")]
-#[tauri::command]
-fn get_api_key() -> Result<String, String> {
-    if let Some(v) = secret_tool_lookup() {
-        return Ok(v);
-    }
-    let path = linux_api_key_file()?;
-    let v = std::fs::read_to_string(&path).map_err(|_| "未设置 API Key".to_string())?;
-    let v = v.trim().to_string();
-    if v.is_empty() {
-        return Err("未设置 API Key".to_string());
-    }
-    Ok(v)
 }
 
 /// 本次启动日志的起始偏移（setup 时记录 pet.log 现有大小，反馈只取本次启动后的日志）。

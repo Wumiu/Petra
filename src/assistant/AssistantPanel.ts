@@ -7,6 +7,7 @@ import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
+import { getApiKey, currentKeyScope } from "./apiKey";
 import { buildLanguageInstruction, buildLanguageReminder, langNameOf, splitTranslation } from "../utils/outputLanguage";
 import { appNameFromTitle, frontWindowForModel, isOwnWindow } from "../utils/foregroundApp";
 import {
@@ -112,17 +113,17 @@ function keepInputBarOnScreen(): void {
   }
 }
 
-// API Key 存 Rust 侧（DPAPI 加密），前端只缓存
+// API Key 存 Rust 侧（DPAPI 加密 / Keychain / Secret Service），前端只做按供应商的缓存
 let apiKeyCache = "";
 let apiKeyLoaded = false;
+/** 缓存对应的供应商：切换供应商后必须失效，否则会把 A 的 Key 发给 B */
+let apiKeyScope = "";
 
 async function ensureApiKey(): Promise<string> {
-  if (apiKeyLoaded) return apiKeyCache;
-  try {
-    apiKeyCache = await invoke<string>("get_api_key");
-  } catch {
-    apiKeyCache = "";
-  }
+  const scope = currentKeyScope();
+  if (apiKeyLoaded && apiKeyScope === scope) return apiKeyCache;
+  apiKeyCache = await getApiKey(scope);
+  apiKeyScope = scope;
   apiKeyLoaded = true;
   return apiKeyCache;
 }
@@ -130,6 +131,7 @@ async function ensureApiKey(): Promise<string> {
 export function clearApiKeyCache() {
   apiKeyLoaded = false;
   apiKeyCache = "";
+  apiKeyScope = "";
 }
 
 /** 小助手是否正在对话中（麻将 AI 点评用：正忙就跳过，避免抢话） */

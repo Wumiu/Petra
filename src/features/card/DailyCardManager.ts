@@ -11,6 +11,7 @@
 
 import { rollRarity, rollCard, getCardPool, type CardDef, type Rarity } from "./CardPool";
 import { chatStream, isProviderReady, type ChatMessage } from "../../assistant/AssistantClient";
+import { getApiKey } from "../../assistant/apiKey";
 import { getEvents } from "../diary/DiaryEventTracker";
 import { loadSettings } from "../../utils/settings";
 import { buildLanguageInstruction, splitTranslation } from "../../utils/outputLanguage";
@@ -117,7 +118,7 @@ async function generateAiText(card: CardDef, persona: string): Promise<{ text: s
   const { provider, model, customBaseUrl } = settings.assistant;
 
   let apiKey = "";
-  try { apiKey = await invoke<string>("get_api_key"); } catch {}
+  try { apiKey = await getApiKey(); } catch {}
 
   // 本地 Ollama / 本机端点不需要 Key，也算可以生成
   if (!isProviderReady(settings.assistant, apiKey)) {

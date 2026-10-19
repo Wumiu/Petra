@@ -6,6 +6,7 @@ import { parseArgsSafe } from "./toolRuntime";
 import changelogRaw from "../../CHANGELOG.md?raw";
 // @ts-ignore
 import pkg from "../../package.json";
+import { normalizeOpenAIBase } from "./apiKey";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -105,7 +106,9 @@ export function isMiniMaxEndpoint(base: string): boolean {
 
 function resolveBase(provider: AssistantProvider, customBaseUrl: string): string {
   if (provider === "custom") {
-    const b = (customBaseUrl || "").trim().replace(/\/+$/, "");
+    // 规范化：补 /v1、去掉多余的 /chat/completions。用户经常把完整请求地址直接贴进来，
+    // 以前会再拼一次 /chat/completions 变成 .../v1/chat/completions/chat/completions。
+    const b = normalizeOpenAIBase(customBaseUrl);
     if (!b) throw new Error("未设置自定义 API 端点 URL");
     return b;
   }

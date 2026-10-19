@@ -54,6 +54,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
+import { getApiKey, setApiKey, normalizeOpenAIBase } from "./assistant/apiKey";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
@@ -3835,14 +3836,15 @@ async function toggleAssistantSettings() {
     key.value = "";
     mkRow("API Key", key);
     toggleBaseUrl(); // set initial placeholder
-    // API Key 存 Rust 侧（DPAPI 加密），打开面板时回填
-    void invoke<string>("get_api_key")
-      .then((k) => {
-        key.value = k;
-      })
-      .catch(() => {
-        /* 未设置 */
-      });
+    // API Key 按供应商分槽存（Rust 侧 DPAPI 加密），打开面板时回填当前供应商那一份
+    const loadKeyForProvider = async () => {
+      key.value = await getApiKey(provider.value);
+    };
+    void loadKeyForProvider();
+    // 切供应商时换成它自己的 Key：以前只回填一次全局 Key，切到别家后旧 Key 会继续发过去
+    provider.addEventListener("change", () => {
+      void loadKeyForProvider();
+    });
 
     const modelSelect = document.createElement("select");
     modelSelect.className = "as-input as-select";
@@ -4007,6 +4009,39 @@ async function toggleAssistantSettings() {
     });
     mkRow("", fetchBtn);
 
+    // 「测试连接」：只验证 端点 + Key + 网络 是否通，不填充模型列表。
+    // 之所以单独做一个：用户切供应商后最常见的困惑就是"到底通没通"——
+    // 自动获取模型失败时看不出是 Key 错、端点错还是网络错。
+    const testBtn = document.createElement("button");
+    testBtn.className = "as-btn";
+    testBtn.textContent = "测试连接";
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "测试中…";
+      try {
+        const isCustom = (provider.value as string) === "custom";
+        const base = isCustom ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
+        const models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          base,
+        );
+        toast(
+          models.length
+            ? `连接成功：${PROVIDERS[provider.value as keyof typeof PROVIDERS].label} 可用模型 ${models.length} 个`
+            : "连接成功（该端点没有返回模型列表）",
+          "info",
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast(`连接失败：${msg}`, "warn");
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = "测试连接";
+      }
+    });
+    mkRow("", testBtn);
+
     // AI 用量统计（本地估算，帮助用户感知 token 消耗）
     const usageRow = document.createElement("div");
     usageRow.className = "as-set-row";
@@ -4065,7 +4100,15 @@ async function toggleAssistantSettings() {
     save.textContent = "保存";
     save.addEventListener("click", async () => {
       settings.assistant.provider = provider.value as AssistantProvider;
-      settings.assistant.customBaseUrl = baseUrl.value.trim();
+      // 自定义端点自动规范化：补 /v1、去掉多余的 /chat/completions
+      // （用户很容易把完整请求地址贴进来，导致再拼一次路径而 404）
+      settings.assistant.customBaseUrl =
+        (provider.value as string) === "custom"
+          ? normalizeOpenAIBase(baseUrl.value)
+          : baseUrl.value.trim();
+      if (settings.assistant.customBaseUrl !== baseUrl.value.trim()) {
+        baseUrl.value = settings.assistant.customBaseUrl;
+      }
       settings.assistant.model = model.value.trim();
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
@@ -4088,9 +4131,9 @@ async function toggleAssistantSettings() {
       // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
       // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。
       resyncGreetingSchedule();
-      // API Key 存 Rust 侧（DPAPI 加密）
+      // API Key 按供应商分槽存（Rust 侧 DPAPI / Keychain / Secret Service）
       try {
-        await invoke("set_api_key", { apiKey: key.value.trim() });
+        await setApiKey(key.value.trim(), provider.value);
         clearApiKeyCache();
         clearPetTalkKeyCache();
       } catch (e) {
