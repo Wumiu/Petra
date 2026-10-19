@@ -740,8 +740,10 @@ body {
 /* ---------- Toast ---------- */
 #toasts {
   position: fixed;
-  left: 0;
-  right: 0;
+  /* 居中由 JS 按模型位置算（left=cx + translateX(-50%)）；这里不能再写 right:0，
+     否则宽度会变成 innerWidth-cx，容器跑偏、长提示溢出窗口被裁 */
+  left: 50%;
+  right: auto;
   bottom: 16px;
   z-index: 90;
   display: flex;

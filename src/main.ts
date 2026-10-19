@@ -431,7 +431,20 @@ function positionFloatingUi(
     const minBottom = window.innerHeight - vr.bottom + 8;
     const maxBottom = window.innerHeight - vr.top - 8;
     const bottom = Math.max(minBottom, Math.min(window.innerHeight - mr.bottom - 10, maxBottom));
-    const cx = Math.max(vr.left + 4, Math.min(mr.left + mr.width / 2, vr.right - 4));
+    // 关键：先把 right 清成 auto，让容器宽度收敛成"最宽的那条提示"。
+    // 原来 CSS 是 left:0;right:0，JS 只改 left —— 容器宽度会变成 innerWidth-cx，
+    // 再叠加 translateX(-50%) 就整体跑偏：角色在右边时宽度只剩几十像素，
+    // 提示会溢到窗口外被裁掉（用户看到"弹窗没对着模型"就是这么来的）。
+    toasts.style.right = "auto";
+    const maxW = Math.max(80, vr.right - vr.left - 16);
+    toasts.style.maxWidth = `${Math.round(maxW)}px`;
+    const tw = Math.min(toasts.offsetWidth || 0, maxW);
+    const idealCx = mr.left + mr.width / 2;
+    const minCx = vr.left + tw / 2 + 4;
+    const maxCx = vr.right - tw / 2 - 4;
+    const cx = minCx <= maxCx
+      ? Math.max(minCx, Math.min(idealCx, maxCx))
+      : (vr.left + vr.right) / 2;
     toasts.style.left = `${Math.round(cx)}px`;
     toasts.style.bottom = `${Math.round(bottom)}px`;
     toasts.style.transform = "translateX(-50%)";
