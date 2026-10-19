@@ -4018,10 +4018,19 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 fn toggle_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        if win.is_visible().unwrap_or(false) {
+        // 最小化的窗口 IsWindowVisible 仍返回 true：以前这里会走 hide()，再点走 show()
+        // （SW_SHOW 不恢复最小化状态）—— 表现为「桌宠消失、托盘点了像没反应」，
+        // 只能重新运行 exe（单实例回调里才有 unminimize）才能回来。
+        let minimized = win.is_minimized().unwrap_or(false);
+        if minimized {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        } else if win.is_visible().unwrap_or(false) {
             let _ = win.hide();
         } else {
             let _ = win.show();
+            let _ = win.unminimize();
             let _ = win.set_focus();
         }
     }
@@ -4233,7 +4242,7 @@ mod interaction_tests {
             initialized: false,
             last_update: None,
         };
-        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false));
     }
 
     #[test]
@@ -4243,28 +4252,28 @@ mod interaction_tests {
             vec![region("pet", 100, 100, 100, 100)],
             now - INTERACTION_STATE_STALE_AFTER - std::time::Duration::from_millis(1),
         );
-        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false));
     }
 
     #[test]
     fn renderer_lock_fails_open() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(should_accept_input(&snapshot, true, false, Some((0, 0)), now));
+        assert!(should_accept_input(&snapshot, true, false, Some((0, 0)), now, false));
     }
 
     #[test]
     fn native_drag_fails_open() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(should_accept_input(&snapshot, false, true, Some((0, 0)), now));
+        assert!(should_accept_input(&snapshot, false, true, Some((0, 0)), now, false));
     }
 
     #[test]
     fn cursor_read_failure_is_click_through() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(!should_accept_input(&snapshot, false, false, None, now));
+        assert!(!should_accept_input(&snapshot, false, false, None, now, false));
     }
 }
 
