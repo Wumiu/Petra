@@ -242,6 +242,11 @@ async function loadHistory() {
   } catch {
     history = [];
   }
+  // 关键：把「当前语言」基准设成磁盘历史所属语言（即当前设置）。
+  // lastChatLang 以前只是内存变量、初值 ""，于是设置了「人物语言」的用户重启后第一次
+  // 发送会命中 send() 里「换语言就清历史」的判断，把整个持久化历史清空 —— 表现为
+  // 重启后第一次聊天上下文全丢。真正换语言时它仍会与 outLang 不同，照常清历史。
+  lastChatLang = loadSettings().assistant.outputLanguage ?? "";
 }
 function saveHistory() {
   // 整体覆盖写到 app_data_dir/chat-history.json；fire-and-forget，失败不阻塞对话
@@ -797,7 +802,10 @@ export async function openAssistant(modelRect?: { left: number; top: number; rig
   ensureInput();
   ensureBubbles();
   loadMemory();
-  await loadHistory();
+  // 正在跑工具 / 等确认时不要从磁盘重载历史：内存里的 assistant+tool 序列还没落盘，
+  // 覆盖后 tool 消息会失去配对的 tool_calls，下一轮请求直接 400，之后每次都 400。
+  // （点桌宠、按全局快捷键都会走到这里，它们都不检查 busy，所以守卫必须放这儿）
+  if (!busy) await loadHistory();
   inputBar!.classList.remove("hidden");
   // 定位到模型（绿框）附近：默认放底部，放不下翻到上方；始终钳制在窗口可见区内（贴边自适应）
   if (modelRect) {
