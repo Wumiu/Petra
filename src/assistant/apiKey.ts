@@ -10,7 +10,15 @@ import { loadSettings } from "../utils/settings";
  * 自动归到首次保存的那个供应商，用户不需要重新填写。
  */
 export function currentKeyScope(): string {
-  return loadSettings().assistant.provider || "deepseek";
+  const a = loadSettings().assistant;
+  // 应用了预设就用预设自己的槽位：同一供应商的两套配置（不同端点/模型/Key）才能共存
+  if (a.activePresetId) return presetKeyScope(a.activePresetId);
+  return a.provider || "deepseek";
+}
+
+/** 预设的 Key 槽位名 */
+export function presetKeyScope(id: string): string {
+  return `preset:${id}`;
 }
 
 /** 读取某个供应商的 Key（失败返回空串，调用方按"未配置"处理） */

@@ -54,7 +54,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
-import { getApiKey, setApiKey, normalizeOpenAIBase } from "./assistant/apiKey";
+import { getApiKey, setApiKey, normalizeOpenAIBase, presetKeyScope } from "./assistant/apiKey";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
@@ -1136,9 +1136,8 @@ async function boot() {
   }
 
   // 旧版单 Key 迁移：启动时先按"当前选中的供应商"领一次。
-  // 放在这里而不是切供应商时：此刻的选择就是用户升级前在用的那一家，
-  // 之后切换供应商就不会再把这份旧 Key 带过去（Rust 侧 adopt_legacy 只领一次）。
-  void getApiKey().catch(() => {});
+  // 明确传 provider 而不是 currentKeyScope()：当前若套着预设，旧 Key 不该被写进预设槽位。
+  void getApiKey(settings.assistant.provider).catch(() => {});
 
   // 同步 Rust 侧音频开关到持久化设置
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
@@ -1181,6 +1180,8 @@ async function boot() {
     (window as any).__petraDebug = {
       getModelRect,
       getWindowVisibleRect,
+      // 打开「小助手设置」：CDP 里验证预设/Key 显隐时不用再手动点右键菜单
+      openAssistantSettings: () => void toggleAssistantSettings(),
       // 问候调度自检：不用真等 20 分钟就能核对"下一次该什么时候问候"
       tickerFps: () => { try { return app.app.ticker.maxFPS; } catch { return null; } },
       greetingSchedule: () => ({
@@ -3781,9 +3782,29 @@ async function toggleChatHistory() {
 
 
 // ---------- 小助手设置面板 ----------
+/**
+ * 当前设置面板里的 Key 输入框。
+ *
+ * Key 默认是 password 类型，用户点「👁」才临时显示；关闭面板/保存后必须恢复隐藏，
+ * 否则明文会留在 DOM 里（下次打开、切供应商、截屏都可能被看到）。
+ */
+let assistantKeyInput: HTMLInputElement | null = null;
+
+function maskAssistantKey() {
+  if (assistantKeyInput) {
+    assistantKeyInput.type = "password";
+    const eye = assistantKeyInput.parentElement?.querySelector("button");
+    if (eye) {
+      eye.textContent = "👁";
+      eye.title = "临时显示 API Key";
+    }
+  }
+}
+
 async function toggleAssistantSettings() {
   const panel = document.getElementById("assistant-settings") as HTMLElement | null;
   if (panel && !panel.classList.contains("hidden")) {
+    maskAssistantKey();
     panel.classList.add("hidden");
     return;
   }
@@ -3839,15 +3860,46 @@ async function toggleAssistantSettings() {
     key.type = "password";
     key.placeholder = "API Key";
     key.value = "";
-    mkRow("API Key", key);
+    key.autocomplete = "off";
+    key.spellcheck = false;
+    // Key 默认隐藏；「👁」临时显示，再次点击 / 关闭面板 / 切换供应商或预设时自动恢复隐藏。
+    // 参考酒馆的做法：不给键盘/录屏留一个长期明文。
+    const keyWrap = document.createElement("div");
+    keyWrap.style.cssText = "display:flex;gap:6px;flex:1;align-items:center;min-width:0;";
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "as-btn";
+    eye.textContent = "👁";
+    eye.title = "临时显示 API Key";
+    eye.setAttribute("aria-label", "临时显示 API Key");
+    keyWrap.append(key, eye);
+    assistantKeyInput = key;
+    const maskKey = () => {
+      key.type = "password";
+      eye.textContent = "👁";
+      eye.title = "临时显示 API Key";
+    };
+    eye.addEventListener("click", () => {
+      const showing = key.type === "text";
+      key.type = showing ? "password" : "text";
+      eye.textContent = showing ? "👁" : "🙈";
+      eye.title = showing ? "临时显示 API Key" : "点击隐藏 API Key";
+    });
+    mkRow("API Key", keyWrap);
     toggleBaseUrl(); // set initial placeholder
-    // API Key 按供应商分槽存（Rust 侧 DPAPI 加密），打开面板时回填当前供应商那一份
+    // API Key 按供应商 / 预设分槽存（Rust 侧 DPAPI 加密），打开面板时回填当前那一份
     const loadKeyForProvider = async () => {
-      key.value = await getApiKey(provider.value);
+      key.value = await getApiKey();
+      maskKey();
     };
     void loadKeyForProvider();
-    // 切供应商时换成它自己的 Key：以前只回填一次全局 Key，切到别家后旧 Key 会继续发过去
+    // 切供应商时换成它自己的 Key：以前只回填一次全局 Key，切到别家后旧 Key 会继续发过去；
+    // 手动换供应商等于脱离预设，清掉 activePresetId 让 Key 作用域回到 provider。
     provider.addEventListener("change", () => {
+      if (settings.assistant.activePresetId) {
+        settings.assistant.activePresetId = "";
+        saveSettings(settings);
+      }
       void loadKeyForProvider();
     });
 
@@ -3867,6 +3919,149 @@ async function toggleAssistantSettings() {
     modelSelect.addEventListener("change", () => {
       if (modelSelect.value) model.value = modelSelect.value;
     });
+
+    // ---------- 预设：保存 / 切换 / 重命名 / 删除（参考酒馆的操作方式） ----------
+    // 只存非敏感字段；每个预设的 Key 单独存 Rust 侧 `preset:<id>` 槽位。
+    const presetSelect = document.createElement("select");
+    presetSelect.className = "as-input as-select";
+    mkRow("预设", presetSelect);
+
+    const presetNameRow = document.createElement("div");
+    presetNameRow.className = "as-set-row";
+    const presetNameLabel = document.createElement("span");
+    presetNameLabel.className = "as-set-label";
+    presetNameLabel.textContent = "预设名称";
+    const presetName = document.createElement("input");
+    presetName.className = "as-input";
+    presetName.placeholder = "重命名用，或作为新预设的名字";
+    presetNameRow.append(presetNameLabel, presetName);
+    host.appendChild(presetNameRow);
+
+    const presetInfo = document.createElement("div");
+    presetInfo.className = "as-privacy";
+    host.appendChild(presetInfo);
+
+    const presetBtns = document.createElement("div");
+    presetBtns.className = "as-set-btns";
+    presetBtns.style.flexWrap = "wrap";
+    const presetApply = document.createElement("button");
+    presetApply.className = "as-btn as-btn-primary";
+    presetApply.textContent = "应用";
+    const presetRename = document.createElement("button");
+    presetRename.className = "as-btn";
+    presetRename.textContent = "重命名";
+    const presetDelete = document.createElement("button");
+    presetDelete.className = "as-btn";
+    presetDelete.textContent = "删除";
+    const presetSave = document.createElement("button");
+    presetSave.className = "as-btn";
+    presetSave.textContent = "＋ 保存当前为预设";
+    presetBtns.append(presetApply, presetRename, presetDelete, presetSave);
+    host.appendChild(presetBtns);
+
+    const presetsOf = () => (settings.assistant.presets ??= []);
+    const selectedPreset = () => presetsOf().find((p) => p.id === presetSelect.value) ?? null;
+
+    const showPresetInfo = () => {
+      const p = selectedPreset();
+      if (!p) {
+        presetName.value = "";
+        presetInfo.textContent =
+          presetsOf().length ? "选一个预设查看端点与模型" : "把当前配置存成预设，之后一键切换";
+        return;
+      }
+      presetName.value = p.name;
+      const base = p.provider === "custom" ? p.customBaseUrl : PROVIDERS[p.provider]?.base ?? "";
+      presetInfo.textContent = `端点：${base || "（默认）"}　·　模型：${p.model || "（默认）"}`;
+    };
+
+    const refreshPresets = (pickId?: string) => {
+      const list = presetsOf();
+      presetSelect.innerHTML = "";
+      if (!list.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = "（还没有预设）";
+        presetSelect.appendChild(o);
+      }
+      for (const p of list) {
+        const o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = `${p.name}（${PROVIDERS[p.provider]?.label ?? p.provider}）`;
+        presetSelect.appendChild(o);
+      }
+      const want = pickId ?? settings.assistant.activePresetId ?? list[0]?.id ?? "";
+      if (want) presetSelect.value = want;
+      showPresetInfo();
+    };
+    presetSelect.addEventListener("change", showPresetInfo);
+
+    const applyPreset = async (p: NonNullable<ReturnType<typeof selectedPreset>>) => {
+      settings.assistant.provider = p.provider;
+      settings.assistant.customBaseUrl = p.customBaseUrl;
+      settings.assistant.model = p.model;
+      settings.assistant.activePresetId = p.id;
+      saveSettings(settings);
+      provider.value = p.provider;
+      baseUrl.value = p.customBaseUrl;
+      model.value = p.model;
+      toggleBaseUrl();
+      key.value = await getApiKey(presetKeyScope(p.id));
+      maskAssistantKey();
+      clearApiKeyCache();
+      clearPetTalkKeyCache();
+      toast(`已切换到预设「${p.name}」`);
+    };
+
+    presetApply.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      void applyPreset(p);
+    });
+
+    presetRename.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      const name = presetName.value.trim();
+      if (!name) return toast("名称不能为空", "warn");
+      p.name = name;
+      saveSettings(settings);
+      refreshPresets(p.id);
+      toast("已重命名");
+    });
+
+    presetDelete.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      settings.assistant.presets = presetsOf().filter((x) => x.id !== p.id);
+      if (settings.assistant.activePresetId === p.id) settings.assistant.activePresetId = "";
+      saveSettings(settings);
+      // 一并清掉该预设的 Key 槽位（不然会留下读不到的孤儿密码）
+      void setApiKey("", presetKeyScope(p.id)).catch(() => {});
+      refreshPresets();
+      toast(`已删除预设「${p.name}」`);
+    });
+
+    presetSave.addEventListener("click", async () => {
+      const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const name = presetName.value.trim() || `预设 ${presetsOf().length + 1}`;
+      const prov = provider.value as AssistantProvider;
+      const base =
+        prov === "custom" ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
+      settings.assistant.presets = [
+        ...presetsOf(),
+        { id, name, provider: prov, customBaseUrl: base, model: model.value.trim() },
+      ];
+      settings.assistant.activePresetId = id;
+      saveSettings(settings);
+      // 把当前 Key 复制到该预设的槽位：预设之间互不覆盖，切回来就是它自己那份
+      await setApiKey(key.value.trim(), presetKeyScope(id)).catch(() => {});
+      maskAssistantKey();
+      refreshPresets(id);
+      toast(`已保存预设「${name}」`);
+    });
+
+    refreshPresets();
 
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
@@ -4115,6 +4310,18 @@ async function toggleAssistantSettings() {
         baseUrl.value = settings.assistant.customBaseUrl;
       }
       settings.assistant.model = model.value.trim();
+      // 正在使用某个预设时，把这次的供应商/端点/模型改动同步回该预设，
+      // 否则"改了但不生效、下次切换还是旧值"。
+      if (settings.assistant.activePresetId) {
+        const active = (settings.assistant.presets ?? []).find(
+          (p) => p.id === settings.assistant.activePresetId,
+        );
+        if (active) {
+          active.provider = settings.assistant.provider;
+          active.customBaseUrl = settings.assistant.customBaseUrl;
+          active.model = settings.assistant.model;
+        }
+      }
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
       settings.assistant.outputLanguage = langSelect.value;
@@ -4136,15 +4343,21 @@ async function toggleAssistantSettings() {
       // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
       // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。
       resyncGreetingSchedule();
-      // API Key 按供应商分槽存（Rust 侧 DPAPI / Keychain / Secret Service）
+      // API Key 按供应商 / 预设分槽存（Rust 侧 DPAPI / Keychain / Secret Service）。
+      // 当前套着预设就写进该预设的槽位：预设之间、预设与供应商之间都互不覆盖。
       try {
-        await setApiKey(key.value.trim(), provider.value);
+        const scope = settings.assistant.activePresetId
+          ? presetKeyScope(settings.assistant.activePresetId)
+          : provider.value;
+        await setApiKey(key.value.trim(), scope);
         clearApiKeyCache();
         clearPetTalkKeyCache();
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }
       ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+      // 关面板前把 Key 恢复隐藏：不留明文在 DOM 里
+      maskAssistantKey();
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });

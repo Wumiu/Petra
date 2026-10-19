@@ -20,12 +20,31 @@ export interface BoundsPadding {
   bottom: number;
 }
 
+/**
+ * 一组可复用的 API 配置（参考酒馆的"预设"）。
+ *
+ * 只存非敏感字段：**API Key 不进 settings**（settings 是 localStorage 明文），
+ * Key 按 `preset:<id>` 存进 Rust 侧（DPAPI / Keychain / Secret Service）。
+ */
+export interface AssistantPreset {
+  id: string;
+  /** 用户可改的名字（重命名） */
+  name: string;
+  provider: AssistantProvider;
+  customBaseUrl: string;
+  model: string;
+}
+
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
   model: string;
   persona: string;
   customBaseUrl: string;
+  /** 保存的预设列表 */
+  presets: AssistantPreset[];
+  /** 当前应用的预设 id；手动改供应商/端点时会清空，Key 作用域随之回退到 provider */
+  activePresetId: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
   /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
@@ -154,6 +173,8 @@ const DEFAULTS: Settings = {
     model: "",
     persona: "",
     customBaseUrl: "",
+    presets: [],
+    activePresetId: "",
     greetInterval: 20,
     nickname: "",
     shortcut: "",
