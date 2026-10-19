@@ -2594,6 +2594,30 @@ body.mg-active #stage canvas { pointer-events: none !important; }
 .announce-body::-webkit-scrollbar { width: 4px; }
 .announce-body::-webkit-scrollbar-track { background: transparent; }
 .announce-body::-webkit-scrollbar-thumb { background: rgba(120, 100, 140, 0.3); border-radius: 4px; }
+.announcement-panel .mp-title {
+  position: relative;
+  padding-right: 34px;
+}
+.announce-close {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(90, 60, 110, 0.08);
+  color: #6b5a78;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.announce-close:hover { background: rgba(90, 60, 110, 0.16); }
 .announce-actions {
   flex: none;
   margin: 0;
