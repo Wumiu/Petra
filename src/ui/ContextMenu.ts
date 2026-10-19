@@ -80,11 +80,35 @@ export function setupContextMenu(
 
       if (item.state !== undefined) {
         const stateSpan = document.createElement("span");
-        stateSpan.className = "state";
-        stateSpan.textContent = item.state;
-        if (item.onStatePick) {
-          stateSpan.style.cursor = "pointer";
-          stateSpan.addEventListener("click", (ev) => { ev.stopPropagation(); hide("state-pick"); item.onStatePick?.(); });
+        // 只有「叶子项 + 真的有切换处理器」才画开关；带 submenu 的行是拿来展开的，
+        // 画开关既会误导又点了没反应（跟随音乐那一行就是这么踩的）
+        const isToggleRow = (item.state === "开" || item.state === "关")
+          && !item.submenu
+          && !!(item.onStatePick || item.onPick);
+        if (isToggleRow) {
+          // 开/关项用半拟态开关（与设置窗口同一套样式）；点开关即切换并收起菜单
+          const on = item.state === "开";
+          stateSpan.className = `sw-switch sw-switch-sm${on ? " is-on" : ""}`;
+          stateSpan.setAttribute("role", "switch");
+          stateSpan.setAttribute("aria-checked", String(on));
+          stateSpan.title = on ? "点击关闭" : "点击开启";
+          stateSpan.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (item.onStatePick) {
+              hide("state-pick");
+              item.onStatePick();
+            } else {
+              hide("row-click");
+              item.onPick?.();
+            }
+          });
+        } else {
+          stateSpan.className = "state";
+          stateSpan.textContent = item.state;
+          if (item.onStatePick) {
+            stateSpan.style.cursor = "pointer";
+            stateSpan.addEventListener("click", (ev) => { ev.stopPropagation(); hide("state-pick"); item.onStatePick?.(); });
+          }
         }
         row.appendChild(stateSpan);
       }

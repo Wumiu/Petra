@@ -153,8 +153,11 @@ pub struct InteractionState {
     renderer_locked: std::sync::atomic::AtomicBool,
 }
 
+// 前端 100ms 上报一次区域；留 10 秒宽限是为了扛住「首次加载模型 / PSD 解析 /
+// 长任务」这类主线程被占满的时段 —— 2.5 秒太紧，一卡就整窗穿透，用户看到的就是
+// 「右键菜单/按钮点了没反应」。
 const INTERACTION_STATE_STALE_AFTER: std::time::Duration =
-    std::time::Duration::from_millis(2500);
+    std::time::Duration::from_millis(10_000);
 
 /// 右键菜单打开状态，仅用于光标离开主窗口时通知前端关闭菜单。
 pub struct MenuOpen {
@@ -444,6 +447,8 @@ fn should_accept_input(
     native_dragging: bool,
     cursor: Option<(i32, i32)>,
     now: std::time::Instant,
+    // 上一次的判定结果：光标取不到时沿用它，避免一次失败就整窗穿透
+    fallback: bool,
 ) -> bool {
     // 前端尚未上报交互区域前（例如启动加载模型期间），窗口必须保持鼠标穿透，
     // 否则透明的 700x700 窗口会挡住屏幕中央，导致点击桌面和其他窗口无效。
@@ -461,7 +466,9 @@ fn should_accept_input(
         return false;
     }
     let Some((x, y)) = cursor else {
-        return false;
+        // 取不到光标（远程桌面 / UAC 安全桌面 / 多屏边界等）时沿用上一次判定：
+        // 一次取不到就整窗穿透，会让菜单和按钮「点了没反应」
+        return fallback;
     };
     point_in_interactive_regions(x, y, &snapshot.regions)
 }
@@ -471,26 +478,33 @@ fn sync_interaction_regions(
     state: State<'_, InteractionState>,
     regions: Vec<InteractiveRegion>,
 ) -> Result<(), String> {
-    if regions.len() > 128 {
-        return Err("交互区域数量超过上限".into());
-    }
-    for region in &regions {
+    const MAX_REGIONS: usize = 128;
+    // 逐条过滤非法区域，**不要整批失败**：以前只要有一条坏数据（数量超限、
+    // 坐标越界、尺寸为 0），整次上报被拒、快照停在旧值，10 秒后全窗穿透 ——
+    // 一条坏区域拖垮所有点击。
+    let mut clean: Vec<InteractiveRegion> = Vec::with_capacity(regions.len().min(MAX_REGIONS));
+    for region in regions {
         if region.id.is_empty() || region.id.len() > 128 {
-            return Err("交互区域 id 无效".into());
+            continue;
         }
         if region.width <= 0 || region.height <= 0 {
-            return Err(format!("交互区域尺寸无效: {}", region.id));
+            continue;
         }
         if region.x.unsigned_abs() > 100_000
             || region.y.unsigned_abs() > 100_000
             || region.width > 100_000
             || region.height > 100_000
         {
-            return Err(format!("交互区域坐标超出范围: {}", region.id));
+            continue;
         }
+        if clean.len() >= MAX_REGIONS {
+            log_warn("交互区域超过 128 条，已截断");
+            break;
+        }
+        clean.push(region);
     }
     let mut snapshot = state.snapshot.lock().unwrap();
-    snapshot.regions = regions;
+    snapshot.regions = clean;
     snapshot.initialized = true;
     snapshot.last_update = Some(std::time::Instant::now());
     Ok(())
@@ -899,22 +913,32 @@ fn set_window_size(app: AppHandle, width: u32, height: u32) {
 
 /// 8ms 循环：拖动中直接 GetCursorPos → SetWindowPos 跟随鼠标（像素级、无 IPC 每帧延迟）。
 fn spawn_drag_follower(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(8));
-        let Some(drag) = app.try_state::<DragState>() else {
-            continue;
-        };
-        if !drag.active.load(Ordering::SeqCst) {
-            continue;
+    std::thread::spawn(move || {
+        // scale_factor 每 8ms 问一次 tao 会跟主线程的渲染循环抢锁，实测是拖拽"发涩"的来源之一；
+        // 拖拽期间缩放几乎不会变，缓存起来每 ~0.5 秒刷一次就够
+        let mut scale = 1.0f64;
+        let mut scale_tick = 0u32;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(8));
+            let Some(drag) = app.try_state::<DragState>() else {
+                continue;
+            };
+            if !drag.active.load(Ordering::SeqCst) {
+                scale_tick = 0; // 下次开始拖拽时立刻取一次
+                continue;
+            }
+            let Some(win) = app.get_webview_window("main") else {
+                continue;
+            };
+            let off = *drag.offset.lock().unwrap();
+            let locked = *drag.locked_y.lock().unwrap();
+            let bounds = *drag.model_bounds.lock().unwrap();
+            if scale_tick == 0 {
+                scale = get_window_scale_factor(&app);
+            }
+            scale_tick = (scale_tick + 1) % 60;
+            screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
         }
-        let Some(win) = app.get_webview_window("main") else {
-            continue;
-        };
-        let off = *drag.offset.lock().unwrap();
-        let locked = *drag.locked_y.lock().unwrap();
-        let bounds = *drag.model_bounds.lock().unwrap();
-        let scale = get_window_scale_factor(&app);
-        screen::drag_follow(&win, off.0, off.1, locked, Some(bounds), scale);
     });
 }
 
@@ -3956,7 +3980,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "settings" => {} // 占位：之后再接设置面板
+            // 托盘「设置」：前端 boot 里 listen("open-settings") 会打开设置窗口
+            "settings" => {
+                let _ = app.emit("open-settings", ());
+            }
             "restart" => {
                 app.restart();
             }
@@ -4002,6 +4029,7 @@ fn get_window_scale_factor(app: &AppHandle) -> f64 {
 fn spawn_clickthrough_watcher(app: AppHandle) {
     std::thread::spawn(move || {
         let mut menu_outside_notified = false;
+        let mut last_accepts = false; // 光标取不到时的兜底，初始仍按穿透处理
         loop {
             if let Some(win) = app.get_webview_window("main") {
                 let cursor = screen::cursor_client_pos(&win);
@@ -4030,8 +4058,15 @@ fn spawn_clickthrough_watcher(app: AppHandle) {
                         )
                     });
                 let now = std::time::Instant::now();
-                let accepts_input =
-                    should_accept_input(&snapshot, renderer_locked, native_dragging, cursor, now);
+                let accepts_input = should_accept_input(
+                    &snapshot,
+                    renderer_locked,
+                    native_dragging,
+                    cursor,
+                    now,
+                    last_accepts,
+                );
+                last_accepts = accepts_input;
                 // Linux：穿透写入口按会话分叉 —— Wayland 直接把"可交互矩形"写进输入区域
                 // （合成器只在这些矩形内投递指针事件），X11 仍是原来的整窗开关。
                 // 其余平台这一行保持原样。
@@ -4103,6 +4138,18 @@ fn set_window_pos_size(app: AppHandle, label: String, x: i32, y: i32, width: u32
 fn set_menu_open(app: AppHandle, open: bool) {
     if let Some(m) = app.try_state::<MenuOpen>() {
         m.active.store(open, std::sync::atomic::Ordering::SeqCst);
+    }
+    // 菜单打开期间强制接输入：菜单的可点区域虽然上报了，但只要前端卡一下、
+    // 区域快照过期，菜单就会变成"点了没反应"。
+    if let Some(state) = app.try_state::<InteractionState>() {
+        state
+            .renderer_locked
+            .store(open, std::sync::atomic::Ordering::SeqCst);
+        if open {
+            if let Ok(mut snapshot) = state.snapshot.lock() {
+                snapshot.last_update = Some(std::time::Instant::now());
+            }
+        }
     }
     log_verbose(&format!("set_menu_open: open={open}"));
 }

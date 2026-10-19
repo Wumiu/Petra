@@ -23,7 +23,8 @@ import { idleDriver, type PetDriver, type PetView } from "./live2d/PetDriver";
 import { Rigged2DView } from "./live2d/psd/Rigged2DView";
 import { listActions } from "./live2d/actions";
 import { setupTrashDrop } from "./features/trash/TrashHandler";
-import { setupContextMenu } from "./ui/ContextMenu";
+import { setupContextMenu, type MenuItemSpec } from "./ui/ContextMenu";
+import { openSettingsPanel, closeSettingsPanel } from "./ui/SettingsPanel";
 import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "./features/diary/DiaryEventTracker";
 import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
@@ -521,7 +522,11 @@ function positionFloatingUi(
 }
 
 /** 将面板定位到模型旁边：往屏幕内侧（空间大的方向），不挡住模型、不出屏 */
-function positionPanelNearModel(panel: HTMLElement) {
+function positionPanelNearModel(
+  panel: HTMLElement,
+  /** 要避开的矩形（目前是贴底停靠的设置窗口）：候选位置压在它上面就换下一个 */
+  avoid?: { left: number; top: number; right: number; bottom: number } | null,
+) {
   panel.style.position = "fixed"; // 确保 fixed 定位
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
@@ -574,11 +579,14 @@ function positionPanelNearModel(panel: HTMLElement) {
       ];
   candidates.push(...hor, ...ver);
 
-  // 选第一个完整落在可见区内的位置
+  const hitsAvoid = (l: number, t: number) =>
+    !!avoid && l < avoid.right && l + pw > avoid.left && t < avoid.bottom && t + ph > avoid.top;
+
+  // 选第一个完整落在可见区、且不压在「要避开的矩形」上的位置
   for (const c of candidates) {
     const l = Math.round(c.left);
     const t = Math.round(c.top);
-    if (l >= vr.left && l + pw <= vr.right && t >= vr.top && t + ph <= vr.bottom) {
+    if (l >= vr.left && l + pw <= vr.right && t >= vr.top && t + ph <= vr.bottom && !hitsAvoid(l, t)) {
       panel.style.left = `${l}px`;
       panel.style.top = `${t}px`;
       panel.style.bottom = "auto";
@@ -587,7 +595,39 @@ function positionPanelNearModel(panel: HTMLElement) {
     }
   }
 
-  // 兜底：clamp 到可见区
+  // 兜底 1：四个常规方位都被占/放不下时，在可见区里扫一个不压 avoid 的位置
+  // （典型场景：设置窗口贴底停靠，边界面板还得找地方站）
+  if (avoid) {
+    // 候选位置取「有意义的边界」而不是死扫网格：网格步长会正好错过模型与
+    // 设置窗口之间那条几十像素宽的空档（实测 250px 宽的面板只剩 l=444..450 可用）。
+    const xs = Array.from(new Set([
+      vr.left, vr.right - pw,
+      mr.right + 8, mr.left - pw - 8,
+      (vr.left + vr.right - pw) / 2,
+    ])).filter((x) => x >= vr.left - 0.5 && x + pw <= vr.right + 0.5);
+    const ys = Array.from(new Set([
+      vr.top, vr.bottom - ph,
+      mr.bottom + 8, mr.top - ph - 8,
+      (vr.top + vr.bottom - ph) / 2,
+    ])).filter((y) => y >= vr.top - 0.5 && y + ph <= vr.bottom + 0.5);
+    // 两轮：先找「既不压 avoid 也不压角色」的，找不到再放宽到只避开 avoid
+    for (const strict of [true, false]) {
+      for (const t of ys) {
+        for (const l of xs) {
+          if (hitsAvoid(l, t)) continue;
+          const hitsModel = l < mr.right + 8 && l + pw > mr.left - 8 && t < mr.bottom + 8 && t + ph > mr.top - 8;
+          if (strict && hitsModel) continue;
+          panel.style.left = `${Math.round(l)}px`;
+          panel.style.top = `${Math.round(t)}px`;
+          panel.style.bottom = "auto";
+          panel.style.transform = "none";
+          return;
+        }
+      }
+    }
+  }
+
+  // 兜底 2：clamp 到可见区
   const left = Math.max(vr.left, Math.min(preferRight ? mr.right + 10 : mr.left - pw - 10, vr.right - pw));
   const top = Math.max(vr.top, Math.min(preferBottom ? mr.bottom + 10 : mr.top - ph - 10, vr.bottom - ph));
   panel.style.left = `${Math.round(left)}px`;
@@ -940,6 +980,60 @@ function markGreeted(at: number): void {
  */
 function resyncGreetingSchedule() {
   markGreeted(Date.now());
+  scheduleNextGreeting();
+}
+
+/** 当前生效的问候间隔（分钟→毫秒），带下限保护 */
+function greetIntervalMsNow(): number {
+  return Math.max(5, Number(settings.assistant.greetInterval) || 20) * 60 * 1000;
+}
+
+/**
+ * 主动问候的精确调度：**按「上次问候 + 设置间隔」定到秒**，不再靠 60 秒 tick 去撞。
+ *
+ * 旧实现是每 60 秒检查一次 `now - lastGreetAt > interval`，于是实际间隔是
+ * 「设置的 N 分钟 + 0~60 秒」；再加上「离开≥15 分钟回来就问候」那条不看间隔，
+ * 用户看到的就是"时间间隔不准"。现在改成一次性 setTimeout 定到点，
+ * 每次问候/改设置/启动都重排一次，误差只剩定时器本身（毫秒级）。
+ */
+let greetTimer: number | null = null;
+function scheduleNextGreeting(): void {
+  if (greetTimer !== null) {
+    clearTimeout(greetTimer);
+    greetTimer = null;
+  }
+  if (!settings.assistant.enabled) return;
+  // 至少 5 秒后才可能触发：避免"刚启动就问候"（锚点很旧时 due 已经过去）
+  const due = Math.max(lastGreetAt + greetIntervalMsNow(), Date.now() + 5000);
+  const delay = Math.max(1000, due - Date.now());
+  greetTimer = window.setTimeout(() => {
+    greetTimer = null;
+    void fireScheduledGreeting(due);
+  }, delay);
+}
+
+/** 到点后的主动问候：待机/离开/关掉小助手时先不打扰，延后一分钟再看 */
+async function fireScheduledGreeting(dueAt: number): Promise<void> {
+  if (!settings.assistant.enabled || settings.idleMode) {
+    scheduleNextGreeting();
+    return;
+  }
+  let idleSec = 0;
+  try { idleSec = await invoke<number>("get_idle_seconds"); } catch {}
+  if (idleSec > 300) {
+    // 用户离开了：不打扰，回来之后由 60 秒 tick 的"回归问候"或下一个到期点接手
+    greetTimer = window.setTimeout(() => void fireScheduledGreeting(dueAt), 60 * 1000);
+    return;
+  }
+  // 期间可能已经被别的路径问候过（回归问候），到点就别重复
+  if (Date.now() - lastGreetAt < greetIntervalMsNow()) {
+    scheduleNextGreeting();
+    return;
+  }
+  markGreeted(Date.now());
+  void triggerProactive();
+  trackEvent({ type: "greeting", summary: "主动问候了用户" });
+  scheduleNextGreeting();
 }
 
 async function boot() {
@@ -988,7 +1082,18 @@ async function boot() {
   setModelRectProvider(getModelRect);
   if (import.meta.env.DEV) {
     // dev 调试钩子：CDP 里直接读角色包围盒/绿框状态，排查"气泡位置/绿框不对"时不用再临时改代码
-    (window as any).__petraDebug = { getModelRect, getWindowVisibleRect };
+    (window as any).__petraDebug = {
+      getModelRect,
+      getWindowVisibleRect,
+      // 问候调度自检：不用真等 20 分钟就能核对"下一次该什么时候问候"
+      tickerFps: () => { try { return app.app.ticker.maxFPS; } catch { return null; } },
+      greetingSchedule: () => ({
+        lastGreetAt,
+        intervalMs: greetIntervalMsNow(),
+        dueAt: lastGreetAt + greetIntervalMsNow(),
+        timerArmed: greetTimer !== null,
+      }),
+    };
   }
   // 小助手对话期间桌宠静止，关闭后恢复漫游
   setLifecycle(
@@ -1034,9 +1139,10 @@ async function boot() {
     setTimeout(() => void engine.teleportRandom(), FIRST_ROAM_DELAY);
   }
 
-  // 主动问候：按用户设置的间隔（settings.assistant.greetInterval）触发，每分钟检查一次
+  // 主动问候：精确定时（见 scheduleNextGreeting），60 秒 tick 只管"离开/回来"与回归问候
   let lastActiveAt = Date.now();    // 最近一次检测到用户活跃的时间
   let wasIdle = false;              // 上次检查时是否处于空闲
+  scheduleNextGreeting();           // 启动就排下一次
 
   setInterval(async () => {
     if (!settings.assistant.enabled) return;
@@ -1060,29 +1166,22 @@ async function boot() {
         wasIdle = false;
         // 回归问候：离开超过 15 分钟才触发
         const awayMs = now - lastActiveAt;
-        if (awayMs > 15 * 60 * 1000 && now - lastGreetAt > 15 * 60 * 1000) {
+        // 回归问候同样要守用户设的间隔：离开 15 分钟以上回来，但距上次问候还没到
+        // 设定间隔时就不补，交给精确定时器（否则用户会觉得"间隔忽长忽短"）
+        if (awayMs > 15 * 60 * 1000 && now - lastGreetAt > greetIntervalMsNow()) {
           markGreeted(now);
           void triggerProactive();
           trackEvent({ type: "greeting", summary: "主动问候了用户" });
+          scheduleNextGreeting();
           return;
         }
       }
       lastActiveAt = now;
     }
 
-    const sinceGreet = now - lastGreetAt;
-    // 用户设置的问候间隔（分钟→毫秒）
-    const greetIntervalMs = (settings.assistant.greetInterval ?? 20) * 60 * 1000;
-
-    // 固定间隔问候：用户在活跃、且距上次问候超过设定间隔就问候一次。
-    // 这里原先是"场景触发"，门槛分别为久坐 90 分钟 + 间隔×3、熬夜 30 分钟、
-    // 心情 45 分钟、兜底 60 分钟 —— 全都远高于设置值本身，导致设置项形同虚设。
-    if (sinceGreet > greetIntervalMs && !wasIdle) {
-      markGreeted(now);
-      void triggerProactive();
-      trackEvent({ type: "greeting", summary: "主动问候了用户" });
-      return;
-    }
+    // 固定间隔问候交给 scheduleNextGreeting() 的精确定时器（60 秒粒度会把
+    // "20 分钟"变成"20 分钟 + 0~60 秒"，用户觉得不准）。这个 tick 只负责任务：
+    // 记录离开/回来、以及"回来时补一次回归问候"。
 
     // 原先这里还有一条"早晨首次（6~10 点且 lastGreetAt===0）"：锚点持久化后它永远不会命中
     // （间隔分支先跑，且 lastGreetAt 极少为 0），而且它在用户**离开**时也会触发 —— 删掉。
@@ -1112,6 +1211,9 @@ async function boot() {
     void checkUpdate(false);
   }, UPDATE_CHECK_DELAY);
 
+  // 托盘菜单「设置」：Rust 侧发 open-settings 事件（以前是空实现，点了没反应）
+  void listen("open-settings", () => openSettingsWindow());
+
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
     toggleAudio(false);
@@ -1126,7 +1228,7 @@ async function boot() {
   setupReminder();
 
   setupContextMenu(
-    () => buildMenu(engine),
+    () => buildCompactMenu(engine),
     onMenuOpen,
     () => getWindowVisibleRect(),
     (x: number, y: number) => isInsideModel({ clientX: x, clientY: y }),
@@ -1135,6 +1237,14 @@ async function boot() {
   startInteractionRegionSync();
   void setupAssistantHotkeyListener();
 
+  // 渲染帧率：平时 30fps 省电，拖拽时抬到 60fps 让画布跟得上窗口
+  const IDLE_MAX_FPS = 30;
+  const DRAG_MAX_FPS = 120; // 窗口是 8ms(=125Hz) 原生在动，画布跟上才不显得"拖影"
+
+  const setTickerFps = (n: number) => {
+    try { app.app.ticker.maxFPS = n; } catch { /* 未初始化时忽略 */ }
+  };
+
   // 左键：按住可拖动桌宠；轻点（<6px 未拖）算"摸头"反应或打开小助手。
   // 非待机：拖动走 Rust 原生跟随线程（GetCursorPos → SetWindowPos，8ms，零每帧 IPC）。
   // 待机中：拖动沿边缘水平滑动（Rust 锁 y 跟随，只移动待机位置，不退出；退出仅靠右键菜单）。
@@ -1142,6 +1252,34 @@ async function boot() {
   let nativeDragStart: Promise<unknown> | null = null;
   let uiPointerLocked = false;
   let dragLastMove = 0;
+
+  /**
+   * 拖拽时把模型边界推给 Rust 的 8ms 跟随线程 —— **限流到 ~20 次/秒**。
+   *
+   * 原来 pointermove（16ms）与每帧 tick 各发一次，实测一次 IPC 往返 ~8ms，
+   * 于是拖拽时每秒 60~90 次调用把 IPC 桥塞满，表现为"拖动有点卡"。
+   * 边界只需要跟上窗口位移的量级，20 次/秒足够让 8ms 线程夹紧。
+   */
+  let lastBoundsPushAt = 0;
+  if (import.meta.env.DEV) {
+    // dev 调试：CDP 里看拖拽状态（moved/mode），排查"拖拽没触发/被看门狗掐掉"用
+    (window as any).__dragState = () => (drag ? { moved: drag.moved, mode: drag.mode } : null);
+  }
+  const pushModelBounds = (cb: { left: number; top: number; right: number; bottom: number } | null) => {
+    const now = performance.now();
+    if (now - lastBoundsPushAt < 30) return; // ≈33 次/秒：再密就是白烧 IPC，再疏夹紧会滞后
+    lastBoundsPushAt = now;
+    const ox = engine.rawOffset.x;
+    const oy = engine.rawOffset.y;
+    const b = cb ?? { left: 200, top: 200, right: 500, bottom: 500 };
+    const s = scaleFactor || 1;
+    void invoke("set_model_bounds", {
+      left: Math.round((ox + b.left) * s),
+      top: Math.round((oy + b.top) * s),
+      right: Math.round((ox + b.right) * s),
+      bottom: Math.round((oy + b.bottom) * s),
+    });
+  };
   let dragOutsideFrames = 0; // 拖拽看门狗：光标连续出窗帧数
   document.addEventListener("pointerdown", (e) => {
     void analyzer.ctx.resume();
@@ -1182,6 +1320,9 @@ async function boot() {
         // 一次性启动 Rust 原生拖动（此后窗口由 8ms 线程直接跟随鼠标）
         nativeDragStart = invoke("drag_start", {}).catch(() => {});
       }
+      // 窗口是 Rust 每 8ms 挪一次的，画布却还按 30fps 出图 → 视觉上模型"追不上"
+      // 窗口，看着就是卡。拖拽期间临时抬到 60fps，松手再降回去（省电）。
+      setTickerFps(DRAG_MAX_FPS);
     }
     const now = performance.now();
     if (now - dragLastMove < 16) return;
@@ -1196,20 +1337,8 @@ async function boot() {
       const cb = view.getCharacterBounds?.() ?? null;
       engine.syncModelOffset(cb ?? undefined);
       engine.constrainPosition();
-      // 实时发送模型边界（含 offset）给 Rust drag_follow，8ms 原生夹紧
-      {
-        const ox = engine.rawOffset.x;
-        const oy = engine.rawOffset.y;
-        const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
-        const b = cb ?? fallback;
-        const s = scaleFactor || 1;
-        void invoke("set_model_bounds", {
-          left: Math.round((ox + b.left) * s),
-          top: Math.round((oy + b.top) * s),
-          right: Math.round((ox + b.right) * s),
-          bottom: Math.round((oy + b.bottom) * s),
-        });
-      }
+      // 实时发送模型边界（含 offset）给 Rust drag_follow，8ms 原生夹紧（内部限流）
+      pushModelBounds(cb);
     }
   });
   const endDrag = (cancelled = false) => {
@@ -1229,6 +1358,7 @@ async function boot() {
     }
     nativeDragStart = null;
     drag = null;
+    setTickerFps(IDLE_MAX_FPS);
     // 保存桌宠位置（供重启恢复）
     void getCurrentWindow().outerPosition().then(p => { savePetPosition(p.x / scaleFactor, p.y / scaleFactor); });
     if (clicked) {
@@ -1312,48 +1442,55 @@ async function boot() {
   }
 /** 显示更新公告弹窗 */
 function showAnnouncement(title: string, lines: string[], version: string) {
+  document.getElementById("announcement-panel")?.remove();
   const panel = document.createElement("div");
   panel.id = "announcement-panel";
-  panel.className = "model-panel";
-  panel.style.width = "300px";
+  // 固定头 + 可滚正文 + 固定按钮（见 style.css 的 .announcement-panel）
+  panel.className = "model-panel announcement-panel";
 
   const titleEl = document.createElement("div");
   titleEl.className = "mp-title";
   titleEl.textContent = title;
   panel.appendChild(titleEl);
 
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "announce-body";
   for (const line of lines) {
     if (!line) {
       const spacer = document.createElement("div");
       spacer.style.height = "6px";
-      panel.appendChild(spacer);
+      bodyEl.appendChild(spacer);
       continue;
     }
     const p = document.createElement("div");
     p.style.cssText = "font-size:12.5px;color:#5a4a65;line-height:1.7;padding:2px 0;";
     // 分节标题（【新增】/【优化】/【未来计划】/【作者的话】）加粗并上色，方便一眼扫过
-    if (/^【.+】$/.test(line)) {
+    if (/^【.+】/.test(line)) {
       p.style.cssText = "font-size:12.5px;font-weight:700;color:#b0658f;line-height:1.7;padding:4px 0 1px;";
     }
     p.textContent = line;
-    panel.appendChild(p);
+    bodyEl.appendChild(p);
   }
+  panel.appendChild(bodyEl);
 
   const btns = document.createElement("div");
-  btns.className = "as-set-btns";
-  btns.style.marginTop = "12px";
+  btns.className = "as-set-btns announce-actions";
   const okBtn = document.createElement("button");
   okBtn.className = "as-btn as-btn-primary";
   okBtn.textContent = "知道了";
   okBtn.addEventListener("click", () => {
     markAnnounced(version, lines);
     panel.remove();
+    requestInteractionRegionSync(true);
   });
   btns.appendChild(okBtn);
   panel.appendChild(btns);
 
   document.body.appendChild(panel);
-  positionPanelNearModel(panel);
+  // 不整块自滚：滚动交给 .announce-body，标题和按钮永远在原位。
+  // 尺寸按可见区钳制（窗口贴边/高 DPI 缩小屏时也不会顶出屏幕）。
+  keepDialogFullyVisible(panel, 8, { selfScroll: false });
+  requestInteractionRegionSync(true);
   // 对话记录面板打开后，让歌词/对话气泡贴到面板下方，不遮挡面板内容
   repositionLyricBubble();
   repositionAssistantBubbles();
@@ -1370,6 +1507,7 @@ function showAnnouncement(title: string, lines: string[], version: string) {
   let lastNow = performance.now();
   app.app.ticker.add(() => {
     const now = performance.now();
+    const __t0 = import.meta.env.DEV ? performance.now() : 0; // dev 性能采样起点
     const dt = Math.min(0.05, (now - lastNow) / 1000);
     lastNow = now;
 
@@ -1380,20 +1518,8 @@ function showAnnouncement(title: string, lines: string[], version: string) {
     engine.syncModelOffset(cb ?? undefined);
     engine.update(now, dt);
     // 仅拖拽期间同步给 Rust drag follower；穿透判定使用独立 regions。
-    if (drag?.moved && drag.mode !== "idleSlide") {
-      const ox = engine.rawOffset.x;
-      const oy = engine.rawOffset.y;
-      // 有 characterBounds → 精确边界；无 → 窗口中心 300x300 作为 fallback
-      const fallback = { left: 200, top: 200, right: 500, bottom: 500 };
-      const b = cb ?? fallback;
-      const s = scaleFactor || 1;
-      void invoke("set_model_bounds", {
-        left: Math.round((ox + b.left) * s),
-        top: Math.round((oy + b.top) * s),
-        right: Math.round((ox + b.right) * s),
-        bottom: Math.round((oy + b.bottom) * s),
-      });
-    }
+    // 和 pointermove 那条共用限流（同一次拖拽里两边都调也只是 20 次/秒）
+    if (drag?.moved && drag.mode !== "idleSlide") pushModelBounds(cb);
     // 拖拽看门狗：原生跟随期间光标离开窗口（屏边夹紧 / 待机锁 y 拖出）后 WebView
     // 收不到 pointerup，拖拽状态会永久卡死。连续检测到光标出窗约 100ms 即强制结束。
     if (drag && drag.moved) {
@@ -1486,9 +1612,14 @@ function showAnnouncement(title: string, lines: string[], version: string) {
         ib.style.bottom = "auto";
       }
       positionFloatingUi(toasts, bubbles, lyricBubbles, mr, vr);
-      // 其他面板（model-panel、chat-history 等）
+      // 其他面板（model-panel、chat-history 等）：统一避开设置窗口，别互相叠住
+      const settingsWin = document.getElementById("settings-window");
+      const settingsRect = settingsWin && !settingsWin.classList.contains("hidden")
+        ? settingsWin.getBoundingClientRect()
+        : null;
       document.querySelectorAll(".model-panel:not(.hidden), #chat-history-panel").forEach(el => {
-        positionPanelNearModel(el as HTMLElement);
+        if ((el as HTMLElement).id === "settings-window") return;
+        positionPanelNearModel(el as HTMLElement, settingsRect);
       });
       // 天气信息板单独跟随：始终紧挨着模型，贴边自动翻到内侧
       const followEl = document.getElementById("info-panel");
@@ -1502,6 +1633,12 @@ function showAnnouncement(title: string, lines: string[], version: string) {
       console.log(`[driver] → bass=${driver.bass.toFixed(3)} mid=${driver.mid.toFixed(3)} sway=${settings.audioEnabled ? "on" : "OFF"}`);
     }
     view.update(driver, dt);
+    if (import.meta.env.DEV) {
+      // dev 性能采样：每帧 JS 耗时（含本回调里所有 DOM 读写），供 CDP 里统计
+      const w = window as any;
+      (w.__tickMs ||= []).push(performance.now() - __t0);
+      if (w.__tickMs.length > 400) w.__tickMs.shift();
+    }
   });
 }
 
@@ -1954,12 +2091,18 @@ async function toggleModelPanel() {
  * 这里做两件事：先按可见区给尺寸上限（可见区比弹窗还窄时让它缩，别硬撑出屏），
  * 再把左上角钳进可见区。调用前必须已经 append 到 body，否则量不到尺寸。
  */
-function keepDialogFullyVisible(dlg: HTMLElement, margin = 8): void {
+function keepDialogFullyVisible(
+  dlg: HTMLElement,
+  margin = 8,
+  opts: { selfScroll?: boolean } = {},
+): void {
   const vr = getWindowVisibleRect();
   const { maxWidth, maxHeight } = fitSizeInRect(vr, margin);
   dlg.style.maxWidth = `${Math.round(maxWidth)}px`;
   dlg.style.maxHeight = `${Math.round(maxHeight)}px`;
-  dlg.style.overflow = "auto";
+  // selfScroll=false 用于「固定头 + 可滚正文」的弹窗：滚动交给内部容器，
+  // 整块面板自己 overflow:hidden 才不会把标题/按钮一起滚走
+  if (opts.selfScroll !== false) dlg.style.overflow = "auto";
   const r = dlg.getBoundingClientRect(); // 量"缩小之后"的真实尺寸
   const pos = clampIntoRect(
     { left: r.left, top: r.top, width: r.width, height: r.height },
@@ -2112,7 +2255,7 @@ function nudgeLyricOffset(deltaMs: number): void {
   toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}（本首记住）`);
 }
 
-function buildMenu(engine: BehaviorEngine) {
+function buildMenu(engine: BehaviorEngine): MenuItemSpec[] {
   // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
   if (settings.idleMode) {
     return [
@@ -2161,24 +2304,21 @@ function buildMenu(engine: BehaviorEngine) {
         {
           // 非 Windows 平台入口改名：这里只剩歌词相关设置（回环跟唱那项在 mac/Linux 不存在）
           id: "audio",
+          // 这一行只负责展开（带 submenu 的行点了就是展开，不放开关）；
+          // 真正的开关放在子项里，Windows / mac / Linux 行为一致
           label: IS_WINDOWS ? "跟随音乐" : "音乐与歌词",
-          state: IS_WINDOWS ? (settings.audioEnabled ? "开" : "关") : undefined,
           submenu: [
             // "跟随音乐"靠 Windows 的系统回环录音（WASAPI）跟节拍/跟唱：
             // mac 没有等价能力（要装 BlackHole 或写 CoreAudio Tap）；
             // Linux 虽然可以用 PipeWire/PulseAudio 的 monitor 源做回环，但本产品在 Linux 上
             // 决定不做（见 src-tauri/src/audio_linux.rs），所以这一项同样只在 Windows 显示。
             // 歌词气泡在 mac/Linux 都可用（mac 走 AppleScript，Linux 走 MPRIS），保留。
-            ...(IS_WINDOWS
-              ? []
-              : [
             {
               id: "audio-follow",
-              label: "跟随音乐（未完善）",
+              label: IS_WINDOWS ? "跟随音乐" : "跟随音乐（未完善）",
               state: settings.audioEnabled ? "开" : "关",
               onPick: () => toggleAudio(!settings.audioEnabled),
             },
-                ]),
             {
               id: "lyrics-bubble",
               label: "歌词气泡",
@@ -2566,6 +2706,83 @@ function buildMenu(engine: BehaviorEngine) {
   ];
 }
 
+/**
+ * 右键菜单精简版：只保留 交互 / 语音输出 / 今日抽卡 / 小游戏 / 小助手模式，
+ * 其余全部收纳进「设置」独立窗口（openSettingsPanel）。
+ * buildMenu(engine) 仍是唯一的全量菜单数据源——设置窗口与右键菜单共用同一份
+ * 项定义与 onPick 闭包，保证被转移的功能行为与原来完全一致。
+ */
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "daily-card", "minigames", "assistant"]);
+
+function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
+  const all = buildMenu(engine);
+  // 待机模式保持原样的迷你菜单（待机开关 + 提示），不受精简影响
+  if (settings.idleMode) return all;
+  const kept = all.filter((i) => COMPACT_MENU_KEEP.has(i.id));
+  return [
+    ...kept,
+    { id: "sep", separator: true },
+    {
+      id: "open-settings",
+      label: "⚙️ 设置",
+      onPick: () => openSettingsWindow(),
+    },
+  ];
+}
+
+/**
+ * 设置窗口的「让位」摆法：贴到可见区最下面，并把高度收到可见区 45% 以内。
+ * 从设置窗口点开「调整模型边界」这类二级面板时用它 —— 否则设置窗口会盖住角色和绿框，
+ * 用户根本看不到自己在调什么。
+ */
+function dockSettingsBottom(el: HTMLElement): void {
+  const vr = getWindowVisibleRect();
+  const visH = Math.max(120, vr.bottom - vr.top);
+  // 只占可见区约 1/3：下面这条是"让位"，主角是刚打开的二级面板和角色/绿框
+  const maxH = Math.max(150, Math.min(300, Math.round(visH * 0.33)));
+  // 宽度/横向位置：优先躲到角色旁边较空的一侧（贴底停靠 + 不压角色），
+  // 两侧都太窄再退回居中 —— 不然设置窗口总是盖住角色下半身和绿框。
+  const mr = getModelRect();
+  const gap = 8;
+  const spaceRight = vr.right - mr.right - gap * 2;
+  const spaceLeft = mr.left - vr.left - gap * 2;
+  let w: number;
+  let left: number;
+  if (spaceRight >= 200 || spaceLeft >= 200) {
+    if (spaceRight >= spaceLeft) {
+      w = Math.min(320, spaceRight);
+      left = vr.right - w - gap;
+    } else {
+      w = Math.min(320, spaceLeft);
+      left = vr.left + gap;
+    }
+  } else {
+    w = Math.min(320, Math.max(200, vr.right - vr.left - gap * 2));
+    left = (vr.left + vr.right - w) / 2;
+  }
+  el.style.maxHeight = `${maxH}px`;
+  el.style.width = `${w}px`;
+  el.style.left = `${Math.round(left)}px`;
+  const h = el.offsetHeight || maxH;
+  el.style.top = `${Math.round(Math.max(vr.top + 8, vr.bottom - h - 8))}px`;
+  // 停靠后立刻把已经打开的其它面板按"避开设置窗口"重摆一次，
+  // 否则它们还停在老位置，会和设置窗口叠在一起（调整模型边界时最明显）
+  const r = el.getBoundingClientRect();
+  document
+    .querySelectorAll<HTMLElement>(".model-panel:not(#settings-window):not(.hidden), #chat-history-panel:not(.hidden)")
+    .forEach((other) => positionPanelNearModel(other, r));
+}
+
+/** 打开设置窗口的统一入口：右键菜单「⚙️ 设置」与托盘菜单「设置」都走这里 */
+function openSettingsWindow(): void {
+  openSettingsPanel(() => buildSettingsItems(engine), positionPanelNearModel, dockSettingsBottom);
+}
+
+/** 设置窗口内容：全量菜单里除去右键菜单保留项后的全部功能 */
+function buildSettingsItems(engine: BehaviorEngine): MenuItemSpec[] {
+  return buildMenu(engine).filter((i) => !COMPACT_MENU_KEEP.has(i.id) && !i.separator);
+}
+
 async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
   saveSettings(settings);
@@ -2576,8 +2793,9 @@ async function toggleIdle() {
     infoPanelEl?.classList.add("hidden");
     // 关闭所有面板类元素：模型面板/卡牌/日记/大小/边界/调节等
     document.querySelectorAll(".model-panel:not(.hidden)").forEach(el => el.classList.add("hidden"));
-    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置
+    // 关闭独立面板：小助手设置/对话记录/反馈/动作调试/TTS设置/设置窗口
     document.getElementById("assistant-settings")?.classList.add("hidden");
+    closeSettingsPanel();
     document.getElementById("chat-history-panel")?.classList.add("hidden");
     document.getElementById("feedback-panel")?.classList.add("hidden");
     document.getElementById("action-debug")?.classList.add("hidden");
@@ -3708,11 +3926,12 @@ async function toggleAssistantSettings() {
       // 保存主动问候间隔（钳制到 5-120 分钟）
       const greetVal = parseInt(greetInput.value, 10);
       const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
-      // 每次保存都重设计时锚点：不管间隔变没变，从保存这一刻开始重新计时，
-      // 避免"保存前已经累积的时长到了，刚保存就被问候一下"。
-      resyncGreetingSchedule();
       settings.assistant.greetInterval = nextGreetInterval;
       saveSettings(settings);
+      // 重排必须在**新间隔写进 settings 之后**：反过来的话 resync 会按旧间隔算下一次，
+      // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
+      // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。
+      resyncGreetingSchedule();
       // API Key 存 Rust 侧（DPAPI 加密）
       try {
         await invoke("set_api_key", { apiKey: key.value.trim() });
