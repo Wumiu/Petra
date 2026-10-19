@@ -1135,6 +1135,11 @@ async function boot() {
     return;
   }
 
+  // 旧版单 Key 迁移：启动时先按"当前选中的供应商"领一次。
+  // 放在这里而不是切供应商时：此刻的选择就是用户升级前在用的那一家，
+  // 之后切换供应商就不会再把这份旧 Key 带过去（Rust 侧 adopt_legacy 只领一次）。
+  void getApiKey().catch(() => {});
+
   // 同步 Rust 侧音频开关到持久化设置
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
 

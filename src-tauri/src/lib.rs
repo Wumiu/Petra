@@ -1376,13 +1376,31 @@ fn api_key_store_apply(map: &mut ApiKeyStore, scope: &str, api_key: &str) {
         map.remove(scope);
         return;
     }
-    map.remove("__legacy");
     map.insert(scope.to_string(), key.to_string());
 }
 
+/// 首次读取时的迁移：把旧版单 Key 归到调用方指定的供应商名下。
+///
+/// **不能**在 set_api_key 里顺手删 `__legacy`：那样用户只要先给任意一个供应商存过 Key
+/// （比如新增的 OpenAI），还没被读取过的旧 DeepSeek Key 就被永久删掉了 —— 真实踩过。
+/// 改成"第一次读到某个供应商时才把它领走"，之后它只属于那个供应商。
+fn api_key_store_adopt_legacy(map: &mut ApiKeyStore, scope: &str) -> Option<String> {
+    let scope = scope.trim();
+    if scope.is_empty() {
+        return None;
+    }
+    let legacy = map.remove("__legacy")?;
+    let key = legacy.trim().to_string();
+    if key.is_empty() {
+        return None;
+    }
+    map.insert(scope.to_string(), key.clone());
+    Some(key)
+}
+
+/// 只查槽位，不做旧版兜底（旧版由 adopt_legacy 在读取路径上一次性迁移）
 fn api_key_store_lookup(map: &ApiKeyStore, scope: &str) -> Option<String> {
     map.get(scope.trim())
-        .or_else(|| map.get("__legacy"))
         .map(|k| k.trim().to_string())
         .filter(|k| !k.is_empty())
 }
@@ -1399,12 +1417,19 @@ fn set_api_key(app: AppHandle, scope: String, api_key: String) -> Result<(), Str
     write_api_key_store(&app, &api_key_store_serialize(&map)?)
 }
 
-/// 读取 API Key（DPAPI 解密）。没有该供应商的槽位时回退旧版单 Key。
+/// 读取 API Key（DPAPI 解密）。没有该供应商的槽位时，把旧版单 Key 领到当前供应商名下。
 #[cfg(windows)]
 #[tauri::command]
 fn get_api_key(app: AppHandle, scope: String) -> Result<String, String> {
-    api_key_store_lookup(&api_key_store_parse(&read_api_key_store(&app)), &scope)
-        .ok_or_else(|| "未设置 API Key".to_string())
+    let mut map = api_key_store_parse(&read_api_key_store(&app));
+    if let Some(k) = api_key_store_lookup(&map, &scope) {
+        return Ok(k);
+    }
+    if let Some(k) = api_key_store_adopt_legacy(&mut map, &scope) {
+        let _ = write_api_key_store(&app, &api_key_store_serialize(&map).unwrap_or_default());
+        return Ok(k);
+    }
+    Err("未设置 API Key".to_string())
 }
 
 #[cfg(windows)]
@@ -1577,8 +1602,15 @@ fn set_api_key(scope: String, api_key: String) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn get_api_key(scope: String) -> Result<String, String> {
-    api_key_store_lookup(&api_key_store_parse(&read_api_key_store()), &scope)
-        .ok_or_else(|| "未设置 API Key".to_string())
+    let mut map = api_key_store_parse(&read_api_key_store());
+    if let Some(k) = api_key_store_lookup(&map, &scope) {
+        return Ok(k);
+    }
+    if let Some(k) = api_key_store_adopt_legacy(&mut map, &scope) {
+        let _ = write_api_key_store(&api_key_store_serialize(&map).unwrap_or_default());
+        return Ok(k);
+    }
+    Err("未设置 API Key".to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -1810,8 +1842,15 @@ fn set_api_key(scope: String, api_key: String) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 #[tauri::command]
 fn get_api_key(scope: String) -> Result<String, String> {
-    api_key_store_lookup(&api_key_store_parse(&read_api_key_store()), &scope)
-        .ok_or_else(|| "未设置 API Key".to_string())
+    let mut map = api_key_store_parse(&read_api_key_store());
+    if let Some(k) = api_key_store_lookup(&map, &scope) {
+        return Ok(k);
+    }
+    if let Some(k) = api_key_store_adopt_legacy(&mut map, &scope) {
+        let _ = write_api_key_store(&api_key_store_serialize(&map).unwrap_or_default());
+        return Ok(k);
+    }
+    Err("未设置 API Key".to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -4706,12 +4745,18 @@ mod weather_tests {
 mod tests {
     use super::*;
 
-    /// 旧版存的是"一整串 Key"：必须能读出来（当成 __legacy），否则老用户升级后要重填。
+    /// 旧版存的是"一整串 Key"：第一次读到某个供应商时把它领走，之后只属于那个供应商。
     #[test]
-    fn api_key_store_migrates_legacy_single_key() {
-        let map = api_key_store_parse("sk-legacy-123");
+    fn api_key_store_adopts_legacy_on_first_read() {
+        let mut map = api_key_store_parse("sk-legacy-123");
+        // 槽位是空的
+        assert_eq!(api_key_store_lookup(&map, "deepseek"), None);
+        // 读取时领走
+        assert_eq!(api_key_store_adopt_legacy(&mut map, "deepseek").as_deref(), Some("sk-legacy-123"));
         assert_eq!(api_key_store_lookup(&map, "deepseek").as_deref(), Some("sk-legacy-123"));
-        assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-legacy-123"));
+        // 只领一次：别的供应商拿不到了（不会把旧 Key 发给别家）
+        assert_eq!(api_key_store_adopt_legacy(&mut map, "openai"), None);
+        assert_eq!(api_key_store_lookup(&map, "openai"), None);
     }
 
     /// 分供应商保存：互不覆盖，读各自的那一份。
@@ -4729,14 +4774,16 @@ mod tests {
         assert_eq!(back, map);
     }
 
-    /// 第一次保存某个供应商时，旧版单 Key 归到它名下，不再作为全局兜底泄漏给别家。
+    /// 给某个供应商保存 Key 时**不能**动旧版单 Key：否则用户先配了别家，
+    /// 还没被读过的旧 Key 就被永久删了（真实踩过的数据丢失）。
     #[test]
-    fn api_key_store_absorbs_legacy_on_first_save() {
+    fn api_key_store_save_never_drops_legacy() {
         let mut map = api_key_store_parse("sk-legacy-123");
         api_key_store_apply(&mut map, "openai", "sk-new");
         assert_eq!(api_key_store_lookup(&map, "openai").as_deref(), Some("sk-new"));
-        // legacy 已被吸收：别的供应商不会拿到它
-        assert_eq!(api_key_store_lookup(&map, "deepseek"), None);
+        // legacy 还在，等它自己的供应商来领
+        assert_eq!(api_key_store_adopt_legacy(&mut map, "deepseek").as_deref(), Some("sk-legacy-123"));
+        assert_eq!(api_key_store_lookup(&map, "deepseek").as_deref(), Some("sk-legacy-123"));
     }
 
     /// 保存空串 = 清空该供应商的槽位，不影响其它供应商。
