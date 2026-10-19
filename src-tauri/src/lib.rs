@@ -3980,8 +3980,16 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            // 托盘「设置」：前端 boot 里 listen("open-settings") 会打开设置窗口
+            // 托盘「设置」：前端 boot 里 listen("open-settings") 会打开设置窗口。
+            // 主窗口被隐藏过（设置里点「隐藏」/ 托盘左键隐藏）时，设置窗口会创建在
+            // 一个不可见的主窗口里 —— 用户看到的就是「点了没反应」。所以先 show + focus，
+            // 与全局快捷键唤起路径（assist_hotkey 回调）保持一致。
             "settings" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.set_focus();
+                }
                 let _ = app.emit("open-settings", ());
             }
             "restart" => {

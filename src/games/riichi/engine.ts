@@ -445,13 +445,18 @@ export class RiichiGame {
       if (this.disposed || this.phase !== "playing" || id !== this.runId) return;
 
       if (needDraw) {
-        if (this.wall.length === 0) {
+        // 岭上摸牌优先于「活牌墙空 → 流局」：暗杠后 drawFromDead 为真，此时就算活牌墙
+        // 已经摸空，也必须先摸王牌区的岭上牌（并正常结算岭上开花）。以前先判 wall.length===0
+        // 就直接 finishDraw()，于是"摸到最后一张活牌的同时暗杠"会被抢判流局，
+        // 岭上牌不摸、手牌还少一张就去做听牌清算。
+        const useRinshan = this.drawFromDead && this.rinshanDraws < 4;
+        if (this.wall.length === 0 && !useRinshan) {
           this.finishDraw();
           return;
         }
         let tile: number;
         let rinshan = false;
-        if (this.drawFromDead && this.rinshanDraws < 4) {
+        if (useRinshan) {
           const slot = this.rinshanDraws++;
           tile = this.deadWall[slot] as number;
           // 岭上摸牌后把活牌墙最后一张补入同一王牌槽：王牌区始终正好 14 张，

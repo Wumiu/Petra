@@ -98,7 +98,14 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       }
       console.log("[updater] check done, update:", update ? `version=${update.version}` : "none");
       if (!update) return null;
-      // 缓存 Update 实例供后续下载使用
+      // 缓存 Update 实例供后续下载使用。
+      // 换新实例前先关掉旧的：plugin 每 check 成功一次就在 Rust 侧注册一个 Update 资源，
+      // JS 不 close() 就会随每次自动检查单调增长（长会话里几十个也不释放）。
+      try {
+        await _cachedUpdate?.close();
+      } catch {
+        /* 旧实例可能已被关闭/未初始化，忽略 */
+      }
       _cachedUpdate = update;
       return {
         version: update.version,

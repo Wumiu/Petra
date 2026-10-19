@@ -922,10 +922,25 @@ async function setAssistantHotkey() {
     toast("已取消设置快捷键", "info");
     return;
   }
-  settings.assistant.shortcut = acc;
-  saveSettings(settings);
+  const prev = settings.assistant.shortcut;
+  // 先注册、成功了再持久化：Rust 侧注册函数会先 unregister 旧键再注册新键，
+  // 失败时旧键已经丢了。以前先写设置再注册，于是一个被占用的组合会让"原来的快捷键失效 +
+  // 坏组合被持久化"，重启后仍按坏组合静默失败。
   const ok = await registerAssistantHotkey(acc);
-  toast(ok ? `呼出快捷键已设为 ${acc}` : `快捷键 ${acc} 注册失败，可换个组合试试`, ok ? "info" : "warn");
+  if (ok) {
+    settings.assistant.shortcut = acc;
+    saveSettings(settings);
+    toast(`呼出快捷键已设为 ${acc}`, "info");
+    return;
+  }
+  // 注册失败：把旧键重新注册回去，别让用户两头落空
+  if (prev) await registerAssistantHotkey(prev);
+  toast(
+    prev
+      ? `快捷键 ${acc} 注册失败（可能被别的程序占用），已保留原来的 ${prev}`
+      : `快捷键 ${acc} 注册失败，可换个组合试试`,
+    "warn",
+  );
 }
 
 /** 菜单项：清除已设置的快捷键 */
@@ -1227,7 +1242,10 @@ async function boot() {
 
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
-    toggleAudio(false);
+    // 不要因为一次瞬时失败就关掉功能并写进设置；Rust 侧 3 秒后会自动重连，
+    // 但 enabled=false 会让它再也推不出 PCM（前端也收不到恢复事件）——
+    // 以前一次蓝牙重连/切播放设备就把「跟随音乐」永久关了，还得手动去设置里开。
+    if (settings.audioEnabled) void invoke("set_audio_enabled", { enabled: true });
   });
   void startAudio();
 
@@ -3080,6 +3098,8 @@ function applyHourlyChime(): void {
 // ---------- 信息板（桌宠伴侣信息） ----------
 let infoPanelEl: HTMLElement | null = null;
 let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
+/** 淡出后补 hidden 的定时器（必须可取消，否则会把刚重新弹出的面板又藏起来） */
+let infoPanelFadeTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWeather: { text: string; time: number } | null = null;
 
 // 天气解析与展示见 src/features/weather/WeatherFormat.ts（纯函数，有单测）
@@ -3124,6 +3144,12 @@ async function showInfoPanel() {
   // 先限制尺寸，再按真实可用空间定位。
   positionInfoPanelNearModel(el, mr, vr);
 
+  // 取消上一次淡出尚未执行的「补 hidden」，否则它会在 300ms 后把刚显示的面板又藏起来
+  if (infoPanelFadeTimer) {
+    clearTimeout(infoPanelFadeTimer);
+    infoPanelFadeTimer = null;
+  }
+  el.classList.remove("hidden");
   el.style.opacity = "1";
   // 进入动画（从下方滑入）
   el.style.transform = "translateY(12px)";
@@ -3144,7 +3170,14 @@ function hideInfoPanel() {
   }
   el.style.opacity = "0";
   el.style.transform = "translateY(8px)";
-  setTimeout(() => el.classList.add("hidden"), 300);
+  // 这个延时必须存起来：以前是匿名 setTimeout，showInfoPanel 只清了 5 秒那个定时器，
+  // 于是在「✕ 关闭 / 自动淡出」后 300ms 内再点桌宠 —— 面板刚 remove("hidden") 又被
+  // 这个旧定时器加回 hidden，表现为"点了一下没弹出信息板，得再点一次"。
+  if (infoPanelFadeTimer) clearTimeout(infoPanelFadeTimer);
+  infoPanelFadeTimer = setTimeout(() => {
+    infoPanelFadeTimer = null;
+    el.classList.add("hidden");
+  }, 300);
 }
 
 // 待办变化时刷新信息版（模态框添加后触发）

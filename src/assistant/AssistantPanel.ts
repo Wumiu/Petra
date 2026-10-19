@@ -1037,6 +1037,9 @@ async function send(text: string) {
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
   ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
+  // 新消息开始就掐掉上一段语音：否则旧回复还在朗读，新回复的语音排在旧队列后面，
+  // 用户听到的内容和屏幕上的新回复完全对不上。
+  if (s.tts.enabled) ttsPlayer.stop();
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled) {
     const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
@@ -1224,7 +1227,7 @@ async function send(text: string) {
     // 以前这里刻意不淡出，气泡就一直挂到下一轮、把桌宠挡个正着。
     // 语音开着就等这一段播完再按字数计时（onIdle 只在「队列空且未在播」时触发一次，
     // 合成失败/没排上队时永不触发 -> 120 秒兜底）；语音关着直接按字数计时。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       let armed = false;
       const arm = () => {
         if (armed) return;
@@ -1874,7 +1877,7 @@ export async function triggerProactive() {
     if (emo !== "neutral") reactNow(emo);
     bubble.dataset.emotion = bubbleEmotion(emo);
     // 语音开着等播完再消失
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       ttsPlayer.onIdle(() => scheduleFade(bubble, 3000));
     } else {
       scheduleFade(bubble, 10000);
@@ -1928,7 +1931,7 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
     // 不保存到主 history，避免影响主动问候
     // 语音开着：等播完再消失。onIdle 只在「队列空且未在播放」时触发一次，
     // 短文可能在注册回调前就播完（回调永不触发），故必须带超时兜底。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       let faded = false;
       ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } });
       setTimeout(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } }, 120000);

@@ -55,6 +55,17 @@ class TTSPlayer {
     if (!enabled) this.stop();
   }
 
+  /**
+   * 语音输出是否**真的**配置好了（开关 + Key + 音色都齐）。
+   *
+   * 气泡淡出时机要按这个判断：以前调用方读的是 `settings.tts.apiKey`，而那个字段
+   * 从来没被赋值（Key 存在 Rust 里，前端只在 setConfig 时传一次），条件恒 false，
+   * 于是「等播完再淡出」永远是死代码，长回复的气泡在朗读到一半时就消失了。
+   */
+  get configured(): boolean {
+    return this.enabled && Boolean(this.apiKey) && Boolean(this.speakerId);
+  }
+
   pushDelta(delta: string) {
     if (!this.enabled || !this.apiKey || !this.speakerId) return;
     if (this.stopped) return;
