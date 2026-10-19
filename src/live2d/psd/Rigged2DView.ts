@@ -542,8 +542,20 @@ export class Rigged2DView implements PetView {
     const s = this.displayW / Math.max(cw, ch);
     const dw = cw * s;
     const dh = ch * s;
-    const offsetX = (700 - dw) / 2;
-    const offsetY = (700 - dh) / 2;
+    /**
+     * 画布在**视口**里居中（见 style.css：`#stage canvas.rig { left:50%; top:50%;
+     * transform: translate(-50%,-50%) }`），所以这里必须用真实视口尺寸来算它的左上角，
+     * 不能写死 700。
+     *
+     * 以前写死 700：一旦视口不是 700 CSS px（非 100% 系统缩放、窗口尺寸与配置不一致等），
+     * 包围盒就会整体偏移 `(700 - 视口) / 2` 像素。由于绿框、点击判定、气泡/面板定位
+     * 全都从 `getCharacterBounds()` 取坐标，它们会**一起**偏 —— 表现为"绿框和交互区
+     * 都跑到模型旁边去了"。用户实测：1920×1080 + 125% 缩放下偏移约 70px。
+     */
+    const viewW = window.innerWidth || 700;
+    const viewH = window.innerHeight || 700;
+    const offsetX = (viewW - dw) / 2;
+    const offsetY = (viewH - dh) / 2;
     const pad = this.boundsPad;
     return {
       left: offsetX + cb.left * s - pad.left,

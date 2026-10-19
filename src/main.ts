@@ -317,11 +317,28 @@ async function applyModelScale(s: number, record = false) {
   view.setScale(modelW);
 }
 
+/**
+ * 红框（窗口边界）元素：**按需惰性创建**。
+ *
+ * 菜单里的「显示边框」在正式构建里也是可见的，但元素以前只在 `import.meta.env.DEV`
+ * 的 boot 分支里创建 —— 打包版点开关只会把状态翻成「开」，屏幕上什么都不会出现
+ * （`el?.` 对 null 静默跳过）。和绿框同一个坑，改成谁用谁创建。
+ */
+function ensureDebugBorderEl(): HTMLElement {
+  let el = document.getElementById("debug-border");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "debug-border";
+    el.className = "hidden";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
 function toggleDebugBorder() {
   debugBorderVisible = !debugBorderVisible;
-  const el = document.getElementById("debug-border");
-  el?.classList.toggle("hidden", !debugBorderVisible);
+  ensureDebugBorderEl().classList.toggle("hidden", !debugBorderVisible);
 }
 
 /**
@@ -1070,14 +1087,8 @@ async function boot() {
   engine.setTracking(settings.mouseTrack);
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
   void applyModelScale(settings.modelScale);
-  if (import.meta.env.DEV) {
-    // 红框是纯调试用的（窗口边界），只在 dev 建；
-    // 绿框（角色边界）是「调整模型边界」面板要用的，改成按需创建，见 ensureModelBoundsEl。
-    const border = document.createElement("div");
-    border.id = "debug-border";
-    border.className = "hidden";
-    document.body.appendChild(border);
-  }
+  // 红框 / 绿框都改成按需创建（见 ensureDebugBorderEl / ensureModelBoundsEl）：
+  // 菜单开关在正式构建里也可见，提前在 boot 里按 dev 创建会让打包版"有开关无效果"。
   // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
   setModelRectProvider(getModelRect);
   if (import.meta.env.DEV) {
