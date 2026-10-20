@@ -1696,6 +1696,12 @@ fn linux_asr_key_file() -> Result<std::path::PathBuf, String> {
     linux_key_file("asr_key")
 }
 
+/// TTS 密钥的降级落盘位置：~/.config/petra/tts_key（同样 600 权限）。
+#[cfg(target_os = "linux")]
+fn linux_tts_key_file() -> Result<std::path::PathBuf, String> {
+    linux_key_file("tts_key")
+}
+
 /// 从 Secret Service 读密码：键不存在、keyring 没运行、secret-tool 没装都返回 None。
 #[cfg(target_os = "linux")]
 fn secret_tool_lookup_for(account: &str) -> Option<String> {
@@ -1827,6 +1833,51 @@ fn read_stored_asr_key(_app: &AppHandle) -> String {
 #[tauri::command]
 fn get_asr_key(app: AppHandle) -> Result<String, String> {
     Ok(read_stored_asr_key(&app))
+}
+
+/// TTS 密钥的 Secret Service 账户名（与 api_key / asr_key 分开存，互不覆盖）。
+#[cfg(target_os = "linux")]
+const TTS_SECRET_ACCOUNT: &str = "tts_key";
+
+/// 存 TTS 密钥（Linux）：优先 Secret Service，失败落 600 权限文件。
+///
+/// 之前 **Linux 上根本没有 set_tts_key / get_tts_key**，但 generate_handler! 是
+/// 三平台共享的列表 —— Linux 目标会直接报 "cannot find function"。这个缺口
+/// 只有真正在 Linux 上编译才会暴露，所以一直没被发现。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn set_tts_key(_app: AppHandle, api_key: String) -> Result<(), String> {
+    let path = linux_tts_key_file()?;
+    if api_key.is_empty() {
+        if !secret_tool_store_for(TTS_SECRET_ACCOUNT, "Petra TTS Key", "") {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Ok(());
+    }
+    if secret_tool_store_for(TTS_SECRET_ACCOUNT, "Petra TTS Key", &api_key) {
+        let _ = std::fs::remove_file(&path);
+        log_line("set_tts_key: 已写入 Secret Service");
+        return Ok(());
+    }
+    write_private_file(&path, &api_key)?;
+    log_line("set_tts_key: Secret Service 不可用，已写入 ~/.config/petra/tts_key（权限 600）");
+    Ok(())
+}
+
+/// 读 TTS 密钥（Linux）：先 Secret Service，再降级文件。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn get_tts_key(_app: AppHandle) -> Result<String, String> {
+    if let Some(v) = secret_tool_lookup_for(TTS_SECRET_ACCOUNT) {
+        return Ok(v);
+    }
+    let path = linux_tts_key_file()?;
+    let v = std::fs::read_to_string(&path).map_err(|_| "未设置 TTS Key".to_string())?;
+    let v = v.trim().to_string();
+    if v.is_empty() {
+        return Err("未设置 TTS Key".to_string());
+    }
+    Ok(v)
 }
 
 /// 存储 API Key（Linux）：优先 Secret Service，失败落 600 权限文件。
