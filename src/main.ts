@@ -3866,10 +3866,13 @@ async function toggleAssistantSettings() {
 
     const mkRow = (label: string, el: HTMLElement) => {
       const row = document.createElement("div");
-      // 测试分支：设置行改为上下排布（标签在上、控件整行铺满）。
-      // 原来是「标签 + 控件」左右排布，标签固定 64px，长控件（API Key 输入框、
-      // 端点 URL、模型名）会被挤得很窄。想恢复左右排布只要去掉 is-stacked。
-      row.className = "as-set-row is-stacked";
+      // 测试分支：长控件（API Key 输入框 / 端点 URL / 模型名）的行改成上下排布，
+      // 标签在上、控件铺满整行 —— 原来左右排布时标签固定 64px，会把输入框挤得很窄。
+      //
+      // 但**开关类**（复选框）不参与纵向：它只有 38px 宽，纵向会把一个孤零零的小开关
+      // 甩到标签下一行，看起来像"设置项丢了"。开关行保持「标签在左、开关靠右」。
+      const isToggle = el instanceof HTMLInputElement && el.type === "checkbox";
+      row.className = isToggle ? "as-set-row as-set-row--toggle" : "as-set-row is-stacked";
       const l = document.createElement("span");
       l.className = "as-set-label";
       l.textContent = label;

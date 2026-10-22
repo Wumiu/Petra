@@ -714,16 +714,23 @@ body {
 .as-set-row.is-stacked > .as-btn {
   align-self: flex-end;
 }
-/* 纵向行里的复选框：原生小方框摆在新一行左侧显得很怪，
-   这里换成与设置窗口一致的小开关，并靠右对齐 */
-.as-set-row.is-stacked > input[type="checkbox"] {
-  align-self: flex-end;
+/* 开关行（.as-set-row--toggle）保持「标签在左、开关靠右」同一行；
+   纵向行里不会出现复选框。原生小方框换成与设置窗口一致的小开关。 */
+.as-set-row--toggle > .as-set-label {
+  /* 标签吃掉剩余宽度（否则 64px 会把「AI 对局互动」挤成两行），开关被推到最右 */
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+.as-set-row > input[type="checkbox"] {
+  align-self: center;
   appearance: none;
   -webkit-appearance: none;
   flex: none;
   width: 38px;
   height: 21px;
-  margin: 2px 0;
+  /* 左边 auto = 靠右（横向开关行）；纵向行里不会走到这条规则 */
+  margin: 2px 0 2px auto;
   border-radius: 999px;
   background: linear-gradient(180deg, #e6dfeb 0%, #f8f6fa 100%);
   box-shadow:
@@ -734,7 +741,7 @@ body {
   cursor: pointer;
   transition: background 0.18s ease, box-shadow 0.18s ease;
 }
-.as-set-row.is-stacked > input[type="checkbox"]::after {
+.as-set-row > input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 2.5px;
@@ -746,14 +753,14 @@ body {
   box-shadow: 0 1px 2px rgba(60, 40, 80, 0.35), 0 0 0 0.5px rgba(90, 60, 110, 0.12);
   transition: transform 0.18s cubic-bezier(0.4, 1.5, 0.6, 1);
 }
-.as-set-row.is-stacked > input[type="checkbox"]:checked {
+.as-set-row > input[type="checkbox"]:checked {
   background: linear-gradient(180deg, #f6b3cd 0%, #e2699a 100%);
   box-shadow:
     inset 0 1px 2px rgba(150, 40, 85, 0.38),
     inset 0 -1px 1px rgba(255, 255, 255, 0.34),
     0 1px 1px rgba(255, 255, 255, 0.6);
 }
-.as-set-row.is-stacked > input[type="checkbox"]:checked::after {
+.as-set-row > input[type="checkbox"]:checked::after {
   transform: translateX(17px);
 }
 .as-set-label {
