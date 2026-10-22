@@ -699,6 +699,17 @@ body {
   gap: 8px;
   padding: 6px 2px;
 }
+/* 测试分支：设置行改成上下排布（标签在上、控件在下）。
+   原来是「API Key  [输入框]」这种左右排布，标签固定 64px 会挤压输入框；
+   改成纵向后标签独占一行、控件整行铺满。 */
+.as-set-row.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.as-set-row.is-stacked > .as-set-label {
+  width: auto;
+}
 .as-set-label {
   width: 64px;
   flex-shrink: 0;

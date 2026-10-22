@@ -3866,7 +3866,10 @@ async function toggleAssistantSettings() {
 
     const mkRow = (label: string, el: HTMLElement) => {
       const row = document.createElement("div");
-      row.className = "as-set-row";
+      // 测试分支：设置行改为上下排布（标签在上、控件整行铺满）。
+      // 原来是「标签 + 控件」左右排布，标签固定 64px，长控件（API Key 输入框、
+      // 端点 URL、模型名）会被挤得很窄。想恢复左右排布只要去掉 is-stacked。
+      row.className = "as-set-row is-stacked";
       const l = document.createElement("span");
       l.className = "as-set-label";
       l.textContent = label;
@@ -3975,7 +3978,7 @@ async function toggleAssistantSettings() {
     mkRow("预设", presetSelect);
 
     const presetNameRow = document.createElement("div");
-    presetNameRow.className = "as-set-row";
+    presetNameRow.className = "as-set-row is-stacked";
     const presetNameLabel = document.createElement("span");
     presetNameLabel.className = "as-set-label";
     presetNameLabel.textContent = "预设名称";
@@ -4187,7 +4190,7 @@ async function toggleAssistantSettings() {
 
     // 主动问候间隔时间设置
     const greetRow = document.createElement("div");
-    greetRow.className = "as-set-row";
+    greetRow.className = "as-set-row is-stacked";
     const greetLabel = document.createElement("span");
     greetLabel.className = "as-set-label";
     greetLabel.textContent = "主动问候间隔";
@@ -4299,7 +4302,7 @@ async function toggleAssistantSettings() {
 
     // AI 用量统计（本地估算，帮助用户感知 token 消耗）
     const usageRow = document.createElement("div");
-    usageRow.className = "as-set-row";
+    usageRow.className = "as-set-row is-stacked";
     usageRow.style.cssText = "align-items:flex-start;";
     const usageLabel = document.createElement("span");
     usageLabel.className = "as-set-label";
