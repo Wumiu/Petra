@@ -4327,13 +4327,18 @@ async function toggleAssistantSettings() {
     renderUsage();
     const usageReset = document.createElement("button");
     usageReset.className = "as-btn";
-    usageReset.style.cssText = "padding:2px 8px;font-size:11px;flex:none;";
+    usageReset.style.cssText = "padding:2px 8px;font-size:11px;flex:none;margin-left:auto;";
     usageReset.textContent = "清零";
     usageReset.addEventListener("click", () => {
       resetUsageStats();
       renderUsage();
     });
-    usageRow.append(usageLabel, usageBox, usageReset);
+    // 「清零」跟标题同一行、靠右；纵向行里直接当第三个子元素会被甩到统计文字下面，
+    // 看起来像一个悬空的小按钮。
+    const usageHead = document.createElement("div");
+    usageHead.style.cssText = "display:flex;align-items:center;gap:8px;width:100%;";
+    usageHead.append(usageLabel, usageReset);
+    usageRow.append(usageHead, usageBox);
     host.appendChild(usageRow);
 
     const btns = document.createElement("div");
@@ -4351,7 +4356,11 @@ async function toggleAssistantSettings() {
     privacyHint.className = "as-privacy";
     privacyHint.textContent = "隐私提示：主动问候会读取当前前台窗口标题+进程名并发送给 AI。API Key 经系统 DPAPI 加密存储。";
     host.appendChild(privacyHint);
-    host.appendChild(clearHistBtn);
+    // 直接 append 到 host 会是左对齐，和上面那些靠右的按钮不一致；放进按钮组统一靠右
+    const clearHistRow = document.createElement("div");
+    clearHistRow.className = "as-set-btns";
+    clearHistRow.appendChild(clearHistBtn);
+    host.appendChild(clearHistRow);
 
     const back = document.createElement("button");
     back.className = "as-btn";
