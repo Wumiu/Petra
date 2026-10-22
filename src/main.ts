@@ -4207,7 +4207,11 @@ async function toggleAssistantSettings() {
     greetUnit.textContent = "分钟";
     greetUnit.style.fontSize = "12px";
     greetUnit.style.color = "#8a7a95";
-    greetRow.append(greetLabel, greetInput, greetUnit);
+    // 纵向排布下，输入框和「分钟」要留在同一行；直接作为 row 的子元素会被拆成两行
+    const greetInputRow = document.createElement("div");
+    greetInputRow.style.cssText = "display:flex;align-items:center;gap:6px;";
+    greetInputRow.append(greetInput, greetUnit);
+    greetRow.append(greetLabel, greetInputRow);
     host.appendChild(greetRow);
 
     const gameTalk = document.createElement("input");
