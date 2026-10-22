@@ -3977,6 +3977,84 @@ async function toggleAssistantSettings() {
     model.placeholder = "模型名（留空用默认）";
     model.value = settings.assistant.model;
     mkRow("模型名", model);
+
+    const fetchBtn = document.createElement("button");
+    fetchBtn.className = "as-btn";
+    fetchBtn.textContent = "自动获取模型";
+    fetchBtn.addEventListener("click", async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "获取中…";
+      let models: string[] = [];
+      try {
+        models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          baseUrl.value.trim(),
+        );
+      } catch (e: unknown) {
+        models = [];
+        const errMsg = e instanceof Error ? e.message : String(e);
+        toast(`获取失败：${errMsg}`, "warn");
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = "自动获取模型";
+      }
+      if (models.length) {
+        // 填充下拉列表
+        modelSelect.innerHTML = "";
+        for (const m of models) {
+          const opt = document.createElement("option");
+          opt.value = m;
+          opt.textContent = m;
+          modelSelect.appendChild(opt);
+        }
+        // 自动选中：优先保留用户之前填的模型名，否则选第一个
+        const current = model.value.trim();
+        if (current && models.includes(current)) {
+          modelSelect.value = current;
+        } else {
+          model.value = models[0];
+          modelSelect.value = models[0];
+        }
+        toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
+      } else {
+        // error already shown in catch
+      }
+    });
+    mkRow("", fetchBtn);
+
+    // 「测试连接」：只验证 端点 + Key + 网络 是否通，不填充模型列表。
+    // 之所以单独做一个：用户切供应商后最常见的困惑就是"到底通没通"——
+    // 自动获取模型失败时看不出是 Key 错、端点错还是网络错。
+    const testBtn = document.createElement("button");
+    testBtn.className = "as-btn";
+    testBtn.textContent = "测试连接";
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "测试中…";
+      try {
+        const isCustom = (provider.value as string) === "custom";
+        const base = isCustom ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
+        const models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          base,
+        );
+        toast(
+          models.length
+            ? `连接成功：${PROVIDERS[provider.value as keyof typeof PROVIDERS].label} 可用模型 ${models.length} 个`
+            : "连接成功（该端点没有返回模型列表）",
+          "info",
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast(`连接失败：${msg}`, "warn");
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = "测试连接";
+      }
+    });
+    mkRow("", testBtn);
     modelSelect.addEventListener("change", () => {
       if (modelSelect.value) model.value = modelSelect.value;
     });
@@ -4239,85 +4317,8 @@ async function toggleAssistantSettings() {
     gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
     host.appendChild(gameTalkHelp);
 
-    sep(); // 分组：测试与用量
-    const fetchBtn = document.createElement("button");
-    fetchBtn.className = "as-btn";
-    fetchBtn.textContent = "自动获取模型";
-    fetchBtn.addEventListener("click", async () => {
-      fetchBtn.disabled = true;
-      fetchBtn.textContent = "获取中…";
-      let models: string[] = [];
-      try {
-        models = await listModels(
-          provider.value as AssistantProvider,
-          key.value.trim(),
-          baseUrl.value.trim(),
-        );
-      } catch (e: unknown) {
-        models = [];
-        const errMsg = e instanceof Error ? e.message : String(e);
-        toast(`获取失败：${errMsg}`, "warn");
-      } finally {
-        fetchBtn.disabled = false;
-        fetchBtn.textContent = "自动获取模型";
-      }
-      if (models.length) {
-        // 填充下拉列表
-        modelSelect.innerHTML = "";
-        for (const m of models) {
-          const opt = document.createElement("option");
-          opt.value = m;
-          opt.textContent = m;
-          modelSelect.appendChild(opt);
-        }
-        // 自动选中：优先保留用户之前填的模型名，否则选第一个
-        const current = model.value.trim();
-        if (current && models.includes(current)) {
-          modelSelect.value = current;
-        } else {
-          model.value = models[0];
-          modelSelect.value = models[0];
-        }
-        toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
-      } else {
-        // error already shown in catch
-      }
-    });
-    mkRow("", fetchBtn);
 
-    // 「测试连接」：只验证 端点 + Key + 网络 是否通，不填充模型列表。
-    // 之所以单独做一个：用户切供应商后最常见的困惑就是"到底通没通"——
-    // 自动获取模型失败时看不出是 Key 错、端点错还是网络错。
-    const testBtn = document.createElement("button");
-    testBtn.className = "as-btn";
-    testBtn.textContent = "测试连接";
-    testBtn.addEventListener("click", async () => {
-      testBtn.disabled = true;
-      testBtn.textContent = "测试中…";
-      try {
-        const isCustom = (provider.value as string) === "custom";
-        const base = isCustom ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
-        const models = await listModels(
-          provider.value as AssistantProvider,
-          key.value.trim(),
-          base,
-        );
-        toast(
-          models.length
-            ? `连接成功：${PROVIDERS[provider.value as keyof typeof PROVIDERS].label} 可用模型 ${models.length} 个`
-            : "连接成功（该端点没有返回模型列表）",
-          "info",
-        );
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        toast(`连接失败：${msg}`, "warn");
-      } finally {
-        testBtn.disabled = false;
-        testBtn.textContent = "测试连接";
-      }
-    });
-    mkRow("", testBtn);
-
+    sep(); // 分组：AI 用量
     // AI 用量统计（本地估算，帮助用户感知 token 消耗）
     const usageRow = document.createElement("div");
     usageRow.className = "as-set-row is-stacked";
@@ -4727,7 +4728,6 @@ function toggleAudio(on: boolean) {
 registerRiichiGame();
 
 void boot();
-
 
 
 
