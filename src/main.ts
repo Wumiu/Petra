@@ -3881,6 +3881,13 @@ async function toggleAssistantSettings() {
       return row;
     };
 
+    /** 功能分组的长横线（纯装饰，不参与交互） */
+    const sep = () => {
+      const hr = document.createElement("div");
+      hr.className = "as-sep";
+      host.appendChild(hr);
+    };
+
     const provider = document.createElement("select");
     provider.className = "as-input as-select";
     (Object.keys(PROVIDERS) as Array<keyof typeof PROVIDERS>).forEach(k => { const opt = document.createElement("option"); opt.value = k; opt.textContent = PROVIDERS[k].label; provider.appendChild(opt); })
@@ -3976,6 +3983,7 @@ async function toggleAssistantSettings() {
 
     // ---------- 预设：保存 / 切换 / 重命名 / 删除（参考酒馆的操作方式） ----------
     // 只存非敏感字段；每个预设的 Key 单独存 Rust 侧 `preset:<id>` 槽位。
+    sep(); // 分组：预设
     const presetSelect = document.createElement("select");
     presetSelect.className = "as-input as-select";
     mkRow("预设", presetSelect);
@@ -4124,6 +4132,7 @@ async function toggleAssistantSettings() {
 
     refreshPresets();
 
+    sep(); // 分组：人设
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
     persona.rows = 3;
@@ -4171,6 +4180,7 @@ async function toggleAssistantSettings() {
     mkRow("对用户的称呼", nickname);
 
     // 文件禁止目录：小助手只能读写 桌面/文档/下载，这里额外拉黑
+    sep(); // 分组：功能
     const denyPaths = document.createElement("textarea");
     denyPaths.className = "as-input as-persona";
     denyPaths.rows = 3;
@@ -4229,6 +4239,7 @@ async function toggleAssistantSettings() {
     gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
     host.appendChild(gameTalkHelp);
 
+    sep(); // 分组：测试与用量
     const fetchBtn = document.createElement("button");
     fetchBtn.className = "as-btn";
     fetchBtn.textContent = "自动获取模型";
@@ -4352,6 +4363,7 @@ async function toggleAssistantSettings() {
       toast("对话历史已清空（长期记忆保留）");
     });
 
+    sep(); // 分组：隐私
     const privacyHint = document.createElement("div");
     privacyHint.className = "as-privacy";
     privacyHint.textContent = "隐私提示：主动问候会读取当前前台窗口标题+进程名并发送给 AI。API Key 经系统 DPAPI 加密存储。";

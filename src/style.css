@@ -710,6 +710,12 @@ body {
 .as-set-row.is-stacked > .as-set-label {
   width: auto;
 }
+/* 分组分隔线：按功能把设置项隔开（接入配置 / 预设 / 人设 / 功能 / 测试与用量） */
+.as-sep {
+  height: 0;
+  margin: 12px 0 10px;
+  border-top: 1px solid rgba(120, 100, 140, 0.18);
+}
 /* 纵向行里：动作按钮靠右、宽度按内容（不再拉满整行） */
 .as-set-row.is-stacked > .as-btn {
   align-self: flex-end;
