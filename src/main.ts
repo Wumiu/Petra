@@ -3977,6 +3977,9 @@ async function toggleAssistantSettings() {
     model.placeholder = "模型名（留空用默认）";
     model.value = settings.assistant.model;
     mkRow("模型名", model);
+    modelSelect.addEventListener("change", () => {
+      if (modelSelect.value) model.value = modelSelect.value;
+    });
 
     const fetchBtn = document.createElement("button");
     fetchBtn.className = "as-btn";
@@ -4021,7 +4024,6 @@ async function toggleAssistantSettings() {
         // error already shown in catch
       }
     });
-    mkRow("", fetchBtn);
 
     // 「测试连接」：只验证 端点 + Key + 网络 是否通，不填充模型列表。
     // 之所以单独做一个：用户切供应商后最常见的困惑就是"到底通没通"——
@@ -4054,10 +4056,12 @@ async function toggleAssistantSettings() {
         testBtn.textContent = "测试连接";
       }
     });
-    mkRow("", testBtn);
-    modelSelect.addEventListener("change", () => {
-      if (modelSelect.value) model.value = modelSelect.value;
-    });
+    // 两个按钮同属"验证接入配置"：自动获取模型会填充上面的模型列表，
+    // 测试连接只验证端点 + Key + 网络。并成一行靠右，省一行高度。
+    const apiBtnRow = document.createElement("div");
+    apiBtnRow.className = "as-set-btns";
+    apiBtnRow.append(fetchBtn, testBtn);
+    host.appendChild(apiBtnRow);
 
     // ---------- 预设：保存 / 切换 / 重命名 / 删除（参考酒馆的操作方式） ----------
     // 只存非敏感字段；每个预设的 Key 单独存 Rust 侧 `preset:<id>` 槽位。
