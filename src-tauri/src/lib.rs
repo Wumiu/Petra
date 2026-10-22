@@ -1801,9 +1801,9 @@ const ASR_SECRET_ACCOUNT: &str = "asr_key";
 fn set_asr_key(_app: AppHandle, api_key: String) -> Result<(), String> {
     let path = linux_asr_key_file()?;
     if api_key.is_empty() {
-        if !secret_tool_store_for(ASR_SECRET_ACCOUNT, "Petra ASR Key", "") {
-            let _ = std::fs::remove_file(&path);
-        }
+        // 同 set_tts_key：清空时必须无条件删降级文件，否则 get_asr_key 会把旧 Key 读回来
+        let _ = secret_tool_store_for(ASR_SECRET_ACCOUNT, "Petra ASR Key", "");
+        let _ = std::fs::remove_file(&path);
         return Ok(());
     }
     if secret_tool_store_for(ASR_SECRET_ACCOUNT, "Petra ASR Key", &api_key) {
@@ -1849,9 +1849,11 @@ const TTS_SECRET_ACCOUNT: &str = "tts_key";
 fn set_tts_key(_app: AppHandle, api_key: String) -> Result<(), String> {
     let path = linux_tts_key_file()?;
     if api_key.is_empty() {
-        if !secret_tool_store_for(TTS_SECRET_ACCOUNT, "Petra TTS Key", "") {
-            let _ = std::fs::remove_file(&path);
-        }
+        // 清空时必须**无条件**删掉降级文件：secret_tool_lookup_for 会把空值过滤成 None，
+        // 于是 get_tts_key 会回落读这个文件，把刚清掉的旧 Key 又"复活"出来
+        // （以前只在 keyring 写入失败时才删）。
+        let _ = secret_tool_store_for(TTS_SECRET_ACCOUNT, "Petra TTS Key", "");
+        let _ = std::fs::remove_file(&path);
         return Ok(());
     }
     if secret_tool_store_for(TTS_SECRET_ACCOUNT, "Petra TTS Key", &api_key) {

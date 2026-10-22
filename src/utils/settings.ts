@@ -45,6 +45,8 @@ export interface AssistantSettings {
   presets: AssistantPreset[];
   /** 当前应用的预设 id；手动改供应商/端点时会清空，Key 作用域随之回退到 provider */
   activePresetId: string;
+  /** 持久化对话历史所属的输出语言（用于"换语言就清历史"，重启后不再误判） */
+  historyLang: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
   /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
@@ -175,6 +177,7 @@ const DEFAULTS: Settings = {
     customBaseUrl: "",
     presets: [],
     activePresetId: "",
+    historyLang: "",
     greetInterval: 20,
     nickname: "",
     shortcut: "",

@@ -739,13 +739,16 @@ function setCurrentBoundsPadding(p: { left: number; right: number; top: number; 
   (view as any)?.setBoundsPadding?.(p);
 }
 
-/** 换模型后重置当前模型的边界到默认（view 可能还没初始化，安全检查） */
+/**
+ * 换模型时**不要**再清边界松紧。
+ *
+ * 边界松紧已经按模型存（boundsPaddings），新模型本来就没有记录、自然回落到 0；
+ * 而这里两个调用点（importPsdBytes / 模型列表点击）都在 currentModel 更新**之前**执行，
+ * paddingKey() 拿到的是"即将卸载的旧模型" —— 会把用户在原模型上辛苦调好的值删掉，
+ * 切回去就丢了。所以保留按模型的值，什么都不做。
+ */
 function resetBoundsOnModelSwitch() {
-  // 清掉的是"当前这个模型"的记录：以前清的是全局单值，在模型 A 上调好的偏移会被
-  // 带到模型 B 上（绿框/点击区/气泡全偏），而换回 A 时又已经丢了。
-  delete settings.boundsPaddings[paddingKey()];
-  saveSettings(settings);
-  if (view) (view as any).setBoundsPadding?.({ ...ZERO_PADDING });
+  /* no-op：保留每个模型自己的边界松紧 */
 }
 
 async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
@@ -3933,19 +3936,18 @@ async function toggleAssistantSettings() {
     });
     mkRow("API Key", keyWrap);
     toggleBaseUrl(); // set initial placeholder
-    // API Key 按供应商 / 预设分槽存（Rust 侧 DPAPI 加密），打开面板时回填当前那一份
+    // API Key 按供应商 / 预设分槽存（Rust 侧加密），打开面板时回填当前那一份。
+    // **必须显式传 provider.value**：无参 getApiKey() 读的是已保存的 settings.assistant.provider，
+    // 而这里下拉可能已经切到别的供应商但还没保存 —— 会回填上一个供应商的 Key，
+    // 再点保存就把 A 家的 Key 写进 B 家的槽位（并把它发给 B 家）。
     const loadKeyForProvider = async () => {
-      key.value = await getApiKey();
+      key.value = await getApiKey(provider.value);
       maskKey();
     };
     void loadKeyForProvider();
-    // 切供应商时换成它自己的 Key：以前只回填一次全局 Key，切到别家后旧 Key 会继续发过去；
-    // 手动换供应商等于脱离预设，清掉 activePresetId 让 Key 作用域回到 provider。
+    // 切供应商只刷新 Key 显示，不写 settings、也不清 activePresetId：
+    // 用户可能只是切一下又切回去，真正的"脱离预设"在保存时判定（见保存处理器）。
     provider.addEventListener("change", () => {
-      if (settings.assistant.activePresetId) {
-        settings.assistant.activePresetId = "";
-        saveSettings(settings);
-      }
       void loadKeyForProvider();
     });
 
@@ -4099,6 +4101,13 @@ async function toggleAssistantSettings() {
         { id, name, provider: prov, customBaseUrl: base, model: model.value.trim() },
       ];
       settings.assistant.activePresetId = id;
+      // 关键：把当前 UI 的 provider/端点/模型同步进 settings.assistant。
+      // 只写 presets+activePresetId 的话，Key 作用域已经切到 preset:<id>，但请求仍按
+      // settings.assistant.provider 发 —— 用户改完供应商直接存预设就会出现
+      // "旧供应商 + 新预设的 Key" 的错配（跨厂商发 Key / 401），而且重启后仍然错。
+      settings.assistant.provider = prov;
+      settings.assistant.customBaseUrl = base;
+      settings.assistant.model = model.value.trim();
       saveSettings(settings);
       // 把当前 Key 复制到该预设的槽位：预设之间互不覆盖，切回来就是它自己那份
       await setApiKey(key.value.trim(), presetKeyScope(id)).catch(() => {});
@@ -4345,7 +4354,22 @@ async function toggleAssistantSettings() {
     save.className = "as-btn as-btn-primary";
     save.textContent = "保存";
     save.addEventListener("click", async () => {
-      settings.assistant.provider = provider.value as AssistantProvider;
+      // 先吸收磁盘上的最新设置：别的模块（歌词同步微调、免确认 shell/写文件等）可能刚写过
+      // settings，而这里的 settings 是启动时加载的旧快照 —— 直接整对象覆盖会把它们的改动
+      // 静默回滚，重启后也消失。
+      settings = loadSettings();
+      const nextProvider = provider.value as AssistantProvider;
+      // 手动改了供应商 => 脱离预设。只在真正保存时判定：只在按下来看一下又切回去，
+      // 不应该把已应用的预设作废（旧实现是 change 时立刻持久化清空）。
+      if (settings.assistant.activePresetId) {
+        const activePreset = (settings.assistant.presets ?? []).find(
+          (p) => p.id === settings.assistant.activePresetId,
+        );
+        if (!activePreset || activePreset.provider !== nextProvider) {
+          settings.assistant.activePresetId = "";
+        }
+      }
+      settings.assistant.provider = nextProvider;
       // 自定义端点自动规范化：补 /v1、去掉多余的 /chat/completions
       // （用户很容易把完整请求地址贴进来，导致再拼一次路径而 404）
       settings.assistant.customBaseUrl =

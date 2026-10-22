@@ -176,10 +176,10 @@ export class SpeechRecognizer {
 
   /** 停止并丢弃（关掉小助手、用户反悔时用） */
   cancel(): void {
-    if (!this.isRecording()) return;
-    // 递增 token：就算 getUserMedia 正在路上，它回来时也会发现"这一路已作废"，
-    // 自己把刚拿到的音轨关掉，不会留下一个没人管、还在录的麦克风
+    // 无条件作废当前 token：VAD 已经自动收尾（isRecording() 为 false）时，
+    // 识别请求可能还在路上，早退会让它回来照样 onFinal → 关掉面板后还莫名其妙发出一条消息。
     this.startToken++;
+    if (!this.isRecording()) return;
     if (this.backend === "web-speech") this.finishWebSpeech(false);
     else this.finishSiliconFlow(true);
   }
@@ -379,7 +379,9 @@ export class SpeechRecognizer {
         if (discard) return;
         // 太短/太小：多半是误触，直接忽略，不花识别费
         if (isTooShort(elapsed, blob.size, MIN_RECORD_MS)) return;
-        void this.transcribe(blob);
+        // 带上本次会话的 token：识别请求在途的 1~3 秒里用户关掉面板/开了小游戏/重新按麦克风，
+        // cancel() 会让 token 失配，回来时就把这条结果丢掉（以前会把它直接发出去）
+        void this.transcribe(blob, token);
       };
       rec.start();
       this.mediaRecorder = rec;
@@ -477,7 +479,7 @@ export class SpeechRecognizer {
   }
 
   /** 把录音交给 Rust 侧转写（密钥不进前端） */
-  private async transcribe(blob: Blob): Promise<void> {
+  private async transcribe(blob: Blob, token: number): Promise<void> {
     try {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = "";
@@ -487,10 +489,13 @@ export class SpeechRecognizer {
       }
       const audio = btoa(binary);
       const text = await invoke<string>("asr_transcribe", { audio });
+      // 在途期间被取消/新开了一轮录音：这条结果作废，不能弹也不能自动发送
+      if (token !== this.startToken) return;
       const trimmed = (text || "").trim();
       if (trimmed) this.handlers.onFinal?.(trimmed);
       else this.handlers.onNoSpeech?.(); // 服务返回空 = 没听清，不是错误
     } catch (e) {
+      if (token !== this.startToken) return;
       const msg = e instanceof Error ? e.message : String(e);
       this.handlers.onError?.(msg.startsWith("未配置") ? msg : `语音识别失败：${msg}`);
     }

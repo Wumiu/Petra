@@ -32,10 +32,11 @@ let bubbles: HTMLElement | null = null;
 let input: HTMLTextAreaElement;
 let allowAllShell: HTMLInputElement;
 let history: ChatMessage[] = [];
-let lastChatLang = "";
 let memory: MemoryStore = [];
 let timer: number | null = null;
 let busy = false;
+/** 本次启动是否已从磁盘加载过历史（只加载一次，见 openAssistant） */
+let historyLoaded = false;
 let lifecycleOnOpen: (() => void) | null = null;
 let lifecycleOnClose: (() => void) | null = null;
 
@@ -244,11 +245,8 @@ async function loadHistory() {
   } catch {
     history = [];
   }
-  // 关键：把「当前语言」基准设成磁盘历史所属语言（即当前设置）。
-  // lastChatLang 以前只是内存变量、初值 ""，于是设置了「人物语言」的用户重启后第一次
-  // 发送会命中 send() 里「换语言就清历史」的判断，把整个持久化历史清空 —— 表现为
-  // 重启后第一次聊天上下文全丢。真正换语言时它仍会与 outLang 不同，照常清历史。
-  lastChatLang = loadSettings().assistant.outputLanguage ?? "";
+  // 不再在这里重置"历史所属语言" —— 那会把「改语言就清历史」也一起关掉。
+  // 历史语言改为持久化在 settings.assistant.historyLang，见 send()。
 }
 function saveHistory() {
   // 整体覆盖写到 app_data_dir/chat-history.json；fire-and-forget，失败不阻塞对话
@@ -804,10 +802,15 @@ export async function openAssistant(modelRect?: { left: number; top: number; rig
   ensureInput();
   ensureBubbles();
   loadMemory();
-  // 正在跑工具 / 等确认时不要从磁盘重载历史：内存里的 assistant+tool 序列还没落盘，
-  // 覆盖后 tool 消息会失去配对的 tool_calls，下一轮请求直接 400，之后每次都 400。
-  // （点桌宠、按全局快捷键都会走到这里，它们都不检查 busy，所以守卫必须放这儿）
-  if (!busy) await loadHistory();
+  // 历史只在**本次启动第一次打开**时从磁盘加载一次：
+  //  · 以前每次打开都无条件重载 —— 工具执行/确认中会把内存里尚未落盘的 assistant+tool
+  //    序列覆盖掉，配对丢失后每轮请求 400；
+  //  · 后来改成 busy 时跳过 —— 又引入新问题：启动后第一次打开若正赶上主动问候/抽卡点评
+  //    （busy=true），历史根本没加载过，之后第一条消息就把 chat-history.json 整份覆盖掉。
+  if (!historyLoaded) {
+    await loadHistory();
+    historyLoaded = true;
+  }
   inputBar!.classList.remove("hidden");
   // 定位到模型（绿框）附近：默认放底部，放不下翻到上方；始终钳制在窗口可见区内（贴边自适应）
   if (modelRect) {
@@ -1060,11 +1063,23 @@ async function send(text: string) {
     return;
   }
   const outLang = s.assistant.outputLanguage;
-  // 换语言时清空对话历史
-  if (lastChatLang !== outLang && history.length > 0) {
-    history = [];
+  // 换语言时清空对话历史。
+  // 以前用内存变量 lastChatLang 作基准，重启后初值为空 → 第一次发送就误清历史；
+  // 后来在 loadHistory 里初始化又导致"改语言永远不清"。现在把历史所属语言**持久化**：
+  //   - 有记录且与当前不同 => 用户真的换了语言 => 清历史
+  //   - 没有记录（老用户升级）=> 认作当前语言，不动历史
+  const historyLang = s.assistant.historyLang ?? "";
+  if (history.length > 0) {
+    if (historyLang && historyLang !== outLang) history = [];
+    else if (!historyLang) {
+      s.assistant.historyLang = outLang;
+      saveSettings(s);
+    }
   }
-  lastChatLang = outLang;
+  if (s.assistant.historyLang !== outLang) {
+    s.assistant.historyLang = outLang;
+    saveSettings(s);
+  }
   // 语言提醒压在用户消息末尾：模型对末尾最敏感，放中段会被后面的中文语境带跑
   const langReminder = buildLanguageReminder(outLang ?? "");
   const userContent = langReminder ? `${text}\n${langReminder}` : text;
@@ -1292,7 +1307,6 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
   };
 
   for (const tc of calls) {
-    const before = history.length;
     // 次数预算用尽：不再执行，但**仍然**回一条明确结果 ——
     // 留下一条悬空的 tool_calls 会让下一轮请求直接 400。
     if (!budget.canCall()) {
@@ -1620,8 +1634,15 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       }
     }
 
-    // 兜底：所有分支都没命中（例如工具表里加了名字但忘了接处理）也必须回一条结果
-    if (history.length === before) {
+    // 兜底：所有分支都没命中（例如工具表里加了名字但忘了接处理）也必须回一条结果。
+    //
+    // 不能再用 `history.length === before` 判断"有没有命中"：delete_wrong_history 会先把
+    // 数组缩短 1 条、再 push 自己的 tool 结果，长度又回到 before，于是会误判成"没命中"
+    // 再补一条同 id 的结果 —— 模型看到互相矛盾的两条，服务端也可能直接 400。
+    // 这里改成看**最后一条 tool 结果是不是本次调用的 id**。
+    const lastMsg = history[history.length - 1];
+    const answered = lastMsg?.role === "tool" && lastMsg.tool_call_id === tc.id;
+    if (!answered) {
       history.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -1639,11 +1660,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       }
     }
 
-    // 统一截断这次调用产生的结果，避免一次 run_shell 把上下文吃掉
-    for (let i = before; i < history.length; i++) {
+    // 统一截断这次调用产生的结果，避免一次 run_shell 把上下文吃掉。
+    // 按 tool_call_id 从后往前找，不要用下标：delete_wrong_history 会先缩短数组，
+    // 用起始下标会越界/截错消息。
+    for (let i = history.length - 1; i >= 0; i--) {
       const msg = history[i];
-      if (msg.role === "tool" && typeof msg.content === "string") {
-        msg.content = truncateToolResult(tc.name, msg.content);
+      if (msg.role === "tool" && msg.tool_call_id === tc.id) {
+        if (typeof msg.content === "string") {
+          msg.content = truncateToolResult(tc.name, msg.content);
+        }
+        break;
       }
     }
   }

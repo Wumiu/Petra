@@ -530,6 +530,10 @@ function buildMessages(
   const MAX_MSGS = 120;
   const MAX_CHARS = 30000;
   let msgs = history.slice(-MAX_MSGS);
+  // 定长切片可能正好从一条 tool 结果开始：OpenAI/DeepSeek 兼容端点要求 role=tool
+  // 必须紧跟带 tool_calls 的 assistant，否则整轮直接 400。历史是持久化且不限长的，
+  // 用过工具/日记/文件的长会话迟早会踩到。
+  while (msgs.length > 0 && msgs[0].role === "tool") msgs = msgs.slice(1);
   let total = msgs.reduce((s, m) => s + (m.content?.length ?? 0), 0);
   while (msgs.length > 2 && total > MAX_CHARS) {
     // 若下一条是 tool 消息，说明当前是带 tool_calls 的 assistant，不能删

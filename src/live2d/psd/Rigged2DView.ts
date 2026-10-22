@@ -147,13 +147,18 @@ export class Rigged2DView implements PetView {
     // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）后这个画布就再也画不出东西，
     // 表现为「模型整块消失、UI 还在」，而代码里没有任何恢复路径。
     // 这里 preventDefault 让浏览器允许恢复，并通知 main.ts 自动重建一次视图。
+    let view: Rigged2DView | null = null;
     canvas.addEventListener("webglcontextlost", (e) => {
+      // 主动销毁（PsdRuntime.destroy 里的 WEBGL_lose_context）也会派发这个事件：
+      // 换模型时 reloadView → unmount → loseContext → 事件 → 又 reloadView 会自激成死循环。
+      // tearingDown 用来区分"我们自己拆的"和"真的丢了"。
+      if (view?.tearingDown) return;
       e.preventDefault();
       document.dispatchEvent(new CustomEvent("petra:webgl-lost"));
     });
     const runtime = new PsdRuntime(canvas);
     await runtime.load(bytes);
-    const view = new Rigged2DView(canvas, runtime);
+    view = new Rigged2DView(canvas, runtime);
     view.setSwayEnabled(true);
     return view;
   }
@@ -163,9 +168,13 @@ export class Rigged2DView implements PetView {
   }
 
   unmount() {
+    this.tearingDown = true;
     this.canvas.remove();
     this.runtime.destroy();
   }
+
+  /** 正在主动拆除（区别于真实的 WebGL 上下文丢失，见 create 里的说明） */
+  private tearingDown = false;
 
   get warnings(): string[] {
     return this.runtime.warnings;
