@@ -441,6 +441,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { type: "actions", items: [{ id: "__data:models-fetch", label: "自动获取模型列表" }] },
           ],
         },
+        { title: "预设", desc: "", type: "presets" },
         { title: "API Key 与用量", desc: "", type: "keys" },
         { title: "对话记录", desc: "", type: "chat" },
         {
@@ -925,6 +926,51 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 预设：一套 API 配置（供应商 + 端点 + 模型 + 自己的 Key） */
+  function presetsCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "预设"));
+    card.appendChild(el("p", "cd", "一套 API 配置存成一个预设，一键切换。Key 各自独立存（预设槽位），不会互相覆盖。"));
+    const d = state.meta.data || {};
+    const list = (state.meta.presets || {}).list || (d.presets && d.presets.list) || [];
+    const activeId = (state.meta.presets || {}).activeId || "";
+    if (!list.length) {
+      card.appendChild(el("div", "empty", "还没有预设"));
+    }
+    list.forEach((p) => {
+      const row = el("div", "row");
+      const txt = el("div", "rtext");
+      const title = el("div", "rlabel", p.name + (p.id === activeId ? "（使用中）" : ""));
+      txt.appendChild(title);
+      txt.appendChild(el("div", "rdesc", `${p.provider} · ${p.model || "默认模型"}${p.customBaseUrl ? " · " + p.customBaseUrl : ""}`));
+      row.appendChild(txt);
+      const ctl = el("div", "rctl");
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = p.name;
+      nameInput.style.width = "min(120px, 28vw)";
+      nameInput.title = "改名后点「改名」";
+      const btnApply = el("button", "btn btn-sm" + (p.id === activeId ? "" : " btn-primary"), p.id === activeId ? "使用中" : "应用");
+      btnApply.onclick = () => { runAction(`__preset:apply:${p.id}`, "应用预设"); };
+      const btnRename = el("button", "btn btn-sm", "改名");
+      btnRename.onclick = () => runAction(`__preset:rename:${p.id}`, { name: nameInput.value }, "改名");
+      const btnDel = el("button", "btn btn-sm btn-danger", "删除");
+      btnDel.onclick = () => {
+        if (!confirm(`删除预设「${p.name}」？它的 Key 也会一起清掉。`)) return;
+        runAction(`__preset:delete:${p.id}`, "删除预设");
+      };
+      ctl.append(nameInput, btnApply, btnRename, btnDel);
+      row.appendChild(ctl);
+      card.appendChild(row);
+    });
+    const btns = el("div", "btn-row");
+    const save = el("button", "btn btn-primary btn-sm", "＋ 把当前配置存为预设");
+    save.onclick = () => runAction("__preset:save", "保存预设");
+    btns.appendChild(save);
+    card.appendChild(btns);
+    return card;
+  }
+
   /** API Key 与用量 */
   function keysCard() {
     const card = el("div", "card");
@@ -1233,6 +1279,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "status") return grid.appendChild(statusCard());
       if (cardSpec.type === "model") return grid.appendChild(modelCard());
       if (cardSpec.type === "keys") return grid.appendChild(keysCard());
+      if (cardSpec.type === "presets") return grid.appendChild(presetsCard());
       if (cardSpec.type === "chat") return grid.appendChild(chatCard());
       if (cardSpec.type === "card") return grid.appendChild(cardCard());
       if (cardSpec.type === "diary") return grid.appendChild(diaryCard());
