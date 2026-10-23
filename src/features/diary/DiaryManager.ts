@@ -19,6 +19,7 @@ import {
   type DigestInput,
 } from "./DiaryDigest";
 import { chatStream, isProviderReady, type ChatMessage } from "../../assistant/AssistantClient";
+import { getApiKey } from "../../assistant/apiKey";
 import { loadSettings } from "../../utils/settings";
 import { buildLanguageInstruction, splitTranslation } from "../../utils/outputLanguage";
 import { invoke } from "@tauri-apps/api/core";
@@ -69,7 +70,7 @@ export function takeDiaryStorageWarning(): string | null {
  */
 export async function hasApiKey(): Promise<boolean> {
   try {
-    const key = await invoke<string>("get_api_key");
+    const key = await getApiKey();
     // 本地 Ollama / 本机自定义端点不需要 Key，也算"可以用"
     return isProviderReady(loadSettings().assistant, key ?? "");
   } catch {
@@ -232,7 +233,7 @@ export async function checkAndGenerateDiary(opts: { manual?: boolean } = {}): Pr
   // 「自动生成」关掉后不再在启动/跨天时自动写，仍可在日记本里手动补写
   if (!opts.manual && settings.diary?.autoGenerate === false) return [];
 
-  const apiKey = await invoke<string>("get_api_key").catch(() => "");
+  const apiKey = await getApiKey();
   // 没配可用模型（且不是免 Key 的本地供应商）：不写日记
   if (!isProviderReady(settings.assistant, apiKey ?? "")) return [];
 

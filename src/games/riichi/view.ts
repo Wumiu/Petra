@@ -271,6 +271,15 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
   let aiProbeDone = false;
   let petLine = "";
   let petLineTimer = 0;
+  /**
+   * 是否正处在 render() 的事件反应阶段。
+   *
+   * 本地台词是 `render() → reactToEvent() → say()` 同步写入的，同一次 render 后面会把
+   * DOM 重建出来；而 AI 台词是异步回来后才 say()，那时已经没有下一次 render 了 ——
+   * 以前 say() 自己不重绘，表现就是"AI 台词慢一拍/和牌后必丢"。所以 say() 末尾要
+   * 主动 render()，但必须避开"正在 render 里"的递归。
+   */
+  let inEventRender = false;
   let idleTimer = 0;
   let seenEvent = 0;
   let playerTurns = 0;
@@ -335,6 +344,10 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
       speechUntil = 0;
       render();
     }, priority >= 3 ? 5200 : 4200);
+    // AI 台词是异步回来的，此时不会再有下一次 render —— 必须自己重绘一次，
+    // 否则要等到下一个引擎事件才显示（慢 1-3 秒），和牌/流局后更是永远不显示。
+    // 本地台词是在 render() 的 reactToEvent 里同步调用的，那次 render 会画出来，别递归。
+    if (!inEventRender) render();
   };
 
   /**
@@ -469,7 +482,12 @@ export function mountRiichi(ctx: MiniGameContext): MiniGameInstance {
 
   function render(): void {
     if (disposed) return;
-    reactToEvent();
+    inEventRender = true;
+    try {
+      reactToEvent();
+    } finally {
+      inEventRender = false;
+    }
     const event = game.lastEvent;
     const animateEvent = Boolean(motion && event && event.seq !== renderedEventSeq);
     if (event && event.seq !== renderedEventSeq) sound.handleEvent(event);

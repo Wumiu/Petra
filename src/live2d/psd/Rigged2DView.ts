@@ -144,9 +144,21 @@ export class Rigged2DView implements PetView {
   static async create(bytes: Uint8Array): Promise<Rigged2DView> {
     const canvas = document.createElement("canvas");
     canvas.id = "rig-canvas";
+    // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）后这个画布就再也画不出东西，
+    // 表现为「模型整块消失、UI 还在」，而代码里没有任何恢复路径。
+    // 这里 preventDefault 让浏览器允许恢复，并通知 main.ts 自动重建一次视图。
+    let view: Rigged2DView | null = null;
+    canvas.addEventListener("webglcontextlost", (e) => {
+      // 主动销毁（PsdRuntime.destroy 里的 WEBGL_lose_context）也会派发这个事件：
+      // 换模型时 reloadView → unmount → loseContext → 事件 → 又 reloadView 会自激成死循环。
+      // tearingDown 用来区分"我们自己拆的"和"真的丢了"。
+      if (view?.tearingDown) return;
+      e.preventDefault();
+      document.dispatchEvent(new CustomEvent("petra:webgl-lost"));
+    });
     const runtime = new PsdRuntime(canvas);
     await runtime.load(bytes);
-    const view = new Rigged2DView(canvas, runtime);
+    view = new Rigged2DView(canvas, runtime);
     view.setSwayEnabled(true);
     return view;
   }
@@ -156,9 +168,13 @@ export class Rigged2DView implements PetView {
   }
 
   unmount() {
+    this.tearingDown = true;
     this.canvas.remove();
     this.runtime.destroy();
   }
+
+  /** 正在主动拆除（区别于真实的 WebGL 上下文丢失，见 create 里的说明） */
+  private tearingDown = false;
 
   get warnings(): string[] {
     return this.runtime.warnings;
@@ -542,15 +558,65 @@ export class Rigged2DView implements PetView {
     const s = this.displayW / Math.max(cw, ch);
     const dw = cw * s;
     const dh = ch * s;
-    const offsetX = (700 - dw) / 2;
-    const offsetY = (700 - dh) / 2;
+    /**
+     * 画布在**视口**里居中（见 style.css：`#stage canvas.rig { left:50%; top:50%;
+     * transform: translate(-50%,-50%) }`），所以这里必须用真实视口尺寸来算它的左上角，
+     * 不能写死 700。
+     *
+     * 以前写死 700：一旦视口不是 700 CSS px（非 100% 系统缩放、窗口尺寸与配置不一致等），
+     * 包围盒就会整体偏移 `(700 - 视口) / 2` 像素。由于绿框、点击判定、气泡/面板定位
+     * 全都从 `getCharacterBounds()` 取坐标，它们会**一起**偏 —— 表现为"绿框和交互区
+     * 都跑到模型旁边去了"。用户实测：1920×1080 + 125% 缩放下偏移约 70px。
+     */
+    const viewW = window.innerWidth || 700;
+    const viewH = window.innerHeight || 700;
+    const offsetX = (viewW - dw) / 2;
+    const offsetY = (viewH - dh) / 2;
     const pad = this.boundsPad;
-    return {
-      left: offsetX + cb.left * s - pad.left,
-      top: offsetY + cb.top * s - pad.top,
-      right: offsetX + cb.right * s + pad.right,
-      bottom: offsetY + cb.bottom * s + pad.bottom,
-    };
+    const rawLeft = offsetX + cb.left * s;
+    const rawTop = offsetY + cb.top * s;
+    const rawRight = offsetX + cb.right * s;
+    const rawBottom = offsetY + cb.bottom * s;
+    let left = rawLeft - pad.left;
+    let top = rawTop - pad.top;
+    let right = rawRight + pad.right;
+    let bottom = rawBottom + pad.bottom;
+
+    /**
+     * 「调整模型边界」的滑条可以拉到很大的负值（左 + 右 = -240 就能超过角色显示宽度）。
+     * 那样 right < left，getModelRect() 返回非法矩形 → isInsideModel() 恒 false、
+     * 交互区域转换返回 null → **宠物彻底点不到**，右键菜单也打不开；而设置是持久化的，
+     * 用户只能从托盘换模型/重置才能恢复。
+     *
+     * 兜底策略：先保证有限；松紧把矩形搞退化（≤ MIN）时**回退到未加松紧的原始包围盒**，
+     * 而不是硬凑一个小方块 —— 用户把滑条拉到极端时，至少还能按角色本体点得到。
+     */
+    if (![left, top, right, bottom].every(Number.isFinite)) return null;
+    const MIN = 8;
+    if (right - left < MIN) {
+      left = rawLeft;
+      right = rawRight;
+    }
+    if (bottom - top < MIN) {
+      top = rawTop;
+      bottom = rawBottom;
+    }
+    // 原始包围盒也退化（空图层等）时，最后兜一个小方块
+    if (right - left < MIN) {
+      const c = (left + right) / 2;
+      left = c - MIN / 2;
+      right = c + MIN / 2;
+    }
+    if (bottom - top < MIN) {
+      const c = (top + bottom) / 2;
+      top = c - MIN / 2;
+      bottom = c + MIN / 2;
+    }
+    left = Math.max(0, Math.min(left, viewW - MIN));
+    top = Math.max(0, Math.min(top, viewH - MIN));
+    right = Math.max(left + MIN, Math.min(right, viewW));
+    bottom = Math.max(top + MIN, Math.min(bottom, viewH));
+    return { left, top, right, bottom };
   }
 
   private boundsPad = { left: 0, right: 0, top: 0, bottom: 0 };

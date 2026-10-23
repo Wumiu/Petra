@@ -253,11 +253,36 @@ export class Live2DController implements PetView {
     if (!m || !m.parent) return null;
     const bounds = m.getBounds();
     const pad = this.boundsPad;
-    const left = bounds.x - this.modelOffsetX - pad.left;
-    const top = bounds.y - this.modelOffsetY - pad.top;
-    const right = left + bounds.width + pad.left + pad.right;
-    const bottom = top + bounds.height + pad.top + pad.bottom;
-    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
+    const rawLeft = bounds.x - this.modelOffsetX;
+    const rawTop = bounds.y - this.modelOffsetY;
+    const rawRight = rawLeft + bounds.width;
+    const rawBottom = rawTop + bounds.height;
+    let left = rawLeft - pad.left;
+    let top = rawTop - pad.top;
+    let right = rawRight + pad.right;
+    let bottom = rawBottom + pad.bottom;
+    if (![left, top, right, bottom].every(Number.isFinite)) return null;
+    // 边界松紧拉成负值总和时矩形会非法（right<left）—— 那会让点击判定与交互区域
+    // 一起失效；退化时回退到未加松紧的原始包围盒，而不是返回 null / 凑小方块。
+    const MIN = 8;
+    if (right - left < MIN) {
+      left = rawLeft;
+      right = rawRight;
+    }
+    if (bottom - top < MIN) {
+      top = rawTop;
+      bottom = rawBottom;
+    }
+    if (right - left < MIN) {
+      const c = (left + right) / 2;
+      left = c - MIN / 2;
+      right = c + MIN / 2;
+    }
+    if (bottom - top < MIN) {
+      const c = (top + bottom) / 2;
+      top = c - MIN / 2;
+      bottom = c + MIN / 2;
+    }
     return { left, top, right, bottom };
   }
 

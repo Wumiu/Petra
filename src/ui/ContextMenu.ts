@@ -39,7 +39,9 @@ export function setupContextMenu(
   const fitMenu = () => {
     const vr = getVisibleRect?.() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     const top = Number.parseFloat(menu.style.top || "0") || 0;
-    menu.style.maxHeight = `${Math.max(60, Math.floor(vr.bottom - top - 8))}px`;
+    // 可见区本身可能很小（贴边/待机出屏）：至少给 120px，否则菜单被压成一条，
+    // 用户能看见却什么都点不到。
+    menu.style.maxHeight = `${Math.max(120, Math.floor(vr.bottom - top - 8))}px`;
     menu.style.overflowY = "auto";
   };
 
@@ -207,10 +209,12 @@ export function setupContextMenu(
     const vr = getVisibleRect?.() ?? { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     let left = x + 12;
     if (left + w > vr.right) left = x - w - 12;
-    if (left < vr.left) left = vr.left;
     let top = y;
     if (top + h > vr.bottom) top = vr.bottom - h;
-    if (top < vr.top) top = vr.top;
+    // 二次夹紧：可见区比菜单还小时上面两行仍可能算出屏幕外的坐标
+    // （以前只夹了左/上边界，右侧出屏时 left 会停在 vr.left 之外）。
+    left = Math.max(vr.left, Math.min(left, Math.max(vr.left, vr.right - w)));
+    top = Math.max(vr.top, Math.min(top, Math.max(vr.top, vr.bottom - h)));
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
     // 从"光标那一角"放大：位置翻到左边/上边时，原点也跟着换到对应角

@@ -112,6 +112,17 @@ interface Layer {
   fade: string | null;
   side: string | null;
   strands: { x: number; tipY: number; rootY: number }[] | null;
+  /**
+   * 图层自身的不透明度（0..1，来自 PSD 图层 opacity）。
+   * rigger 的 makePart 保存了它，但贴图 alpha 里没有乘 —— 渲染时必须自己乘上去，
+   * 否则腮红/阴影/高光这类半透明层会被画成实色。
+   */
+  opacity?: number;
+  /**
+   * 图层 alpha 覆盖率（0..1，= 不透明像素数 / 包围盒面积）。
+   * 用于把"布满噪点但几乎全透明"的尘埃层排除出角色包围盒（只影响包围盒，不影响绘制）。
+   */
+  coverage?: number;
   base: Float32Array;
   cur: Float32Array;
   nIdx: number;
@@ -223,6 +234,14 @@ export class PsdRuntime {
   private _warnings: string[] = [];
   partsCount = 0;
   strandCount = 0;
+  /**
+   * 这套 PSD 里有没有白目层（eyewhite）。
+   *
+   * 虹膜（irides）是靠 stencil 裁剪到白目区域里才画的；没有白目层时 stencil 全为 0，
+   * 所有虹膜片元都会 EQUAL 失败被丢弃 —— 表现为"眼睛是个空洞"。所以要先探测一次，
+   * 没有白目时虹膜直接普通绘制，不做 stencil。
+   */
+  private hasEyeWhite = false;
   /** 只有一条手臂图层（另一只手画在别的图层里）时为 true */
   singleHand = false;
   /** 用户拾取的手臂轴（按模型存 localStorage；空 = 用自动算的） */
@@ -372,6 +391,11 @@ export class PsdRuntime {
     this.canvas.width = this.CW;
     this.canvas.height = this.CH;
     this.partsCount = this.layers.length;
+    this.hasEyeWhite = this.layers.some(
+      // 名字是白目、且内容不是全透明（有些拆分 PSD 会留一个空的 eyewhite 层，
+      // 那种层写不进 stencil，等同没有白目）
+      (L) => L.name.indexOf("eyewhite") === 0 && (L.coverage ?? 1) > 0.001,
+    );
     this.strandCount = this.layers.reduce((s, L) => s + (L.strands ? L.strands.length : 0), 0);
     // 只有一条手臂图层时（很多 PSD 另一只手画在别的图层里），挥手动作默认驱动的是"另一侧"，
     // 那样会出现"抬手动作一半概率完全不动"——所以单手臂时改成跟随动作真正有值的那一侧。
@@ -407,6 +431,9 @@ export class PsdRuntime {
   /** 每帧调用。overrides 为外部驱动（音乐/鼠标/点击）目标值 */
   update(dt: number, overrides?: Partial<RigParams>) {
     const gl = this.gl!;
+    // 上下文丢失后所有 GL 调用都是无声 no-op：继续跑物理没有意义，
+    // 而且会给"模型怎么消失了"增加排查噪音。恢复由 main.ts 重建视图负责。
+    if (gl.isContextLost()) return;
     if (!this.layers.length || !this.A) return;
     const now = performance.now() / 1000;
     const t = now;
@@ -520,9 +547,12 @@ export class PsdRuntime {
 
     for (const L of this.layers) {
       const fa = this.fadeAlpha(L, e);
-      if (fa < 0.004 && !(L.fade === "eyeOpen" && L.name.indexOf("eyewhite") === 0)) continue;
+      // 图层自身不透明度必须乘进来：贴图 alpha 里没有它（rigger 只存了 part.opacity），
+      // 不乘的话腮红/阴影/高光这些半透明层会被画成实色。
+      const alpha = fa * (L.opacity ?? 1);
+      if (alpha < 0.004 && !(L.fade === "eyeOpen" && L.name.indexOf("eyewhite") === 0)) continue;
       this.deform(L, e);
-      gl.uniform1f(this.locAl, fa);
+      gl.uniform1f(this.locAl, alpha);
       gl.bindBuffer(gl.ARRAY_BUFFER, L.vboPos);
       gl.bufferData(gl.ARRAY_BUFFER, L.cur, gl.DYNAMIC_DRAW);
       gl.vertexAttribPointer(this.locPos, 2, gl.FLOAT, false, 0, 0);
@@ -538,7 +568,9 @@ export class PsdRuntime {
         gl.drawElements(gl.TRIANGLES, L.nIdx, gl.UNSIGNED_SHORT, 0);
         gl.disable(gl.STENCIL_TEST);
         gl.uniform1f(this.locCut, 0.0);
-      } else if (L.name.indexOf("irides") === 0) {
+      } else if (L.name.indexOf("irides") === 0 && this.hasEyeWhite) {
+        // 只有在"确实画过白目、stencil 被写过"时才能用 EQUAL 裁剪；
+        // 没有白目层的 PSD 直接普通绘制，否则虹膜会全部被丢弃（眼睛空洞）。
         gl.enable(gl.STENCIL_TEST);
         gl.stencilFunc(gl.EQUAL, 1, 0xff);
         gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
@@ -553,7 +585,11 @@ export class PsdRuntime {
     // 只向"更大"的方向扩张、从不收缩：瞬时轮廓逐帧抖动，拿它做边缘夹取会推着模型来回动。
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const L of this.layers) {
-      if (this.fadeAlpha(L, e) < 0.01) continue; // 不可见层跳过
+      if (this.fadeAlpha(L, e) * (L.opacity ?? 1) < 0.01) continue; // 不可见层跳过
+      // 尘埃层（alpha 覆盖率极低的噪点层，常见于 see-through 拆分后的残留）跳过：
+      // 它的包围盒可能横跨整张画布，会把绿框/点击穿透区/气泡定位一起撑大，
+      // 导致角色周围一大片透明区域吞掉桌面点击。只影响包围盒，实际绘制不受影响。
+      if ((L.coverage ?? 1) < 0.003) continue;
       const n = L.cur.length;
       for (let i = 0; i < n; i += 2) {
         const cx = L.cur[i], cy = L.cur[i + 1];
@@ -625,6 +661,13 @@ export class PsdRuntime {
       return smooth((v - (0.1 + e.eyeEase * 0.45)) / 0.15);
     }
     if (L.fade === "eyeClose") {
+      const v = L.side === "L" ? e.eyeOpenL : e.eyeOpenR;
+      return 1 - smooth((v - (0.1 + e.eyeEase * 0.45)) / 0.15);
+    }
+    // eye_close2 = 长闭眼变体。rigger 确实会给它 fade:'eyeClose2'（见 vendor 的槽位表），
+    // 以前这里没有对应分支、落到末尾 return 1 —— 于是该层永远全显：眼睛一直闭着、
+    // 闭眼线还盖在睁眼上面，自动眨眼看起来完全无效。
+    if (L.fade === "eyeClose2") {
       const v = L.side === "L" ? e.eyeOpenL : e.eyeOpenR;
       return 1 - smooth((v - (0.1 + e.eyeEase * 0.45)) / 0.15);
     }
@@ -806,5 +849,12 @@ export class PsdRuntime {
       gl.deleteBuffer(L.ibo);
     }
     this.layers = [];
+    // 主动让驱动回收 WebGL 上下文：反复换模型时只删纹理不释放上下文，
+    // 浏览器的上下文配额（通常十几个）会被占满，之后新建的模型直接黑屏/不显示。
+    try {
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch {
+      /* 扩展不可用就算了 */
+    }
   }
 }

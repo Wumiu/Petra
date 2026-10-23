@@ -38,7 +38,10 @@ function typewriter(el: HTMLElement, text: string, speed = 50, onDone?: () => vo
 
 function closeCardPanel() {
   if (panelEl) {
-    panelEl.classList.add("hidden");
+    // 直接从 DOM 摘掉，而不是只加 hidden 再把引用置空 —— 以前每次打开都会再 append 一个
+    // 新面板，反复开关会永久堆积隐藏面板（每个含 40+ 卡片节点与全部监听器），
+    // 还会出现重复的 id="daily-card-panel"。
+    panelEl.remove();
     clearTypewriter();
     const shouldComment = drewThisSession;
     drewThisSession = false;

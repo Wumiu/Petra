@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 // 启动错误捕获：崩溃时直接显示在屏幕上
@@ -54,6 +54,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
+import { getApiKey, setApiKey, normalizeOpenAIBase, presetKeyScope } from "./assistant/apiKey";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
@@ -317,11 +318,28 @@ async function applyModelScale(s: number, record = false) {
   view.setScale(modelW);
 }
 
+/**
+ * 红框（窗口边界）元素：**按需惰性创建**。
+ *
+ * 菜单里的「显示边框」在正式构建里也是可见的，但元素以前只在 `import.meta.env.DEV`
+ * 的 boot 分支里创建 —— 打包版点开关只会把状态翻成「开」，屏幕上什么都不会出现
+ * （`el?.` 对 null 静默跳过）。和绿框同一个坑，改成谁用谁创建。
+ */
+function ensureDebugBorderEl(): HTMLElement {
+  let el = document.getElementById("debug-border");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "debug-border";
+    el.className = "hidden";
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
 /** 调试边框开关（红线勾勒窗口边界，观察窗口出屏与模型偏移） */
 function toggleDebugBorder() {
   debugBorderVisible = !debugBorderVisible;
-  const el = document.getElementById("debug-border");
-  el?.classList.toggle("hidden", !debugBorderVisible);
+  ensureDebugBorderEl().classList.toggle("hidden", !debugBorderVisible);
 }
 
 /**
@@ -404,11 +422,23 @@ function getWindowVisibleRect(): { left: number; top: number; right: number; bot
   const wx = engine.windowScreenPos.x;
   const wy = engine.windowScreenPos.y;
   if (!a) return { left: 0, top: 0, right: winSize, bottom: winSize };
+  const left = Math.max(0, a.left - wx);
+  const top = Math.max(0, a.top - wy);
+  const right = Math.min(winSize, a.left + a.width - wx);
+  const bottom = Math.min(winSize, a.top + a.height - wy);
+  /**
+   * 桌宠贴边/待机出屏时，交集可能退化甚至反向（right < left）。
+   * 以前直接把这个区间交给调用方：`maxW = max(60, right-left-40)` 于是被抬到 60，
+   * 面板被压成一条细线；菜单的 `left = x - w - 12` 也可能算出负坐标直接飞出屏幕。
+   * 这里保证区间至少 MIN_SPAN 宽高；真的退化到看不见时退回整个窗口，
+   * 让面板出现在窗口内（部分可见），而不是被摆到屏幕外完全看不见。
+   */
+  const MIN_SPAN = 160;
   return {
-    left: Math.max(0, a.left - wx),
-    top: Math.max(0, a.top - wy),
-    right: Math.min(winSize, a.left + a.width - wx),
-    bottom: Math.min(winSize, a.top + a.height - wy),
+    left: right - left >= MIN_SPAN ? left : 0,
+    top: bottom - top >= MIN_SPAN ? top : 0,
+    right: right - left >= MIN_SPAN ? right : winSize,
+    bottom: bottom - top >= MIN_SPAN ? bottom : winSize,
   };
 }
 
@@ -543,9 +573,10 @@ function positionPanelNearModel(
   panel.style.position = "fixed"; // 确保 fixed 定位
   const mr = getModelRect();
   const vr = getWindowVisibleRect();
-  // 可见区尺寸下限保护（贴边/几乎出屏时不出现负值或 0）
-  const maxW = Math.max(60, vr.right - vr.left - 40);
-  const maxH = Math.max(60, vr.bottom - vr.top - 40);
+  // 可见区尺寸下限保护：60px 时代面板会被压成一条细线（看不清也点不准），
+  // 抬到 200 宽 / 140 高的可用下限；getWindowVisibleRect 已保证区间本身不退化成负值。
+  const maxW = Math.max(200, vr.right - vr.left - 40);
+  const maxH = Math.max(140, vr.bottom - vr.top - 40);
   // 先让面板按自身内容撑开
   panel.style.maxWidth = `${maxW}px`;
   panel.style.maxHeight = `${maxH}px`;
@@ -689,11 +720,35 @@ function positionAboveModel(el: HTMLElement) {
   el.style.transform = "translateX(-50%)";
 }
 
-/** 换模型后重置边界到默认（view 可能还没初始化，安全检查） */
-function resetBoundsOnModelSwitch() {
-  settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
+const ZERO_PADDING = { left: 0, right: 0, top: 0, bottom: 0 };
+
+/** 边界松紧按模型存：key 与 modelScales / modelParams 一致，用模型名 */
+function paddingKey(): string {
+  return currentModel.name ?? "default";
+}
+
+/** 当前模型的边界松紧（没有记录就退到旧版全局值，再退默认 0） */
+function currentBoundsPadding() {
+  return settings.boundsPaddings[paddingKey()] ?? settings.boundsPadding ?? { ...ZERO_PADDING };
+}
+
+/** 写入当前模型的边界松紧并立刻应用到渲染层 */
+function setCurrentBoundsPadding(p: { left: number; right: number; top: number; bottom: number }) {
+  settings.boundsPaddings[paddingKey()] = p;
   saveSettings(settings);
-  if (view) (view as any).setBoundsPadding?.(settings.boundsPadding);
+  (view as any)?.setBoundsPadding?.(p);
+}
+
+/**
+ * 换模型时**不要**再清边界松紧。
+ *
+ * 边界松紧已经按模型存（boundsPaddings），新模型本来就没有记录、自然回落到 0；
+ * 而这里两个调用点（importPsdBytes / 模型列表点击）都在 currentModel 更新**之前**执行，
+ * paddingKey() 拿到的是"即将卸载的旧模型" —— 会把用户在原模型上辛苦调好的值删掉，
+ * 切回去就丢了。所以保留按模型的值，什么都不做。
+ */
+function resetBoundsOnModelSwitch() {
+  /* no-op：保留每个模型自己的边界松紧 */
 }
 
 async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
@@ -786,7 +841,7 @@ async function importPsdFromPath(path: string) {
 async function mountView() {
   view = await createView();
   view.setSwayEnabled(settings.audioEnabled);
-  (view as any).setBoundsPadding?.(settings.boundsPadding);
+  (view as any).setBoundsPadding?.(currentBoundsPadding());
   attachView(view);
   // 恢复模型调节参数
   if (view instanceof Rigged2DView) {
@@ -802,7 +857,23 @@ async function mountView() {
   }
 }
 
-async function reloadView() {
+/**
+ * 重新加载模型（换模型 / 拖入新 PSD / WebGL 上下文丢失后重建）。
+ *
+ * **必须串行**：以前 unmount 之后立刻 await mountView，两次调用交错时两边都会 attach
+ * 一个新 canvas —— 后完成的覆盖 view，先完成的那个 canvas 永久留在 #stage 且不再更新
+ * （残影/双模型），旧 WebGL 上下文也一直不释放。这里用一条 Promise 链排队。
+ */
+let viewReloadChain: Promise<void> = Promise.resolve();
+
+function reloadView(): Promise<void> {
+  const run = () => doReloadView();
+  const next = viewReloadChain.then(run, run);
+  viewReloadChain = next.catch(() => {});
+  return next;
+}
+
+async function doReloadView() {
   view.unmount();
   await mountView();
   // 切换模型：恢复该模型自己的大小（无记录用默认 100%）
@@ -810,6 +881,13 @@ async function reloadView() {
   const scale = settings.modelScales[key] ?? 1;
   void applyModelScale(scale, false);
 }
+
+// WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）时模型会整块消失但 UI 还在，
+// 且没有任何自愈路径 —— 只能换模型或重启。这里自动重建一次。
+document.addEventListener("petra:webgl-lost", () => {
+  toast("显示上下文丢失了，正在重新加载模型…", "warn");
+  void reloadView().catch(() => toast("模型重新加载失败，可在菜单里换一个模型", "warn"));
+});
 
 // ---------- 小助手全局呼出快捷键 ----------
 /** 前端监听 Rust 发出的全局快捷键事件名 */
@@ -918,10 +996,25 @@ async function setAssistantHotkey() {
     toast("已取消设置快捷键", "info");
     return;
   }
-  settings.assistant.shortcut = acc;
-  saveSettings(settings);
+  const prev = settings.assistant.shortcut;
+  // 先注册、成功了再持久化：Rust 侧注册函数会先 unregister 旧键再注册新键，
+  // 失败时旧键已经丢了。以前先写设置再注册，于是一个被占用的组合会让"原来的快捷键失效 +
+  // 坏组合被持久化"，重启后仍按坏组合静默失败。
   const ok = await registerAssistantHotkey(acc);
-  toast(ok ? `呼出快捷键已设为 ${acc}` : `快捷键 ${acc} 注册失败，可换个组合试试`, ok ? "info" : "warn");
+  if (ok) {
+    settings.assistant.shortcut = acc;
+    saveSettings(settings);
+    toast(`呼出快捷键已设为 ${acc}`, "info");
+    return;
+  }
+  // 注册失败：把旧键重新注册回去，别让用户两头落空
+  if (prev) await registerAssistantHotkey(prev);
+  toast(
+    prev
+      ? `快捷键 ${acc} 注册失败（可能被别的程序占用），已保留原来的 ${prev}`
+      : `快捷键 ${acc} 注册失败，可换个组合试试`,
+    "warn",
+  );
 }
 
 /** 菜单项：清除已设置的快捷键 */
@@ -1058,6 +1151,10 @@ async function boot() {
     return;
   }
 
+  // 旧版单 Key 迁移：启动时先按"当前选中的供应商"领一次。
+  // 明确传 provider 而不是 currentKeyScope()：当前若套着预设，旧 Key 不该被写进预设槽位。
+  void getApiKey(settings.assistant.provider).catch(() => {});
+
   // 同步 Rust 侧音频开关到持久化设置
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
 
@@ -1074,6 +1171,13 @@ async function boot() {
   let pos = await currentLogicalPos(win);
   if (savedPos) {
     pos = savedPos;
+    // 保存的位置可能属于已拔出/改过布局的显示器：不做校验的话窗口会落在屏幕外，
+    // 表现是"托盘有图标、任务管理器里有进程，但屏幕上根本看不到桌宠"（只能删配置恢复）。
+    const onScreen = await isWindowPosOnScreen(savedPos);
+    if (!onScreen) {
+      pos = await centerOfPrimaryMonitor();
+      toast("上次的位置在已断开的显示器上，已把桌宠放回主屏中间", "info");
+    }
     void win.setPosition(new LogicalPosition(pos.x, pos.y));
   }
 
@@ -1083,14 +1187,8 @@ async function boot() {
   engine.setTracking(settings.mouseTrack);
   // 应用持久化模型缩放（窗口尺寸 + canvas + 引擎窗口边长）
   void applyModelScale(settings.modelScale);
-  if (import.meta.env.DEV) {
-    // 红框是纯调试用的（窗口边界），只在 dev 建；
-    // 绿框（角色边界）是「调整模型边界」面板要用的，改成按需创建，见 ensureModelBoundsEl。
-    const border = document.createElement("div");
-    border.id = "debug-border";
-    border.className = "hidden";
-    document.body.appendChild(border);
-  }
+  // 红框 / 绿框都改成按需创建（见 ensureDebugBorderEl / ensureModelBoundsEl）：
+  // 菜单开关在正式构建里也可见，提前在 boot 里按 dev 创建会让打包版"有开关无效果"。
   // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
   setModelRectProvider(getModelRect);
   if (import.meta.env.DEV) {
@@ -1098,6 +1196,8 @@ async function boot() {
     (window as any).__petraDebug = {
       getModelRect,
       getWindowVisibleRect,
+      // 打开「小助手设置」：CDP 里验证预设/Key 显隐时不用再手动点右键菜单
+      openAssistantSettings: () => void toggleAssistantSettings(),
       // 问候调度自检：不用真等 20 分钟就能核对"下一次该什么时候问候"
       tickerFps: () => { try { return app.app.ticker.maxFPS; } catch { return null; } },
       greetingSchedule: () => ({
@@ -1229,7 +1329,10 @@ async function boot() {
 
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
-    toggleAudio(false);
+    // 不要因为一次瞬时失败就关掉功能并写进设置；Rust 侧 3 秒后会自动重连，
+    // 但 enabled=false 会让它再也推不出 PCM（前端也收不到恢复事件）——
+    // 以前一次蓝牙重连/切播放设备就把「跟随音乐」永久关了，还得手动去设置里开。
+    if (settings.audioEnabled) void invoke("set_audio_enabled", { enabled: true });
   });
   void startAudio();
 
@@ -1694,6 +1797,56 @@ async function currentLogicalPos(win: Awaited<ReturnType<typeof getCurrentWindow
     const p = await win.outerPosition();
     // outerPosition 返回物理像素 → 转逻辑（引擎内部全逻辑坐标）
     return { x: p.x / scale, y: p.y / scale };
+  } catch {
+    return { x: 100, y: 100 };
+  }
+}
+
+/** 至少要有这么多逻辑像素同时落在某块屏上，才算"看得见" */
+const MIN_VISIBLE_SPAN = 120;
+
+function monitorLogicalRect(m: { position: { x: number; y: number }; size: { width: number; height: number }; scaleFactor: number }) {
+  const s = m.scaleFactor || 1;
+  return {
+    left: m.position.x / s,
+    top: m.position.y / s,
+    width: m.size.width / s,
+    height: m.size.height / s,
+  };
+}
+
+/**
+ * 这个窗口位置还看得见吗？
+ *
+ * 恢复上次保存的位置时用。显示器被拔掉、分辨率/缩放改了、或者笔记本从扩展屏拔下来，
+ * 保存的坐标就可能完全在金外 —— 窗口照常创建、托盘图标也在，但用户什么都看不到。
+ * 混合 DPI 下 monitor.position/size 是物理像素，按各自 scaleFactor 换成逻辑再比。
+ */
+async function isWindowPosOnScreen(p: { x: number; y: number }): Promise<boolean> {
+  try {
+    const monitors = await availableMonitors();
+    if (!monitors.length) return true; // 拿不到信息时不要误判
+    return monitors.some((m) => {
+      const r = monitorLogicalRect(m);
+      const overlapX = Math.min(p.x + WIN, r.left + r.width) - Math.max(p.x, r.left);
+      const overlapY = Math.min(p.y + WIN, r.top + r.height) - Math.max(p.y, r.top);
+      return overlapX >= MIN_VISIBLE_SPAN && overlapY >= MIN_VISIBLE_SPAN;
+    });
+  } catch {
+    return true;
+  }
+}
+
+/** 主屏工作区正中（拿不到信息时退回屏幕坐标 100,100） */
+async function centerOfPrimaryMonitor(): Promise<{ x: number; y: number }> {
+  try {
+    const m = (await primaryMonitor()) ?? (await availableMonitors())[0];
+    if (!m) return { x: 100, y: 100 };
+    const r = monitorLogicalRect(m);
+    return {
+      x: Math.round(r.left + (r.width - WIN) / 2),
+      y: Math.round(r.top + (r.height - WIN) / 2),
+    };
   } catch {
     return { x: 100, y: 100 };
   }
@@ -3115,6 +3268,8 @@ function applyHourlyChime(): void {
 // ---------- 信息板（桌宠伴侣信息） ----------
 let infoPanelEl: HTMLElement | null = null;
 let infoPanelHideTimer: ReturnType<typeof setTimeout> | null = null;
+/** 淡出后补 hidden 的定时器（必须可取消，否则会把刚重新弹出的面板又藏起来） */
+let infoPanelFadeTimer: ReturnType<typeof setTimeout> | null = null;
 let cachedWeather: { text: string; time: number } | null = null;
 
 // 天气解析与展示见 src/features/weather/WeatherFormat.ts（纯函数，有单测）
@@ -3159,6 +3314,12 @@ async function showInfoPanel() {
   // 先限制尺寸，再按真实可用空间定位。
   positionInfoPanelNearModel(el, mr, vr);
 
+  // 取消上一次淡出尚未执行的「补 hidden」，否则它会在 300ms 后把刚显示的面板又藏起来
+  if (infoPanelFadeTimer) {
+    clearTimeout(infoPanelFadeTimer);
+    infoPanelFadeTimer = null;
+  }
+  el.classList.remove("hidden");
   el.style.opacity = "1";
   // 进入动画（从下方滑入）
   el.style.transform = "translateY(12px)";
@@ -3179,7 +3340,14 @@ function hideInfoPanel() {
   }
   el.style.opacity = "0";
   el.style.transform = "translateY(8px)";
-  setTimeout(() => el.classList.add("hidden"), 300);
+  // 这个延时必须存起来：以前是匿名 setTimeout，showInfoPanel 只清了 5 秒那个定时器，
+  // 于是在「✕ 关闭 / 自动淡出」后 300ms 内再点桌宠 —— 面板刚 remove("hidden") 又被
+  // 这个旧定时器加回 hidden，表现为"点了一下没弹出信息板，得再点一次"。
+  if (infoPanelFadeTimer) clearTimeout(infoPanelFadeTimer);
+  infoPanelFadeTimer = setTimeout(() => {
+    infoPanelFadeTimer = null;
+    el.classList.add("hidden");
+  }, 300);
 }
 
 // 待办变化时刷新信息版（模态框添加后触发）
@@ -3482,7 +3650,7 @@ function toggleBoundsPanel() {
       slider.min = "-120";
       slider.max = "120";
       slider.step = "1";
-      slider.value = String(settings.boundsPadding[key]);
+      slider.value = String(currentBoundsPadding()[key]);
       slider.className = "as-input";
       slider.style.flex = "1";
       slider.style.minWidth = "0";
@@ -3490,13 +3658,13 @@ function toggleBoundsPanel() {
       val.className = "as-set-label";
       val.style.minWidth = "38px";
       val.style.textAlign = "right";
-      val.textContent = settings.boundsPadding[key] + "px";
+      val.textContent = currentBoundsPadding()[key] + "px";
       slider.addEventListener("input", () => {
         const v = parseInt(slider.value, 10);
-        settings.boundsPadding[key] = v;
+        // 按模型存：以前写全局 settings.boundsPadding，模型 A 调好的偏移会带到模型 B 上
+        const pad = { ...currentBoundsPadding(), [key]: v };
         val.textContent = v + "px";
-        saveSettings(settings);
-        (view as any).setBoundsPadding?.(settings.boundsPadding);
+        setCurrentBoundsPadding(pad);
       });
       row.append(l, slider, val);
       host.appendChild(row);
@@ -3512,9 +3680,7 @@ function toggleBoundsPanel() {
     reset.className = "as-btn";
     reset.textContent = "重置";
     reset.addEventListener("click", () => {
-      settings.boundsPadding = { left: 0, right: 0, top: 0, bottom: 0 };
-      saveSettings(settings);
-      (view as any).setBoundsPadding?.(settings.boundsPadding);
+      setCurrentBoundsPadding({ ...ZERO_PADDING });
       closeBoundsPanel();
     });
     const done = document.createElement("button");
@@ -3665,9 +3831,29 @@ async function toggleChatHistory() {
 
 
 // ---------- 小助手设置面板 ----------
+/**
+ * 当前设置面板里的 Key 输入框。
+ *
+ * Key 默认是 password 类型，用户点「👁」才临时显示；关闭面板/保存后必须恢复隐藏，
+ * 否则明文会留在 DOM 里（下次打开、切供应商、截屏都可能被看到）。
+ */
+let assistantKeyInput: HTMLInputElement | null = null;
+
+function maskAssistantKey() {
+  if (assistantKeyInput) {
+    assistantKeyInput.type = "password";
+    const eye = assistantKeyInput.parentElement?.querySelector("button");
+    if (eye) {
+      eye.textContent = "👁";
+      eye.title = "临时显示 API Key";
+    }
+  }
+}
+
 async function toggleAssistantSettings() {
   const panel = document.getElementById("assistant-settings") as HTMLElement | null;
   if (panel && !panel.classList.contains("hidden")) {
+    maskAssistantKey();
     panel.classList.add("hidden");
     return;
   }
@@ -3680,13 +3866,26 @@ async function toggleAssistantSettings() {
 
     const mkRow = (label: string, el: HTMLElement) => {
       const row = document.createElement("div");
-      row.className = "as-set-row";
+      // 测试分支：长控件（API Key 输入框 / 端点 URL / 模型名）的行改成上下排布，
+      // 标签在上、控件铺满整行 —— 原来左右排布时标签固定 64px，会把输入框挤得很窄。
+      //
+      // 但**开关类**（复选框）不参与纵向：它只有 38px 宽，纵向会把一个孤零零的小开关
+      // 甩到标签下一行，看起来像"设置项丢了"。开关行保持「标签在左、开关靠右」。
+      const isToggle = el instanceof HTMLInputElement && el.type === "checkbox";
+      row.className = isToggle ? "as-set-row as-set-row--toggle" : "as-set-row is-stacked";
       const l = document.createElement("span");
       l.className = "as-set-label";
       l.textContent = label;
       row.append(l, el);
       host.appendChild(row);
       return row;
+    };
+
+    /** 功能分组的长横线（纯装饰，不参与交互） */
+    const sep = () => {
+      const hr = document.createElement("div");
+      hr.className = "as-sep";
+      host.appendChild(hr);
     };
 
     const provider = document.createElement("select");
@@ -3723,16 +3922,47 @@ async function toggleAssistantSettings() {
     key.type = "password";
     key.placeholder = "API Key";
     key.value = "";
-    mkRow("API Key", key);
+    key.autocomplete = "off";
+    key.spellcheck = false;
+    // Key 默认隐藏；「👁」临时显示，再次点击 / 关闭面板 / 切换供应商或预设时自动恢复隐藏。
+    // 参考酒馆的做法：不给键盘/录屏留一个长期明文。
+    const keyWrap = document.createElement("div");
+    keyWrap.style.cssText = "display:flex;gap:6px;flex:1;align-items:center;min-width:0;";
+    const eye = document.createElement("button");
+    eye.type = "button";
+    eye.className = "as-btn";
+    eye.textContent = "👁";
+    eye.title = "临时显示 API Key";
+    eye.setAttribute("aria-label", "临时显示 API Key");
+    keyWrap.append(key, eye);
+    assistantKeyInput = key;
+    const maskKey = () => {
+      key.type = "password";
+      eye.textContent = "👁";
+      eye.title = "临时显示 API Key";
+    };
+    eye.addEventListener("click", () => {
+      const showing = key.type === "text";
+      key.type = showing ? "password" : "text";
+      eye.textContent = showing ? "👁" : "🙈";
+      eye.title = showing ? "临时显示 API Key" : "点击隐藏 API Key";
+    });
+    mkRow("API Key", keyWrap);
     toggleBaseUrl(); // set initial placeholder
-    // API Key 存 Rust 侧（DPAPI 加密），打开面板时回填
-    void invoke<string>("get_api_key")
-      .then((k) => {
-        key.value = k;
-      })
-      .catch(() => {
-        /* 未设置 */
-      });
+    // API Key 按供应商 / 预设分槽存（Rust 侧加密），打开面板时回填当前那一份。
+    // **必须显式传 provider.value**：无参 getApiKey() 读的是已保存的 settings.assistant.provider，
+    // 而这里下拉可能已经切到别的供应商但还没保存 —— 会回填上一个供应商的 Key，
+    // 再点保存就把 A 家的 Key 写进 B 家的槽位（并把它发给 B 家）。
+    const loadKeyForProvider = async () => {
+      key.value = await getApiKey(provider.value);
+      maskKey();
+    };
+    void loadKeyForProvider();
+    // 切供应商只刷新 Key 显示，不写 settings、也不清 activePresetId：
+    // 用户可能只是切一下又切回去，真正的"脱离预设"在保存时判定（见保存处理器）。
+    provider.addEventListener("change", () => {
+      void loadKeyForProvider();
+    });
 
     const modelSelect = document.createElement("select");
     modelSelect.className = "as-input as-select";
@@ -3751,6 +3981,240 @@ async function toggleAssistantSettings() {
       if (modelSelect.value) model.value = modelSelect.value;
     });
 
+    const fetchBtn = document.createElement("button");
+    fetchBtn.className = "as-btn";
+    fetchBtn.textContent = "自动获取模型";
+    fetchBtn.addEventListener("click", async () => {
+      fetchBtn.disabled = true;
+      fetchBtn.textContent = "获取中…";
+      let models: string[] = [];
+      try {
+        models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          baseUrl.value.trim(),
+        );
+      } catch (e: unknown) {
+        models = [];
+        const errMsg = e instanceof Error ? e.message : String(e);
+        toast(`获取失败：${errMsg}`, "warn");
+      } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.textContent = "自动获取模型";
+      }
+      if (models.length) {
+        // 填充下拉列表
+        modelSelect.innerHTML = "";
+        for (const m of models) {
+          const opt = document.createElement("option");
+          opt.value = m;
+          opt.textContent = m;
+          modelSelect.appendChild(opt);
+        }
+        // 自动选中：优先保留用户之前填的模型名，否则选第一个
+        const current = model.value.trim();
+        if (current && models.includes(current)) {
+          modelSelect.value = current;
+        } else {
+          model.value = models[0];
+          modelSelect.value = models[0];
+        }
+        toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
+      } else {
+        // error already shown in catch
+      }
+    });
+
+    // 「测试连接」：只验证 端点 + Key + 网络 是否通，不填充模型列表。
+    // 之所以单独做一个：用户切供应商后最常见的困惑就是"到底通没通"——
+    // 自动获取模型失败时看不出是 Key 错、端点错还是网络错。
+    const testBtn = document.createElement("button");
+    testBtn.className = "as-btn";
+    testBtn.textContent = "测试连接";
+    testBtn.addEventListener("click", async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = "测试中…";
+      try {
+        const isCustom = (provider.value as string) === "custom";
+        const base = isCustom ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
+        const models = await listModels(
+          provider.value as AssistantProvider,
+          key.value.trim(),
+          base,
+        );
+        toast(
+          models.length
+            ? `连接成功：${PROVIDERS[provider.value as keyof typeof PROVIDERS].label} 可用模型 ${models.length} 个`
+            : "连接成功（该端点没有返回模型列表）",
+          "info",
+        );
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast(`连接失败：${msg}`, "warn");
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = "测试连接";
+      }
+    });
+    // 两个按钮同属"验证接入配置"：自动获取模型会填充上面的模型列表，
+    // 测试连接只验证端点 + Key + 网络。并成一行靠右，省一行高度。
+    const apiBtnRow = document.createElement("div");
+    apiBtnRow.className = "as-set-btns";
+    apiBtnRow.append(fetchBtn, testBtn);
+    host.appendChild(apiBtnRow);
+
+    // ---------- 预设：保存 / 切换 / 重命名 / 删除（参考酒馆的操作方式） ----------
+    // 只存非敏感字段；每个预设的 Key 单独存 Rust 侧 `preset:<id>` 槽位。
+    sep(); // 分组：预设
+    const presetSelect = document.createElement("select");
+    presetSelect.className = "as-input as-select";
+    mkRow("预设", presetSelect);
+
+    const presetNameRow = document.createElement("div");
+    presetNameRow.className = "as-set-row is-stacked";
+    const presetNameLabel = document.createElement("span");
+    presetNameLabel.className = "as-set-label";
+    presetNameLabel.textContent = "预设名称";
+    const presetName = document.createElement("input");
+    presetName.className = "as-input";
+    presetName.placeholder = "重命名用，或作为新预设的名字";
+    presetNameRow.append(presetNameLabel, presetName);
+    host.appendChild(presetNameRow);
+
+    const presetInfo = document.createElement("div");
+    presetInfo.className = "as-privacy";
+    host.appendChild(presetInfo);
+
+    const presetBtns = document.createElement("div");
+    presetBtns.className = "as-set-btns";
+    presetBtns.style.flexWrap = "wrap";
+    const presetApply = document.createElement("button");
+    presetApply.className = "as-btn as-btn-primary";
+    presetApply.textContent = "应用";
+    const presetRename = document.createElement("button");
+    presetRename.className = "as-btn";
+    presetRename.textContent = "重命名";
+    const presetDelete = document.createElement("button");
+    presetDelete.className = "as-btn";
+    presetDelete.textContent = "删除";
+    const presetSave = document.createElement("button");
+    presetSave.className = "as-btn";
+    presetSave.textContent = "＋ 保存当前为预设";
+    presetBtns.append(presetApply, presetRename, presetDelete, presetSave);
+    host.appendChild(presetBtns);
+
+    const presetsOf = () => (settings.assistant.presets ??= []);
+    const selectedPreset = () => presetsOf().find((p) => p.id === presetSelect.value) ?? null;
+
+    const showPresetInfo = () => {
+      const p = selectedPreset();
+      if (!p) {
+        presetName.value = "";
+        presetInfo.textContent =
+          presetsOf().length ? "选一个预设查看端点与模型" : "把当前配置存成预设，之后一键切换";
+        return;
+      }
+      presetName.value = p.name;
+      const base = p.provider === "custom" ? p.customBaseUrl : PROVIDERS[p.provider]?.base ?? "";
+      presetInfo.textContent = `端点：${base || "（默认）"}　·　模型：${p.model || "（默认）"}`;
+    };
+
+    const refreshPresets = (pickId?: string) => {
+      const list = presetsOf();
+      presetSelect.innerHTML = "";
+      if (!list.length) {
+        const o = document.createElement("option");
+        o.value = "";
+        o.textContent = "（还没有预设）";
+        presetSelect.appendChild(o);
+      }
+      for (const p of list) {
+        const o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = `${p.name}（${PROVIDERS[p.provider]?.label ?? p.provider}）`;
+        presetSelect.appendChild(o);
+      }
+      const want = pickId ?? settings.assistant.activePresetId ?? list[0]?.id ?? "";
+      if (want) presetSelect.value = want;
+      showPresetInfo();
+    };
+    presetSelect.addEventListener("change", showPresetInfo);
+
+    const applyPreset = async (p: NonNullable<ReturnType<typeof selectedPreset>>) => {
+      settings.assistant.provider = p.provider;
+      settings.assistant.customBaseUrl = p.customBaseUrl;
+      settings.assistant.model = p.model;
+      settings.assistant.activePresetId = p.id;
+      saveSettings(settings);
+      provider.value = p.provider;
+      baseUrl.value = p.customBaseUrl;
+      model.value = p.model;
+      toggleBaseUrl();
+      key.value = await getApiKey(presetKeyScope(p.id));
+      maskAssistantKey();
+      clearApiKeyCache();
+      clearPetTalkKeyCache();
+      toast(`已切换到预设「${p.name}」`);
+    };
+
+    presetApply.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      void applyPreset(p);
+    });
+
+    presetRename.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      const name = presetName.value.trim();
+      if (!name) return toast("名称不能为空", "warn");
+      p.name = name;
+      saveSettings(settings);
+      refreshPresets(p.id);
+      toast("已重命名");
+    });
+
+    presetDelete.addEventListener("click", () => {
+      const p = selectedPreset();
+      if (!p) return toast("先选一个预设", "warn");
+      settings.assistant.presets = presetsOf().filter((x) => x.id !== p.id);
+      if (settings.assistant.activePresetId === p.id) settings.assistant.activePresetId = "";
+      saveSettings(settings);
+      // 一并清掉该预设的 Key 槽位（不然会留下读不到的孤儿密码）
+      void setApiKey("", presetKeyScope(p.id)).catch(() => {});
+      refreshPresets();
+      toast(`已删除预设「${p.name}」`);
+    });
+
+    presetSave.addEventListener("click", async () => {
+      const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const name = presetName.value.trim() || `预设 ${presetsOf().length + 1}`;
+      const prov = provider.value as AssistantProvider;
+      const base =
+        prov === "custom" ? normalizeOpenAIBase(baseUrl.value) : baseUrl.value.trim();
+      settings.assistant.presets = [
+        ...presetsOf(),
+        { id, name, provider: prov, customBaseUrl: base, model: model.value.trim() },
+      ];
+      settings.assistant.activePresetId = id;
+      // 关键：把当前 UI 的 provider/端点/模型同步进 settings.assistant。
+      // 只写 presets+activePresetId 的话，Key 作用域已经切到 preset:<id>，但请求仍按
+      // settings.assistant.provider 发 —— 用户改完供应商直接存预设就会出现
+      // "旧供应商 + 新预设的 Key" 的错配（跨厂商发 Key / 401），而且重启后仍然错。
+      settings.assistant.provider = prov;
+      settings.assistant.customBaseUrl = base;
+      settings.assistant.model = model.value.trim();
+      saveSettings(settings);
+      // 把当前 Key 复制到该预设的槽位：预设之间互不覆盖，切回来就是它自己那份
+      await setApiKey(key.value.trim(), presetKeyScope(id)).catch(() => {});
+      maskAssistantKey();
+      refreshPresets(id);
+      toast(`已保存预设「${name}」`);
+    });
+
+    refreshPresets();
+
+    sep(); // 分组：人设
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
     persona.rows = 3;
@@ -3798,6 +4262,7 @@ async function toggleAssistantSettings() {
     mkRow("对用户的称呼", nickname);
 
     // 文件禁止目录：小助手只能读写 桌面/文档/下载，这里额外拉黑
+    sep(); // 分组：功能
     const denyPaths = document.createElement("textarea");
     denyPaths.className = "as-input as-persona";
     denyPaths.rows = 3;
@@ -3820,7 +4285,7 @@ async function toggleAssistantSettings() {
 
     // 主动问候间隔时间设置
     const greetRow = document.createElement("div");
-    greetRow.className = "as-set-row";
+    greetRow.className = "as-set-row is-stacked";
     const greetLabel = document.createElement("span");
     greetLabel.className = "as-set-label";
     greetLabel.textContent = "主动问候间隔";
@@ -3837,7 +4302,11 @@ async function toggleAssistantSettings() {
     greetUnit.textContent = "分钟";
     greetUnit.style.fontSize = "12px";
     greetUnit.style.color = "#8a7a95";
-    greetRow.append(greetLabel, greetInput, greetUnit);
+    // 纵向排布下，输入框和「分钟」要留在同一行；直接作为 row 的子元素会被拆成两行
+    const greetInputRow = document.createElement("div");
+    greetInputRow.style.cssText = "display:flex;align-items:center;gap:6px;";
+    greetInputRow.append(greetInput, greetUnit);
+    greetRow.append(greetLabel, greetInputRow);
     host.appendChild(greetRow);
 
     const gameTalk = document.createElement("input");
@@ -3852,54 +4321,11 @@ async function toggleAssistantSettings() {
     gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
     host.appendChild(gameTalkHelp);
 
-    const fetchBtn = document.createElement("button");
-    fetchBtn.className = "as-btn";
-    fetchBtn.textContent = "自动获取模型";
-    fetchBtn.addEventListener("click", async () => {
-      fetchBtn.disabled = true;
-      fetchBtn.textContent = "获取中…";
-      let models: string[] = [];
-      try {
-        models = await listModels(
-          provider.value as AssistantProvider,
-          key.value.trim(),
-          baseUrl.value.trim(),
-        );
-      } catch (e: unknown) {
-        models = [];
-        const errMsg = e instanceof Error ? e.message : String(e);
-        toast(`获取失败：${errMsg}`, "warn");
-      } finally {
-        fetchBtn.disabled = false;
-        fetchBtn.textContent = "自动获取模型";
-      }
-      if (models.length) {
-        // 填充下拉列表
-        modelSelect.innerHTML = "";
-        for (const m of models) {
-          const opt = document.createElement("option");
-          opt.value = m;
-          opt.textContent = m;
-          modelSelect.appendChild(opt);
-        }
-        // 自动选中：优先保留用户之前填的模型名，否则选第一个
-        const current = model.value.trim();
-        if (current && models.includes(current)) {
-          modelSelect.value = current;
-        } else {
-          model.value = models[0];
-          modelSelect.value = models[0];
-        }
-        toast(`获取到 ${models.length} 个模型，已自动选择：${model.value}`);
-      } else {
-        // error already shown in catch
-      }
-    });
-    mkRow("", fetchBtn);
 
+    sep(); // 分组：AI 用量
     // AI 用量统计（本地估算，帮助用户感知 token 消耗）
     const usageRow = document.createElement("div");
-    usageRow.className = "as-set-row";
+    usageRow.className = "as-set-row is-stacked";
     usageRow.style.cssText = "align-items:flex-start;";
     const usageLabel = document.createElement("span");
     usageLabel.className = "as-set-label";
@@ -3917,13 +4343,18 @@ async function toggleAssistantSettings() {
     renderUsage();
     const usageReset = document.createElement("button");
     usageReset.className = "as-btn";
-    usageReset.style.cssText = "padding:2px 8px;font-size:11px;flex:none;";
+    usageReset.style.cssText = "padding:2px 8px;font-size:11px;flex:none;margin-left:auto;";
     usageReset.textContent = "清零";
     usageReset.addEventListener("click", () => {
       resetUsageStats();
       renderUsage();
     });
-    usageRow.append(usageLabel, usageBox, usageReset);
+    // 「清零」跟标题同一行、靠右；纵向行里直接当第三个子元素会被甩到统计文字下面，
+    // 看起来像一个悬空的小按钮。
+    const usageHead = document.createElement("div");
+    usageHead.style.cssText = "display:flex;align-items:center;gap:8px;width:100%;";
+    usageHead.append(usageLabel, usageReset);
+    usageRow.append(usageHead, usageBox);
     host.appendChild(usageRow);
 
     const btns = document.createElement("div");
@@ -3937,11 +4368,16 @@ async function toggleAssistantSettings() {
       toast("对话历史已清空（长期记忆保留）");
     });
 
+    sep(); // 分组：隐私
     const privacyHint = document.createElement("div");
     privacyHint.className = "as-privacy";
     privacyHint.textContent = "隐私提示：主动问候会读取当前前台窗口标题+进程名并发送给 AI。API Key 经系统 DPAPI 加密存储。";
     host.appendChild(privacyHint);
-    host.appendChild(clearHistBtn);
+    // 直接 append 到 host 会是左对齐，和上面那些靠右的按钮不一致；放进按钮组统一靠右
+    const clearHistRow = document.createElement("div");
+    clearHistRow.className = "as-set-btns";
+    clearHistRow.appendChild(clearHistBtn);
+    host.appendChild(clearHistRow);
 
     const back = document.createElement("button");
     back.className = "as-btn";
@@ -3954,9 +4390,44 @@ async function toggleAssistantSettings() {
     save.className = "as-btn as-btn-primary";
     save.textContent = "保存";
     save.addEventListener("click", async () => {
-      settings.assistant.provider = provider.value as AssistantProvider;
-      settings.assistant.customBaseUrl = baseUrl.value.trim();
+      // 先吸收磁盘上的最新设置：别的模块（歌词同步微调、免确认 shell/写文件等）可能刚写过
+      // settings，而这里的 settings 是启动时加载的旧快照 —— 直接整对象覆盖会把它们的改动
+      // 静默回滚，重启后也消失。
+      settings = loadSettings();
+      const nextProvider = provider.value as AssistantProvider;
+      // 手动改了供应商 => 脱离预设。只在真正保存时判定：只在按下来看一下又切回去，
+      // 不应该把已应用的预设作废（旧实现是 change 时立刻持久化清空）。
+      if (settings.assistant.activePresetId) {
+        const activePreset = (settings.assistant.presets ?? []).find(
+          (p) => p.id === settings.assistant.activePresetId,
+        );
+        if (!activePreset || activePreset.provider !== nextProvider) {
+          settings.assistant.activePresetId = "";
+        }
+      }
+      settings.assistant.provider = nextProvider;
+      // 自定义端点自动规范化：补 /v1、去掉多余的 /chat/completions
+      // （用户很容易把完整请求地址贴进来，导致再拼一次路径而 404）
+      settings.assistant.customBaseUrl =
+        (provider.value as string) === "custom"
+          ? normalizeOpenAIBase(baseUrl.value)
+          : baseUrl.value.trim();
+      if (settings.assistant.customBaseUrl !== baseUrl.value.trim()) {
+        baseUrl.value = settings.assistant.customBaseUrl;
+      }
       settings.assistant.model = model.value.trim();
+      // 正在使用某个预设时，把这次的供应商/端点/模型改动同步回该预设，
+      // 否则"改了但不生效、下次切换还是旧值"。
+      if (settings.assistant.activePresetId) {
+        const active = (settings.assistant.presets ?? []).find(
+          (p) => p.id === settings.assistant.activePresetId,
+        );
+        if (active) {
+          active.provider = settings.assistant.provider;
+          active.customBaseUrl = settings.assistant.customBaseUrl;
+          active.model = settings.assistant.model;
+        }
+      }
       settings.assistant.persona = persona.value.trim();
       settings.assistant.nickname = nickname.value.trim();
       settings.assistant.outputLanguage = langSelect.value;
@@ -3978,15 +4449,21 @@ async function toggleAssistantSettings() {
       // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
       // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。
       resyncGreetingSchedule();
-      // API Key 存 Rust 侧（DPAPI 加密）
+      // API Key 按供应商 / 预设分槽存（Rust 侧 DPAPI / Keychain / Secret Service）。
+      // 当前套着预设就写进该预设的槽位：预设之间、预设与供应商之间都互不覆盖。
       try {
-        await invoke("set_api_key", { apiKey: key.value.trim() });
+        const scope = settings.assistant.activePresetId
+          ? presetKeyScope(settings.assistant.activePresetId)
+          : provider.value;
+        await setApiKey(key.value.trim(), scope);
         clearApiKeyCache();
         clearPetTalkKeyCache();
       } catch (e) {
         toast(`API Key 保存失败：${e}`, "warn");
       }
       ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+      // 关面板前把 Key 恢复隐藏：不留明文在 DOM 里
+      maskAssistantKey();
       host.classList.add("hidden");
       toast("小助手设置已保存");
     });
@@ -4255,7 +4732,6 @@ function toggleAudio(on: boolean) {
 registerRiichiGame();
 
 void boot();
-
 
 
 
