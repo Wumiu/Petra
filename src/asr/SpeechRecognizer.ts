@@ -32,6 +32,16 @@ import {
   type ListenState,
   type ListenTiming,
 } from "./asrLogic";
+import { loadSettings } from "../utils/settings";
+
+/** 用户在设置里要求「先走云端模型」吗（默认就是先走云端） */
+function preferCloudAsr(): boolean {
+  try {
+    return loadSettings().asr?.cloudFirst !== false;
+  } catch {
+    return true;
+  }
+}
 
 // ---------- 配置 ----------
 /**
@@ -144,17 +154,23 @@ export class SpeechRecognizer {
 
   constructor(handlers: RecognizerHandlers = {}) {
     this.handlers = handlers;
-    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken);
+    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
   }
 
   setHandlers(handlers: RecognizerHandlers): void { this.handlers = handlers; }
-  getBackendName(): AsrBackend { return this.backend; }
+  private refreshBackend(): void {
+    // Never switch the backend of an active recording; apply preferences next time.
+    if (!this.isRecording()) {
+      this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
+    }
+  }
+  getBackendName(): AsrBackend { this.refreshBackend(); return this.backend; }
 
   /**
    * 这个后端需不需要用户先配 Key。
    * Windows 的原生识别不需要；在线识别（Mac/Linux、以及降级后的 Windows）需要。
    */
-  needsApiKey(): boolean { return this.backend === "siliconflow"; }
+  needsApiKey(): boolean { return this.getBackendName() === "siliconflow"; }
 
   /** "正在听"（含正在要麦克风权限的那一下）：按钮用它决定显示 🎤 还是 🔴 */
   isRecording(): boolean {
@@ -163,6 +179,7 @@ export class SpeechRecognizer {
 
   start(): void {
     if (this.isRecording() || this.starting) return;
+    this.refreshBackend();
     if (this.backend === "web-speech") this.startWebSpeech();
     else void this.startSiliconFlow();
   }
@@ -318,7 +335,7 @@ export class SpeechRecognizer {
    */
   private degradeToSiliconFlow(reason: string, reportToUser: boolean): void {
     this.webSpeechBroken = true;
-    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken);
+    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
     const rec = this.recognition;
     this.recognition = null;
     this.finishing = true; // abort 也会触发 onend，别让它再走"引擎自己断了"的分支

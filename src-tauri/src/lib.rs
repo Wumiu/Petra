@@ -84,6 +84,10 @@ mod webpage;
 // 安全边界（允许根 + 禁止表 + .git + 后缀策略）都在 files.rs 里。
 mod files;
 
+// 控制面板：内嵌的本地 HTTP 服务 + 浏览器页面（纯 std::net，零新依赖）。
+// 页面本体是 src-tauri/panel/index.html，用 include_str! 编进二进制。
+mod panel;
+
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -602,7 +606,7 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
-fn sanitize_psd_name(name: &str) -> String {
+pub(crate) fn sanitize_psd_name(name: &str) -> String {
     const MAX_NAME_LEN: usize = 64;
     // 导入名称可能包含 Windows 路径；在 macOS/Linux 上也必须剥离反斜杠目录。
     let normalized = name.replace('\\', "/");
@@ -622,7 +626,7 @@ fn sanitize_psd_name(name: &str) -> String {
     }
 }
 
-fn models_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn models_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -3278,7 +3282,11 @@ async fn tts_synthesize(
 /// 语音识别的服务端点与模型：与 TTS 同一路子 —— 请求从 Rust 侧发出，
 /// 密钥只存在于 Rust（DPAPI / Keychain / 600 权限文件），前端只拿到转写出来的文本。
 const ASR_API_URL: &str = "https://api.siliconflow.cn/v1/audio/transcriptions";
-const ASR_MODEL: &str = "FunAudioLLM/SenseVoiceSmall";
+/// 默认识别模型：XingChen (中国电信) 的 ASR-V3.2-Ultra，中文短句比 SenseVoice 更稳。
+const ASR_MODEL: &str = "XingChenAGI/XingChenASR-V3.2-Ultra";
+/// 兜底模型：万一账号没开通上面的模型（400/403/404），自动退回这个，
+/// 别让「模型没权限」直接把语音输入整条链路废掉。
+const ASR_MODEL_FALLBACK: &str = "FunAudioLLM/SenseVoiceSmall";
 
 /// 内置的默认 ASR Key：**编译期**从环境变量注入，源码与仓库里都没有这个字符串。
 ///
@@ -3311,6 +3319,27 @@ fn asr_key_or_default(stored: String) -> String {
 ///
 /// 前端点麦克风前先问它：没有就直接提示去配置，别白录一轮再报错。
 /// 注意别用 get_asr_key 做这件事 —— 那个只报"用户自己填的"，内置默认是隐藏的。
+/// 生效中的 ASR Key（用户填的优先，否则内置）+ 它是不是内置的。
+/// ⚠️ 这条命令会把 Key 明文交给前端 —— 用户明确说过"不怕泄露，直接贴在控制面板上"，
+/// 所以面板可以把 Key 显示出来方便查看/复制。别拿它做别的用途。
+#[tauri::command]
+fn asr_key_info(app: AppHandle) -> serde_json::Value {
+    let own = read_stored_asr_key(&app);
+    let builtin = DEFAULT_ASR_KEY.trim().to_string();
+    let (key, from_builtin) = if !own.trim().is_empty() {
+        (own, false)
+    } else {
+        (builtin, true)
+    };
+    serde_json::json!({ "key": key, "builtin": from_builtin })
+}
+
+/// 当前用的云端识别模型名（面板上显示，免得用户不清楚到底在跑哪个模型）
+#[tauri::command]
+fn asr_model_name() -> String {
+    ASR_MODEL.to_string()
+}
+
 #[tauri::command]
 fn asr_key_ready(app: AppHandle) -> bool {
     !asr_key_or_default(read_stored_asr_key(&app)).is_empty()
@@ -3461,57 +3490,91 @@ async fn asr_transcribe(app: AppHandle, audio: String) -> Result<String, String>
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );
-    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 512);
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{ASR_MODEL}\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.webm\"\r\nContent-Type: audio/webm\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(&bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
-    let resp = client
-        .post(ASR_API_URL)
-        .header("Authorization", format!("Bearer {}", api_key.trim()))
-        .header(
-            "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| format!("语音识别请求失败: {e}"))?;
 
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取识别结果失败: {e}"))?;
-    if !status.is_success() {
-        return Err(format!(
+    // 主模型不行（账号没开通 / 名字不认）就退回兜底模型，别让语音输入整个不可用
+    let mut last_err = String::new();
+    for model in [ASR_MODEL, ASR_MODEL_FALLBACK] {
+        let body = asr_multipart(&boundary, model, &bytes);
+        let resp = client
+            .post(ASR_API_URL)
+            .header("Authorization", format!("Bearer {}", api_key.trim()))
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| format!("语音识别请求失败: {e}"))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取识别结果失败: {e}"))?;
+        if status.is_success() {
+            if model != ASR_MODEL {
+                log_line(&format!("[asr] 主模型不可用，已退回 {model}"));
+            }
+            let json: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| format!("识别结果解析失败: {e}"))?;
+            return Ok(json
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string());
+        }
+        last_err = format!(
             "语音识别服务返回 {status}: {}",
             text.chars().take(200).collect::<String>()
-        ));
+        );
+        // 只有「模型不存在 / 没权限 / 参数不对」才值得换模型重试；
+        // 401（Key 错）、429（限流）、5xx 换模型也没用，直接报错更诚实。
+        let retryable = matches!(status.as_u16(), 400 | 403 | 404 | 422);
+        log_line(&format!("[asr] {model} 失败（{status}），retryable={retryable}"));
+        if !retryable {
+            break;
+        }
     }
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("识别结果解析失败: {e}"))?;
-    Ok(json
-        .get("text")
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string())
+    Err(last_err)
+}
+
+/// 按文件头猜音频类型：浏览器录音是 webm，面板「识别自检」可能是 wav/mp3。
+/// 服务端会按 filename 后缀 + Content-Type 判断，猜错了容易 400。
+fn audio_kind(bytes: &[u8]) -> (&'static str, &'static str) {
+    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        ("audio.wav", "audio/wav")
+    } else if bytes.len() > 3 && (&bytes[0..3] == b"ID3" || (bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0)) {
+        ("audio.mp3", "audio/mpeg")
+    } else if bytes.len() > 4 && &bytes[0..4] == b"OggS" {
+        ("audio.ogg", "audio/ogg")
+    } else {
+        ("audio.webm", "audio/webm")
+    }
+}
+
+/// 手拼 multipart/form-data（model + file），避免为此引入 mime_guess 一串依赖
+fn asr_multipart(boundary: &str, model: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 512);
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{model}\r\n")
+            .as_bytes(),
+    );
+    let (filename, ctype) = audio_kind(bytes);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {ctype}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
 }
 
 /// 列出可启动的应用（macOS 扫 /Applications，Linux 扫 freedesktop 的 .desktop）。
@@ -4162,7 +4225,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> bool {
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let settings = MenuItemBuilder::with_id("settings", "设置").build(app)?;
+    let settings = MenuItemBuilder::with_id("open-control-panel", "控制面板").build(app)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
     let restart = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_label = MenuItemBuilder::with_id("quit", "退出").build(app)?;
@@ -4182,13 +4245,13 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             // 主窗口被隐藏过（设置里点「隐藏」/ 托盘左键隐藏）时，设置窗口会创建在
             // 一个不可见的主窗口里 —— 用户看到的就是「点了没反应」。所以先 show + focus，
             // 与全局快捷键唤起路径（assist_hotkey 回调）保持一致。
-            "settings" => {
+            "open-control-panel" => {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.unminimize();
                     let _ = win.set_focus();
                 }
-                let _ = app.emit("open-settings", ());
+                let _ = app.emit("open-control-panel", ());
             }
             "restart" => {
                 app.restart();
@@ -4634,9 +4697,10 @@ pub fn run() {
             schedule_shutdown, cancel_shutdown,
             register_assistant_shortcut, unregister_assistant_shortcut,
             tts_synthesize, set_tts_key, get_tts_key,
-            asr_transcribe, set_asr_key, get_asr_key, asr_key_ready,
+            asr_transcribe, set_asr_key, get_asr_key, asr_key_ready, asr_model_name, asr_key_info,
             get_mic_permission, set_mic_permission,
             capture_screen,
+            panel::panel_prepare, panel::panel_push_settings, panel::panel_url, panel::panel_running,
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {
@@ -4665,6 +4729,17 @@ pub fn run() {
                 if verbose { "，详细日志开" } else { "" }
             ));
             log_environment();
+
+            // 开发自测：PETRA_PANEL_AUTOSTART=1 时开机就把控制面板服务拉起来，并把带 token
+            // 的地址写进日志 —— 这样不用点菜单也能用 curl 验接口（也方便反复调试面板）。
+            // 只在 debug 构建里存在，打包版没有这条路径。
+            #[cfg(debug_assertions)]
+            if std::env::var("PETRA_PANEL_AUTOSTART").ok().as_deref() == Some("1") {
+                match panel::ensure_started(app.handle()) {
+                    Ok(url) => log_line(&format!("[panel] 控制面板已就绪：{url}")),
+                    Err(e) => log_line(&format!("[panel] 控制面板启动失败：{e}")),
+                }
+            }
 
             // macOS / Linux：work_area_at 这个命令只有坐标、没有窗口句柄，需要一个
             // AppHandle 才能查显示器工作区，这里先登记一份。

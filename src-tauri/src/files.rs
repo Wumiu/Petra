@@ -835,7 +835,11 @@ mod tests {
         std::fs::write(&outside, "x").unwrap();
         let link = temp_root().join("escape-link.txt");
         let _ = std::fs::remove_file(&link);
-        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(&outside, &link);
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(&outside, &link);
+        if result.is_err() {
             return;
         }
         let err = guard_with(&roots(), &[], &link.to_string_lossy()).unwrap_err();
@@ -871,6 +875,7 @@ mod tests {
     /// 调用方自己传 `\\?\…`（例如把我们上一条错误信息里的路径抄回来）时也要剥掉。
     /// 这里用**普通写法**拼出 verbatim 输入，别拿 canonicalize 过的路径去套 `\\?\`，
     /// 否则会拼出双前缀，测的就不是这件事了。
+    #[cfg(windows)]
     #[test]
     fn verbatim_input_is_echoed_clean() {
         let plain_root = std::env::temp_dir().join("petra-files-test");
@@ -957,7 +962,7 @@ mod tests {
 
     #[test]
     fn backup_name_appends_suffix() {
-        let p = backup_path(Path::new("D:\\a\\note.txt"));
+        let p = backup_path(&std::env::temp_dir().join("note.txt"));
         assert_eq!(p.file_name().unwrap().to_string_lossy(), "note.txt.petra-bak");
     }
 

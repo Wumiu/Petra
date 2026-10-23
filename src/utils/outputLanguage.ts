@@ -13,6 +13,12 @@ const LANG_NAMES: Record<string, string> = {
   "it": "意大利语", "pt": "葡萄牙语", "ar": "阿拉伯语",
 };
 
+/**
+ * 语言下拉的候选（控制面板用）：[explicit_language 代码, 中文名]。
+ * 空串由调用方自己补「自动」，这里只放真正的语言。
+ */
+export const OUTPUT_LANGUAGE_OPTIONS: [string, string][] = Object.entries(LANG_NAMES);
+
 /** 语言代码转中文名；未知代码原样返回 */
 export function langNameOf(code: string): string {
   return LANG_NAMES[code] ?? code;
