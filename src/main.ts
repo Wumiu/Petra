@@ -55,7 +55,7 @@ import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
 import { listModels, PROVIDERS, getUsageStats, resetUsageStats, chatStream } from "./assistant/AssistantClient";
-import { getApiKey, setApiKey, normalizeOpenAIBase, presetKeyScope } from "./assistant/apiKey";
+import { getApiKey, setApiKey, normalizeOpenAIBase, presetKeyScope, currentKeyScope } from "./assistant/apiKey";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
@@ -3136,6 +3136,11 @@ function buildPanelMeta() {
       modelBounds: debugModelBoundsVisible,
       debugBorder: debugBorderVisible,
     },
+    presets: {
+      list: settings.assistant.presets ?? [],
+      activeId: settings.assistant.activePresetId ?? "",
+      scope: currentKeyScope(),
+    },
     models: {
       builtin: panelModels.builtin,
       imported: panelModels.imported,
@@ -3334,7 +3339,7 @@ const PANEL_NATIVE_IDS = new Set([
   "models", "size", "bounds", "border", "model-bounds-toggle",
   "tts-config", "asr-config", "chat-history",
   "feedback", "diary-open", "diary-track", "daily-card", "action-debug",
-  "assistant-hotkey", "assistant-hotkey-clear",
+  "assistant-hotkey", "assistant-hotkey-clear", "assistant-settings",
 ]);
 
 /** 设置键 → 面板上的中文名，只用于「桌宠这边弹一句它改了什么」 */
@@ -3405,6 +3410,64 @@ async function handlePanelKeyAction(kind: string, payload: unknown): Promise<voi
     }
   } catch (e) {
     toast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+  }
+  await pushPanelState();
+}
+
+/**
+ * 面板上的「预设」操作。
+ *
+ * 数据模型与旧设置窗口完全一致：`settings.assistant.presets[]` 只存
+ * id/name/provider/baseUrl/model，**Key 不进 settings**，每个预设单独存
+ * `preset:<id>` 槽位（DPAPI/Keychain）。这里只是换一个入口，规则不能变：
+ * 手动改供应商会清 activePresetId、删预设要顺手删掉它的 Key 槽位。
+ */
+async function handlePanelPresetAction(kind: string, payload: unknown): Promise<void> {
+  const a = settings.assistant;
+  const list = (a.presets ??= []);
+  const sep = kind.indexOf(":");
+  const action = sep < 0 ? kind : kind.slice(0, sep);
+  const arg = sep < 0 ? "" : kind.slice(sep + 1);
+  try {
+    if (action === "apply") {
+      const p = list.find((x) => x.id === arg);
+      if (!p) return void toast("预设不见了，刷新一下", "warn");
+      a.activePresetId = p.id;
+      a.provider = p.provider;
+      a.customBaseUrl = p.customBaseUrl;
+      a.model = p.model;
+      saveSettings(settings);
+      clearApiKeyCache();
+      clearPetTalkKeyCache();
+      toast(`已应用预设「${p.name}」`);
+    } else if (action === "save") {
+      const name = String((payload as { name?: string })?.name ?? "").trim() || `预设 ${list.length + 1}`;
+      const id = `p${Date.now().toString(36)}`;
+      // 先把当前生效的 Key 复制进新槽位，再切作用域，否则「存成预设」后 Key 就丢了
+      const currentKey = await getApiKey(currentKeyScope()).catch(() => "");
+      list.push({ id, name, provider: a.provider, customBaseUrl: a.customBaseUrl, model: a.model });
+      a.activePresetId = id;
+      saveSettings(settings);
+      if (currentKey) await setApiKey(currentKey, presetKeyScope(id)).catch(() => {});
+      toast(`已保存为预设「${name}」`);
+    } else if (action === "rename") {
+      const p = list.find((x) => x.id === arg);
+      const name = String((payload as { name?: string })?.name ?? "").trim();
+      if (!p || !name) return void toast("名字不能为空", "warn");
+      p.name = name;
+      saveSettings(settings);
+      toast("已重命名");
+    } else if (action === "delete") {
+      const p = list.find((x) => x.id === arg);
+      if (!p) return;
+      a.presets = list.filter((x) => x.id !== arg);
+      if (a.activePresetId === arg) a.activePresetId = "";
+      saveSettings(settings);
+      await setApiKey("", presetKeyScope(arg)).catch(() => {});
+      toast(`已删除预设「${p.name}」`);
+    }
+  } catch (e) {
+    toast(`预设操作失败：${e instanceof Error ? e.message : String(e)}`, "warn");
   }
   await pushPanelState();
 }
@@ -3595,6 +3658,11 @@ function runPanelAction(id: string, payload?: unknown): void {
   }
   if (id.startsWith("__data:")) {
     void handlePanelDataAction(id.slice(7), payload);
+    return;
+  }
+  // 预设（API 配置集合）：与旧设置窗口同一套数据模型，Key 各存 preset:<id> 槽位
+  if (id.startsWith("__preset:")) {
+    void handlePanelPresetAction(id.slice("__preset:".length), payload);
     return;
   }
   // 「把桌宠叫到前面」不是菜单项，是面板自己的入口：被隐藏/被窗口压住时用

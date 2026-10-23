@@ -441,6 +441,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { type: "actions", items: [{ id: "__data:models-fetch", label: "自动获取模型列表" }] },
           ],
         },
+        { title: "预设", desc: "", type: "presets" },
         { title: "API Key 与用量", desc: "", type: "keys" },
         { title: "对话记录", desc: "", type: "chat" },
         {
@@ -463,26 +464,26 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "它是谁", desc: "身份类信息，决定它用什么口吻、举什么例子。",
           fields: [
-            { path: "assistant.personaFields.name", label: "名字 / 昵称", type: "text", placeholder: "如：鲸鲸" },
-            { path: "assistant.personaFields.age", label: "年龄", type: "text", placeholder: "如：看着像少女，不报岁数" },
-            { path: "assistant.personaFields.identity", label: "身份 / 职业", type: "text", placeholder: "如：欧洲贵族宅邸里的鲸鱼娘女仆" },
-            { path: "assistant.personaFields.world", label: "时代 / 世界观", type: "textarea", rows: 4, placeholder: "如：欧洲老宅书房的世界——壁炉、书架、一直亮着的灯，窗外是黄昏" },
-            { path: "assistant.personaFields.desire", label: "核心欲望", type: "textarea", rows: 3, placeholder: "如：想让人觉得「群里有只鲸鱼真好玩」，也想被人真的看见" },
+            { path: "assistant.personaFields.name", label: "名字 / 昵称", type: "text", placeholder: "如：小满" },
+            { path: "assistant.personaFields.age", label: "年龄", type: "text", placeholder: "如：看着十七八岁，不报岁数" },
+            { path: "assistant.personaFields.identity", label: "身份 / 职业", type: "text", placeholder: "如：住在你桌面上的一只小女仆，负责提醒喝水、催你睡觉" },
+            { path: "assistant.personaFields.world", label: "时代 / 世界观", type: "textarea", rows: 4, placeholder: "如：你这台电脑的屏幕——她住右下角那扇小窗里，窗内是自己的小房间" },
+            { path: "assistant.personaFields.desire", label: "核心欲望", type: "textarea", rows: 3, placeholder: "如：想被你注意到，也想真的帮上忙，而不是只会卖萌" },
           ],
         },
         {
           title: "它怎么说话", desc: "这几项直接影响回复的长度和语气。",
           fields: [
-            { path: "assistant.personaFields.traits", label: "性格关键词", type: "textarea", rows: 4, placeholder: "如：开朗、话多、爱接话、好奇心重、嘴甜但不腻" },
-            { path: "assistant.personaFields.speech", label: "说话方式", type: "textarea", rows: 7, placeholder: "如：短句为主，像打字不像写诗；默认 5~25 字；爱用轻快语气词" },
-            { path: "assistant.personaFields.catchphrase", label: "口头禅", type: "text", placeholder: "如：诶嘿 / 好呀 / 这个我知道一点点" },
-            { path: "assistant.personaFields.emoji", label: "喜欢用的表情 / 动作", type: "text", placeholder: "如：捂嘴笑、歪头、眨眼（一条最多一个）" },
+            { path: "assistant.personaFields.traits", label: "性格关键词", type: "textarea", rows: 4, placeholder: "如：安静、细心、嘴硬心软、偶尔犯困、被夸会装作没听见" },
+            { path: "assistant.personaFields.speech", label: "说话方式", type: "textarea", rows: 7, placeholder: "如：短句为主，像打字不像念稿；默认 5~25 字；少用感叹号" },
+            { path: "assistant.personaFields.catchphrase", label: "口头禅", type: "text", placeholder: "如：嗯…我在 / 该喝水了哦 / 又要熬夜？" },
+            { path: "assistant.personaFields.emoji", label: "喜欢用的表情 / 动作", type: "text", placeholder: "如：歪头、揉眼睛、尾巴甩一下（一条最多一个）" },
           ],
         },
         {
           title: "自由补充", desc: "不想被分栏限制的，直接在这写；会拼在结构化内容后面。",
           fields: [
-            { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：外冷内热、凶脸软心，平时话少但一开口就损人…" },
+            { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多但会记住你说过的事，偶尔冒一句冷幽默，提醒你休息时从不啰嗦" },
             { type: "personaPreview" },
             { type: "personaTest" },
           ],
@@ -596,6 +597,28 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
 
   function currentValue(path) {
     return getPath(state.settings, path);
+  }
+
+  /**
+   * 拖边界时自动亮绿框，但**不能一直亮着**：停手 8 秒自动收起。
+   * 这个框是调试用的，用户没主动开就不该留在屏幕上（已经两次被问「这个框怎么还在」）。
+   */
+  let boundsAutoTimer = null;
+  let boundsAutoOn = false;
+  function autoShowBounds() {
+    const shown = !!(state.meta.ui || {}).modelBounds;
+    if (!shown) {
+      boundsAutoOn = true;
+      runAction("model-bounds-toggle", "显示绿框");
+    }
+    if (boundsAutoTimer) clearTimeout(boundsAutoTimer);
+    boundsAutoTimer = setTimeout(() => {
+      boundsAutoTimer = null;
+      if (boundsAutoOn) {
+        boundsAutoOn = false;
+        runAction("model-bounds-toggle", "收起绿框");
+      }
+    }, 8000);
   }
 
   /**
@@ -809,6 +832,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       b.onclick = () => {
         const next = b.getAttribute("aria-checked") !== "true";
         b.setAttribute("aria-checked", String(next));
+        // 用户自己按的开关 = 明确意图，别再自动收起
+        boundsAutoOn = false;
+        if (boundsAutoTimer) { clearTimeout(boundsAutoTimer); boundsAutoTimer = null; }
         runAction(spec.action, spec.label);
       };
       ctl.appendChild(b);
@@ -845,9 +871,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       inp.oninput = () => {
         const v = Number(inp.value);
         read.textContent = fmtNum(v, spec);
-        if (spec.path.startsWith("boundsPadding") && !(state.meta.ui || {}).modelBounds) {
-          runAction("model-bounds-toggle", "显示绿框"); // 拖边界时自动开绿框，否则看不见边在哪
-        }
+        if (spec.path.startsWith("boundsPadding")) autoShowBounds();
         commit(spec.path, v, 120); // 拖动即生效
       };
       ctl.appendChild(inp); ctl.appendChild(read);
@@ -922,6 +946,51 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     put("语音朗读", s.tts?.enabled ? "已启用" : "未启用");
     put("控制面板地址", location.origin);
     card.appendChild(kv);
+    return card;
+  }
+
+  /** 预设：一套 API 配置（供应商 + 端点 + 模型 + 自己的 Key） */
+  function presetsCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "预设"));
+    card.appendChild(el("p", "cd", "一套 API 配置存成一个预设，一键切换。Key 各自独立存（预设槽位），不会互相覆盖。"));
+    const d = state.meta.data || {};
+    const list = (state.meta.presets || {}).list || (d.presets && d.presets.list) || [];
+    const activeId = (state.meta.presets || {}).activeId || "";
+    if (!list.length) {
+      card.appendChild(el("div", "empty", "还没有预设"));
+    }
+    list.forEach((p) => {
+      const row = el("div", "row");
+      const txt = el("div", "rtext");
+      const title = el("div", "rlabel", p.name + (p.id === activeId ? "（使用中）" : ""));
+      txt.appendChild(title);
+      txt.appendChild(el("div", "rdesc", `${p.provider} · ${p.model || "默认模型"}${p.customBaseUrl ? " · " + p.customBaseUrl : ""}`));
+      row.appendChild(txt);
+      const ctl = el("div", "rctl");
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = p.name;
+      nameInput.style.width = "min(120px, 28vw)";
+      nameInput.title = "改名后点「改名」";
+      const btnApply = el("button", "btn btn-sm" + (p.id === activeId ? "" : " btn-primary"), p.id === activeId ? "使用中" : "应用");
+      btnApply.onclick = () => { runAction(`__preset:apply:${p.id}`, "应用预设"); };
+      const btnRename = el("button", "btn btn-sm", "改名");
+      btnRename.onclick = () => runAction(`__preset:rename:${p.id}`, { name: nameInput.value }, "改名");
+      const btnDel = el("button", "btn btn-sm btn-danger", "删除");
+      btnDel.onclick = () => {
+        if (!confirm(`删除预设「${p.name}」？它的 Key 也会一起清掉。`)) return;
+        runAction(`__preset:delete:${p.id}`, "删除预设");
+      };
+      ctl.append(nameInput, btnApply, btnRename, btnDel);
+      row.appendChild(ctl);
+      card.appendChild(row);
+    });
+    const btns = el("div", "btn-row");
+    const save = el("button", "btn btn-primary btn-sm", "＋ 把当前配置存为预设");
+    save.onclick = () => runAction("__preset:save", "保存预设");
+    btns.appendChild(save);
+    card.appendChild(btns);
     return card;
   }
 
@@ -1233,6 +1302,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "status") return grid.appendChild(statusCard());
       if (cardSpec.type === "model") return grid.appendChild(modelCard());
       if (cardSpec.type === "keys") return grid.appendChild(keysCard());
+      if (cardSpec.type === "presets") return grid.appendChild(presetsCard());
       if (cardSpec.type === "chat") return grid.appendChild(chatCard());
       if (cardSpec.type === "card") return grid.appendChild(cardCard());
       if (cardSpec.type === "diary") return grid.appendChild(diaryCard());
