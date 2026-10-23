@@ -1,0 +1,1387 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Petra · 控制面板</title>
+<style>
+/* ===================== 设计令牌 ===================== */
+:root{
+  --bg1:#f4f1ff; --bg2:#eef6ff; --bg3:#fff2f7;
+  --card:rgba(255,255,255,.72);
+  --card-strong:rgba(255,255,255,.9);
+  --line:rgba(24,20,48,.10);
+  --line-strong:rgba(24,20,48,.18);
+  --txt:#1b1830; --txt2:#5b5675; --txt3:#8b87a3;
+  --brand:#7c5cff; --brand2:#c65cff; --brand-soft:rgba(124,92,255,.10);
+  --ok:#12a06a; --warn:#d98a12; --danger:#d9445f;
+  --shadow:0 12px 30px rgba(38,28,80,.10), 0 2px 6px rgba(38,28,80,.05);
+  --radius:16px;
+}
+html[data-theme="dark"]{
+  --bg1:#14121f; --bg2:#101827; --bg3:#1b1226;
+  --card:rgba(32,29,48,.66);
+  --card-strong:rgba(38,34,56,.88);
+  --line:rgba(255,255,255,.10);
+  --line-strong:rgba(255,255,255,.2);
+  --txt:#efedf8; --txt2:#a9a4c2; --txt3:#7d7896;
+  --brand:#9b83ff; --brand2:#d489ff; --brand-soft:rgba(155,131,255,.16);
+  --shadow:0 12px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+html,body{overflow-x:hidden}
+body{
+  margin:0; color:var(--txt);
+  font:14px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  background:
+    radial-gradient(1100px 700px at 8% -10%, var(--bg1), transparent 60%),
+    radial-gradient(900px 620px at 92% 0%, var(--bg3), transparent 55%),
+    radial-gradient(1000px 800px at 50% 110%, var(--bg2), transparent 60%),
+    var(--bg1);
+  background-attachment:fixed;
+  -webkit-font-smoothing:antialiased;
+}
+/* 颗粒质感：一层极淡噪点，避免大色块看起来像纯 CSS 渐变 */
+body::after{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0; opacity:.35;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
+}
+.wrap{position:relative; z-index:1; max-width:1180px; margin:0 auto; padding:0 22px 120px}
+
+/* ===================== 顶栏 ===================== */
+.topbar{
+  position:sticky; top:0; z-index:30;
+  background:color-mix(in srgb, var(--card-strong) 82%, transparent);
+  backdrop-filter:blur(18px) saturate(1.4);
+  border-bottom:1px solid var(--line);
+}
+.tbin{
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px;
+  max-width:1180px; margin:0 auto; padding:12px 22px; width:100%;
+}
+.brand{display:flex; align-items:center; gap:11px; min-width:0}
+.logo{
+  width:36px; height:36px; border-radius:12px; flex:0 0 auto;
+  display:grid; place-items:center; color:#fff; font-weight:700; font-size:16px;
+  background:linear-gradient(135deg, var(--brand), var(--brand2));
+  box-shadow:0 6px 16px rgba(124,92,255,.35);
+}
+.brand b{display:block; font-size:15px; letter-spacing:.2px}
+.brand span{display:block; font-size:11.5px; color:var(--txt3)}
+.pills{display:flex; gap:7px; flex-wrap:wrap; flex:1 1 260px; min-width:0}
+.pill{
+  display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 10px;
+  border:1px solid var(--line); border-radius:999px; background:var(--card);
+  font-size:11.5px; color:var(--txt2); white-space:nowrap;
+}
+.pill b{color:var(--txt); font-weight:600}
+.dot{width:6px; height:6px; border-radius:50%; background:var(--txt3); flex:0 0 auto}
+.dot.on{background:var(--ok); box-shadow:0 0 0 3px rgba(18,160,106,.16)}
+.dot.off{background:var(--txt3)}
+.dot.err{background:var(--danger); box-shadow:0 0 0 3px rgba(217,68,95,.16)}
+.tb-actions{display:flex; align-items:center; gap:8px}
+.theme-btn{
+  width:34px; height:34px; border-radius:50%; border:1px solid var(--line-strong);
+  background:var(--card); color:var(--txt); cursor:pointer; display:grid; place-items:center;
+  font-size:15px;
+}
+.theme-btn:hover{background:var(--brand-soft)}
+
+/* ===================== 灵动岛导航 ===================== */
+.navbar{position:sticky; top:61px; z-index:29; padding:14px 0 10px; display:flex; justify-content:center; min-width:0}
+.island{
+  position:relative; display:flex; gap:2px; padding:5px; border-radius:999px;
+  border:1px solid var(--line); background:color-mix(in srgb, var(--card-strong) 84%, transparent);
+  backdrop-filter:blur(16px) saturate(1.4); box-shadow:var(--shadow);
+  max-width:100%; overflow-x:auto; scrollbar-width:none;
+}
+.island::-webkit-scrollbar{display:none}
+.island button{
+  position:relative; z-index:1; border:0; background:transparent; color:var(--txt2);
+  font:inherit; font-size:13px; padding:7px 14px; border-radius:999px; cursor:pointer;
+  white-space:nowrap; transition:color .18s;
+}
+.island button:hover{color:var(--txt)}
+.island button.active{color:var(--txt); font-weight:600}
+.ind{
+  position:absolute; top:5px; height:calc(100% - 10px); border-radius:999px;
+  background:var(--brand-soft); border:1px solid color-mix(in srgb, var(--brand) 34%, transparent);
+  transition:transform .28s cubic-bezier(.4,1.3,.5,1), width .28s cubic-bezier(.4,1.3,.5,1);
+  pointer-events:none;
+}
+
+/* 断连/失效横幅：贴在最上面，颜色要一眼能看见 */
+.banner{
+  margin:14px 0 0; padding:11px 16px; border-radius:12px; font-size:13px;
+  background:color-mix(in srgb, var(--danger) 12%, var(--card-strong));
+  border:1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  color:var(--danger);
+}
+.banner b{color:var(--danger)}
+
+/* ===================== 页面与卡片 ===================== */
+.page{padding-top:8px}
+.section-head{margin:6px 2px 16px}
+.section-head h1{margin:0 0 4px; font-size:20px; letter-spacing:.2px}
+.section-head p{margin:0; color:var(--txt2); font-size:13px}
+.grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(min(340px,100%), 1fr)); gap:16px}
+.card{
+  border:1px solid var(--line); border-radius:var(--radius); background:var(--card);
+  backdrop-filter:blur(14px); box-shadow:var(--shadow); padding:16px 18px; min-width:0;
+}
+.card.wide{grid-column:1/-1}
+.card h2{margin:0 0 3px; font-size:13.5px; letter-spacing:.4px; text-transform:uppercase; color:var(--txt3)}
+.card .cd{margin:0 0 12px; font-size:12.5px; color:var(--txt2)}
+.row{
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:10px 0;
+  border-top:1px solid var(--line);
+}
+.row:first-of-type{border-top:0}
+.row .rtext{flex:1 1 180px; min-width:0}
+.row .rlabel{font-size:13.5px}
+.row .rdesc{font-size:12px; color:var(--txt3); margin-top:2px}
+.row .rctl{flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end}
+
+/* 开关 */
+.sw{position:relative; width:42px; height:24px; border-radius:999px; border:1px solid var(--line-strong);
+  background:color-mix(in srgb, var(--txt3) 42%, transparent); cursor:pointer; transition:background .18s, border-color .18s; padding:0}
+.sw::after{content:""; position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .2s cubic-bezier(.4,1.4,.5,1)}
+.sw[aria-checked="true"]{background:linear-gradient(135deg,var(--brand),var(--brand2)); border-color:transparent}
+.sw[aria-checked="true"]::after{transform:translateX(18px)}
+
+/* 输入控件 */
+input[type=text],input[type=number],select,textarea{
+  font:inherit; font-size:13px; color:var(--txt); background:var(--card-strong);
+  border:1px solid var(--line-strong); border-radius:10px; padding:7px 10px; outline:none;
+  transition:border-color .15s, box-shadow .15s; min-width:0;
+}
+input[type=text]{width:min(220px, 46vw)}
+input[type=number]{width:min(96px, 30vw)}
+textarea{width:100%; min-height:120px; resize:vertical; line-height:1.6}
+input:focus,select:focus,textarea:focus{border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft)}
+.unit{font-size:12px; color:var(--txt3)}
+.range{display:flex; align-items:center; gap:10px}
+input[type=range]{width:160px; accent-color:var(--brand)}
+.readout{font-variant-numeric:tabular-nums; font-size:12.5px; color:var(--txt2); min-width:52px; text-align:right}
+
+/* 按钮 */
+.btn{
+  font:inherit; font-size:13px; padding:7px 14px; border-radius:10px; cursor:pointer;
+  border:1px solid var(--line-strong); background:var(--card-strong); color:var(--txt);
+  transition:transform .12s, background .15s, border-color .15s;
+}
+.btn:hover{background:var(--brand-soft); border-color:color-mix(in srgb,var(--brand) 40%, transparent)}
+.btn:active{transform:translateY(1px)}
+.btn-primary{border-color:transparent; color:#fff; background:linear-gradient(135deg,var(--brand),var(--brand2)); box-shadow:0 6px 16px rgba(124,92,255,.3)}
+.btn-danger{border-color:transparent; color:#fff; background:linear-gradient(135deg,#e2506a,#d1305a)}
+.btn-sm{font-size:12px; padding:5px 11px}
+.btn-ghost{background:transparent}
+.btn-row{display:flex; flex-wrap:wrap; gap:8px; padding-top:10px}
+.btn-row:first-child{padding-top:0}
+
+/* 动作清单 */
+.act-group{margin-bottom:14px}
+.act-group:last-child{margin-bottom:0}
+.act-title{font-size:11.5px; letter-spacing:.6px; text-transform:uppercase; color:var(--txt3); margin:0 0 8px}
+
+/* 保存条 */
+.savebar{
+  position:fixed; left:50%; bottom:22px; transform:translate(-50%, 140%);
+  display:flex; align-items:center; gap:12px; padding:9px 16px;
+  border:1px solid var(--line-strong); border-radius:16px;
+  background:color-mix(in srgb, var(--card-strong) 92%, transparent);
+  backdrop-filter:blur(18px); box-shadow:0 16px 40px rgba(30,20,70,.22);
+  transition:transform .26s cubic-bezier(.4,1.2,.5,1); z-index:40; max-width:calc(100vw - 40px);
+}
+.savebar.show{transform:translate(-50%, 0)}
+.savebar .sb-txt{font-size:13px; color:var(--ok); font-weight:600}
+.savebar .sb-txt b{color:var(--brand)}
+.savebar .spacer{flex:1 1 auto}
+
+/* 提示 */
+.toasts{position:fixed; right:22px; bottom:22px; display:flex; flex-direction:column; gap:8px; z-index:60}
+.toast{
+  padding:9px 14px; border-radius:11px; font-size:13px; color:var(--txt);
+  background:color-mix(in srgb, var(--card-strong) 94%, transparent); border:1px solid var(--line-strong);
+  box-shadow:var(--shadow); animation:tin .22s ease both;
+}
+.toast.ok{border-left:3px solid var(--ok)}
+.toast.err{border-left:3px solid var(--danger)}
+@keyframes tin{from{opacity:0; transform:translateY(8px)}}
+
+.empty{color:var(--txt3); font-size:13px; padding:10px 0}
+/* 对话 / 日记列表 */
+.chatlist{max-height:320px; overflow:auto; display:flex; flex-direction:column; gap:8px; margin-top:10px}
+.chatitem{padding:9px 11px; border-radius:10px; background:var(--card-strong); border:1px solid var(--line); font-size:12.5px; line-height:1.6}
+.chatitem b{display:block; font-size:11px; color:var(--txt3); margin-bottom:3px}
+.chatitem.me{border-left:3px solid var(--brand)}
+.chatitem.ai{border-left:3px solid var(--ok)}
+/* 抽卡结果 */
+.cardout{display:flex; flex-direction:column; align-items:center; gap:6px; padding:14px; border-radius:12px; background:var(--brand-soft); border:1px solid var(--line); margin:10px 0}
+.c-emoji{font-size:40px; line-height:1}
+.c-theme{font-weight:600}
+.c-rarity{font-size:12px; color:var(--txt2)}
+.c-text{font-size:12.5px; color:var(--txt2); text-align:center}
+.kv{display:grid; grid-template-columns:120px 1fr; gap:9px 14px; font-size:13px; padding:4px 0 2px}
+.kv div:nth-child(odd){color:var(--txt3)}
+code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var(--brand-soft); padding:1px 5px; border-radius:5px}
+.foot{padding:26px 4px 0; color:var(--txt3); font-size:12px; display:flex; gap:10px; flex-wrap:wrap}
+
+/* ===================== 窄屏 / 浏览器缩放后的兜底 =====================
+   浏览器缩放会把 CSS 视口压得很窄（200% 缩放的一半），这时两列卡片和 8 项灵动岛
+   都会挤成一团。这里按三档收：宽屏多列 → 中屏单列 → 窄屏紧凑。 */
+@media (max-width: 980px){
+  .grid{grid-template-columns:1fr}
+  .navbar{justify-content:flex-start; overflow-x:auto; scrollbar-width:none}
+  .navbar::-webkit-scrollbar{display:none}
+  .island{flex:0 0 auto}
+}
+@media (max-width: 640px){
+  .wrap{padding:0 14px 100px}
+  .tbin{padding:10px 14px}
+  .section-head h1{font-size:18px}
+  .card{padding:14px}
+  /* 窄屏把「标签 / 控件」改成上下两行：横排时 rtext 的 min 180 + 控件宽度会把卡片顶出屏幕 */
+  .row{flex-direction:column; align-items:stretch; padding:9px 0; gap:7px}
+  .row .rtext{flex:1 1 auto}
+  .row .rctl{justify-content:space-between}
+  input[type=text],input[type=number],select{width:100%}
+  input[type=range]{flex:1 1 auto; width:auto; min-width:120px}
+  .savebar{left:12px; right:12px; transform:translate(0, 140%)}
+  .savebar.show{transform:translate(0, 0)}
+}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="tbin">
+    <div class="brand">
+      <div class="logo">P</div>
+      <div>
+        <b>PETRA · 控制面板</b>
+        <span id="subline">正在连接桌宠…</span>
+      </div>
+    </div>
+    <div class="pills" id="pills"></div>
+    <div class="tb-actions">
+      <button class="btn btn-sm" id="btnShowPet" title="把桌宠叫到所有窗口前面（被隐藏或压在浏览器后面时用）">👀 桌宠</button>
+      <button class="theme-btn" id="themeBtn" title="切换深浅色">◐</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="banner" id="banner" hidden></div>
+  <div class="navbar"><nav class="island" id="island"><span class="ind" id="ind"></span></nav></div>
+
+  <main class="page" id="page"></main>
+
+  <footer class="foot">
+    <span>改一下就立刻生效，没有「保存」这一步——参数直接写进正在运行的那个桌宠，不用重启。</span>
+    <span id="footStat"></span>
+  </footer>
+</div>
+
+<!-- 不再有「保存」这一步：改一下就立刻生效，这里只闪一下确认 -->
+<div class="savebar" id="savebar">
+  <span class="sb-txt" id="sbTxt">已生效</span>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- 鉴权 ----------
+  // token 由 Rust 拼在 URL 片段里（#t=…）。片段不会发给服务端，也不会进浏览历史里的查询串。
+  const TOKEN = (() => {
+    const m = /(?:^|[#&])t=([0-9a-zA-Z]+)/.exec(location.hash || "");
+    if (m) { try { sessionStorage.setItem("petra.panel.token", m[1]); } catch (_) {} return m[1]; }
+    try { return sessionStorage.getItem("petra.panel.token") || ""; } catch (_) { return ""; }
+  })();
+
+  const params = new URLSearchParams(location.search);
+  const state = { settings: {}, meta: {}, seq: 0, online: false, section: params.get("s") || "overview", timer: null, lastCommitAt: 0 };
+
+  // ---------- 工具 ----------
+  const $ = (sel) => document.querySelector(sel);
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const getPath = (obj, path) => path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
+  const esc = (s) => String(s);
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      ...opts,
+      headers: { "content-type": "application/json", "x-panel-token": TOKEN, ...(opts.headers || {}) },
+      cache: "no-store",
+    });
+    let body = null;
+    try { body = await res.json(); } catch (_) {}
+    if (res.status === 401) {
+      setBanner("这个面板已经失效了（桌宠重启过，凭证换了）。请回到托盘图标或右键菜单，重新点一次「控制面板」。");
+      throw new Error("凭证已失效");
+    }
+    if (!res.ok || (body && body.ok === false)) {
+      throw new Error((body && body.error) || ("HTTP " + res.status));
+    }
+    setBanner("");
+    return body;
+  }
+
+  function setBanner(msg) {
+    const b = $("#banner");
+    if (!msg) { b.hidden = true; b.textContent = ""; return; }
+    b.textContent = msg;
+    b.hidden = false;
+  }
+
+  function toast(msg, kind = "ok") {
+    const t = el("div", "toast " + kind, msg);
+    $("#toasts").appendChild(t);
+    setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .25s"; }, 2200);
+    setTimeout(() => t.remove(), 2600);
+  }
+
+  // ---------- 主题 ----------
+  function applyTheme(name) {
+    document.documentElement.dataset.theme = name;
+    try { localStorage.setItem("petra.panel.theme", name); } catch (_) {}
+    $("#themeBtn").textContent = name === "dark" ? "☾" : "☀";
+  }
+  applyTheme(params.get("theme") || (() => { try { return localStorage.getItem("petra.panel.theme") || "light"; } catch (_) { return "light"; } })());
+
+  // ---------- 面板结构（唯一数据源）----------
+  // type: switch / range / number / text / textarea / select / lines / actions
+  const SECTIONS = [
+    {
+      id: "overview", label: "总览", title: "运行总览",
+      desc: "桌宠当前状态一览。参数在左边几个页签里改，改完统一保存。",
+      cards: [
+        { title: "状态", desc: "这些值实时来自正在运行的桌宠。", type: "status" },
+        { title: "常用动作", desc: "点一下立刻执行（跟右键菜单里的是同一套功能）。", type: "quick" },
+      ],
+    },
+    {
+      id: "look", label: "外观", title: "外观与动作",
+      desc: "模型本身、大小与边界、活动频率 —— 原来「右键 → 模型」那一整块功能都收在这一页。",
+      cards: [
+        { title: "模型", desc: "", type: "model" },
+        {
+          title: "大小与边界", desc: "窗口固定 700×700，模型按基准 300px 缩放。",
+          fields: [
+            { path: "modelScale", label: "模型大小", type: "range", min: 0.2, max: 2, step: 0.05, unit: "×", desc: "按当前模型单独记录，切换模型会各自恢复" },
+            { type: "actionSwitch", label: "显示绿框（角色边界）", action: "model-bounds-toggle", stateKey: "modelBounds", desc: "拖下面四个滑条时会自动打开，方便看出边在哪" },
+            { type: "actionSwitch", label: "调试边框（红线）", action: "border", stateKey: "debugBorder", desc: "窗口边界，排查出屏用" },
+            { path: "boundsPadding.left", label: "边界 · 左", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true, desc: "正=往外放宽，负=往里收紧；拖动时绿框实时跟着动" },
+            { path: "boundsPadding.right", label: "边界 · 右", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
+            { path: "boundsPadding.top", label: "边界 · 上", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
+            { path: "boundsPadding.bottom", label: "边界 · 下", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
+            { type: "actions", items: [
+              { id: "bounds", label: "在桌宠窗口里调（带滑条面板）" },
+              { id: "size", label: "大小面板" },
+              { id: "__model:adjust", label: "模型调节（高级参数）" },
+            ] },
+          ],
+        },
+        {
+          title: "行为", desc: "影响它在桌面上怎么动、怎么待着。",
+          fields: [
+            { path: "activity", label: "活动频率", type: "select", options: [["low", "低（安静）"], ["mid", "中"], ["high", "高（活泼）"]], desc: "越高，待机小动作与表情越多" },
+            { path: "mouseTrack", label: "跟随鼠标", type: "switch", desc: "视线与脑袋跟着光标转" },
+            { path: "idleMode", label: "待机模式", type: "switch", desc: "开：缩到屏幕边缘睡觉，点它才醒" },
+          ],
+        },
+      ],
+    },
+    {
+      id: "interact", label: "交互", title: "交互与声音",
+      desc: "点它、整点报时、游戏音效这些「出声 / 出气泡」的开关。",
+      cards: [
+        {
+          title: "信息气泡", desc: "左键点桌宠时弹出的那块面板。",
+          fields: [
+            { path: "weatherBubble", label: "点击弹出信息面板", type: "switch", desc: "天气 / 待办 / 陪伴时间" },
+            { path: "weatherCity", label: "天气城市", type: "text", placeholder: "如：杭州（留空用接口返回的城市名）" },
+          ],
+        },
+        {
+          title: "整点播报", desc: "每到整点报一次时间，纯本地文案、不花 token。",
+          fields: [
+            { path: "hourlyChime", label: "开启整点播报", type: "switch" },
+            { path: "hourlyChimeQuiet", label: "夜间免打扰", type: "switch", desc: "免打扰时段内不播报" },
+            { path: "hourlyQuietStart", label: "免打扰开始（时）", type: "number", min: 0, max: 23 },
+            { path: "hourlyQuietEnd", label: "免打扰结束（时）", type: "number", min: 0, max: 23, desc: "不含该小时" },
+          ],
+        },
+        {
+          title: "声音", desc: "音量都按 0~1 存。",
+          fields: [
+            { path: "audioEnabled", label: "声音总开关", type: "switch" },
+            { path: "gameSound", label: "游戏音效", type: "switch" },
+            { path: "gameSoundVolume", label: "音效音量", type: "range", min: 0, max: 1, step: 0.01 },
+            { path: "gameMusic", label: "麻将对局音乐", type: "switch" },
+            { path: "gameMusicVolume", label: "音乐音量", type: "range", min: 0, max: 1, step: 0.01 },
+          ],
+        },
+      ],
+    },
+    {
+      id: "assistant", label: "小助手", title: "小助手",
+      desc: "对话模型的线路、人设、称呼与主动问候节奏。API Key 走系统钥匙串，不在这页明文保存。",
+      cards: [
+        {
+          title: "模型线路", desc: "换供应商后记得重新填 Key。",
+          fields: [
+            { path: "assistant.enabled", label: "启用小助手", type: "switch" },
+            { path: "assistant.provider", label: "供应商", type: "select", options: "providers" },
+            { path: "assistant.model", label: "模型", type: "text", placeholder: "留空用供应商默认" },
+            { path: "assistant.customBaseUrl", label: "自定义接口地址", type: "text", placeholder: "仅“自定义”供应商需要" },
+            { type: "actions", items: [{ id: "__data:models-fetch", label: "自动获取模型列表" }] },
+          ],
+        },
+        { title: "API Key 与用量", desc: "", type: "keys" },
+        { title: "对话记录", desc: "", type: "chat" },
+        {
+          title: "人设与语言", desc: "人设会拼进每轮系统提示。",
+          fields: [
+            { type: "note", text: "人设现在有独立页面了 —— 顶栏「人设」：姓名/年龄/身份/世界观/欲望/性格/说话方式/口头禅/表情，一格一格填。" },
+            { path: "assistant.nickname", label: "怎么称呼你", type: "text", placeholder: "留空让它自己决定" },
+            { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
+            { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
+            { type: "hotkey", label: "呼出快捷键", desc: "点「录制」后在浏览器里按下组合键（Esc 取消）" },
+            
+          ],
+        },
+      ],
+    },
+    {
+      id: "persona", label: "人设", title: "人设 · 它是谁",
+      desc: "决定它说话像谁。填得越具体，演起来越稳；留空的不写进提示词。改一下立刻生效，右侧有拼好的最终提示词预览。",
+      cards: [
+        {
+          title: "它是谁", desc: "身份类信息，决定它用什么口吻、举什么例子。",
+          fields: [
+            { path: "assistant.personaFields.name", label: "名字 / 昵称", type: "text", placeholder: "如：鲸鲸" },
+            { path: "assistant.personaFields.age", label: "年龄", type: "text", placeholder: "如：看着像少女，不报岁数" },
+            { path: "assistant.personaFields.identity", label: "身份 / 职业", type: "text", placeholder: "如：欧洲贵族宅邸里的鲸鱼娘女仆" },
+            { path: "assistant.personaFields.world", label: "时代 / 世界观", type: "textarea", rows: 4, placeholder: "如：欧洲老宅书房的世界——壁炉、书架、一直亮着的灯，窗外是黄昏" },
+            { path: "assistant.personaFields.desire", label: "核心欲望", type: "textarea", rows: 3, placeholder: "如：想让人觉得「群里有只鲸鱼真好玩」，也想被人真的看见" },
+          ],
+        },
+        {
+          title: "它怎么说话", desc: "这几项直接影响回复的长度和语气。",
+          fields: [
+            { path: "assistant.personaFields.traits", label: "性格关键词", type: "textarea", rows: 4, placeholder: "如：开朗、话多、爱接话、好奇心重、嘴甜但不腻" },
+            { path: "assistant.personaFields.speech", label: "说话方式", type: "textarea", rows: 7, placeholder: "如：短句为主，像打字不像写诗；默认 5~25 字；爱用轻快语气词" },
+            { path: "assistant.personaFields.catchphrase", label: "口头禅", type: "text", placeholder: "如：诶嘿 / 好呀 / 这个我知道一点点" },
+            { path: "assistant.personaFields.emoji", label: "喜欢用的表情 / 动作", type: "text", placeholder: "如：捂嘴笑、歪头、眨眼（一条最多一个）" },
+          ],
+        },
+        {
+          title: "自由补充", desc: "不想被分栏限制的，直接在这写；会拼在结构化内容后面。",
+          fields: [
+            { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：外冷内热、凶脸软心，平时话少但一开口就损人…" },
+            { type: "personaPreview" },
+            { type: "personaTest" },
+          ],
+        },
+      ],
+    },
+    {
+      id: "voice", label: "语音", title: "语音与歌词",
+      desc: "朗读（TTS）、麦克风（ASR）、跟随音乐歌词。",
+      cards: [
+        {
+          title: "语音朗读", desc: "Key 存在系统钥匙串里，面板不回显；留空表示不改，填了就覆盖。",
+          fields: [
+            { path: "tts.enabled", label: "开启朗读", type: "switch" },
+            { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
+            { type: "secret", key: "tts", label: "语音朗读 Key", desc: "不回显，只有你自己知道；要换就直接粘新的再保存" },
+            { type: "actions", items: [{ id: "tts-test", label: "试听一句" }] },
+          ],
+        },
+        {
+          title: "语音识别", desc: "说话输入。默认走云端模型；关掉下面的开关才先试系统识别。",
+          fields: [
+            { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
+            { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置 Key 会直接显示在这里，可以复制或换成自己的" },
+            { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风直接走 XingChen（下面的模型）；关：Windows 先试系统识别" },
+            { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号没开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
+            { type: "asrProbe" },
+          ],
+        },
+        {
+          title: "歌词", desc: "识别正在播放的歌，气泡里跟唱。",
+          fields: [
+            { path: "musicLyrics", label: "显示歌词气泡", type: "switch" },
+            { path: "lyricsTranslate", label: "显示翻译", type: "switch", desc: "来源带译文时才显示" },
+            { type: "actions", items: [{ id: "lyrics-sync", label: "按歌微调时间轴（打开子菜单）" }] },
+          ],
+        },
+      ],
+    },
+    {
+      id: "fun", label: "娱乐", title: "日记 · 抽卡 · 麻将",
+      desc: "这些功能各自有独立开关，互不影响。",
+      cards: [
+        {
+          title: "日记", desc: "把今天的互动写成一篇小日记。",
+          fields: [
+            { path: "diary.enabled", label: "启用日记", type: "switch" },
+            { path: "diary.autoGenerate", label: "每天自动生成", type: "switch" },
+            
+          ],
+        },
+        { title: "抽卡", desc: "", type: "card" },
+        {
+          title: "麻将", desc: "AI 实时互动会消耗 token（有节流与上限）。",
+          fields: [
+            { path: "gameTalk", label: "桌上实时互动", type: "switch" },
+            { type: "actions", items: [{ id: "minigames", label: "打开小游戏" }] },
+          ],
+        },
+        { title: "动作试玩", desc: "", type: "actionplay" },
+        { title: "日记本", desc: "", type: "diary" },
+      ],
+    },
+    {
+      id: "perm", label: "权限", title: "权限与文件",
+      desc: "小助手能替你做的事的边界。放宽前想清楚。",
+      cards: [
+        {
+          title: "命令与写入", desc: "关掉时会弹确认气泡，逐次确认。",
+          fields: [
+            { path: "allowAllShell", label: "免确认执行命令", type: "switch", desc: "危险：等于把终端交给它" },
+            { path: "allowAllFileWrite", label: "免确认写文件", type: "switch" },
+          ],
+        },
+        {
+          title: "文件禁止目录", desc: "一行一个，支持 # 注释。这些目录它一律不准读写。",
+          fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
+        },
+        { title: "反馈", desc: "", type: "feedback" },
+      ],
+    },
+    {
+      id: "actions", label: "动作", title: "全部功能",
+      desc: "右键菜单里的功能项都在这里，点一下等价于在桌宠上点那一项。",
+      cards: [ { title: "功能清单", desc: "", type: "actions-all" }, { title: "自检", desc: "", type: "selfcheck" } ],
+    },
+  ];
+
+  // ---------- 渲染 ----------
+  function optionsOf(spec) {
+    if (spec.options === "providers") {
+      const ps = (state.meta.providers || []);
+      return ps.map((p) => [p.id, p.label]);
+    }
+    if (spec.options === "languages") {
+      return [["", "自动（中文）"], ...((state.meta.languages || []))];
+    }
+    return spec.options || [];
+  }
+
+  function rowWrap(label, desc) {
+    const row = el("div", "row");
+    const txt = el("div", "rtext");
+    if (label) txt.appendChild(el("div", "rlabel", label));
+    if (desc) txt.appendChild(el("div", "rdesc", desc));
+    row.appendChild(txt);
+    const ctl = el("div", "rctl");
+    row.appendChild(ctl);
+    return { row, ctl };
+  }
+
+  function currentValue(path) {
+    return getPath(state.settings, path);
+  }
+
+  /**
+   * 改一下就立刻生效（用户明确要求：不要「保存并生效」这一遍）。
+   * 文本类会被连续输入打断，所以按类型给不同防抖：滑条 120ms、文本 600ms。
+   */
+  let commitTimers = {};
+  function commit(path, value, delay) {
+    // 本地副本先更新：之后重新渲染/读值都直接是新的
+    const parts = path.split(".");
+    let node = state.settings;
+    parts.slice(0, -1).forEach((k) => { node[k] = node[k] || {}; node = node[k]; });
+    node[parts[parts.length - 1]] = value;
+
+    // 人设页的预览实时跟着变（不重建整个表单，否则输入框丢焦点）
+    if (path.startsWith("assistant.persona")) {
+      const pre = document.getElementById("personaPre");
+      if (pre) pre.value = composePersonaText() || "（还没填内容）";
+    }
+    clearTimeout(commitTimers[path]);
+    commitTimers[path] = setTimeout(async () => {
+      const patch = {};
+      let cur = patch;
+      parts.slice(0, -1).forEach((k) => { cur[k] = cur[k] || {}; cur = cur[k]; });
+      cur[parts[parts.length - 1]] = value;
+      try {
+        await api("/api/settings", { method: "POST", body: JSON.stringify({ patch }) });
+        flashSaved();
+      } catch (e) {
+        if (e instanceof TypeError) {
+          setBanner("连不上桌宠（Petra 可能已经退出）。重新打开 Petra 后，再从菜单点一次「控制面板」。");
+        }
+        toast("没生效：" + e.message, "err");
+      }
+    }, delay == null ? 120 : delay);
+  }
+
+  /** 底下那个胶囊闪一下「已生效」，1.2 秒后自己消失（不打断操作） */
+  let flashTimer = null;
+  function flashSaved() {
+    const bar = $("#savebar");
+    bar.classList.add("show");
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => bar.classList.remove("show"), 1200);
+  }
+
+  /** 和 settings.ts 的 composePersona 保持一致：面板只是本地预览，真正落地在桌宠侧 */
+  function composePersonaText() {
+    const s = state.settings.assistant || {};
+    const f = s.personaFields || {};
+    const t = (x) => (x || "").trim();
+    const lines = [];
+    if (t(f.name)) lines.push(`你的名字是「${t(f.name)}」。`);
+    if (t(f.age)) lines.push(`年龄：${t(f.age)}`);
+    if (t(f.identity)) lines.push(`身份：${t(f.identity)}`);
+    if (t(f.world)) lines.push(`所处世界：${t(f.world)}`);
+    if (t(f.desire)) lines.push(`你真正想要的：${t(f.desire)}`);
+    if (t(f.traits)) lines.push(`性格：${t(f.traits)}`);
+    if (t(f.speech)) lines.push(`说话方式：${t(f.speech)}`);
+    if (t(f.catchphrase)) lines.push(`口头禅：${t(f.catchphrase)}`);
+    if (t(f.emoji)) lines.push(`喜欢用的表情/动作：${t(f.emoji)}`);
+    if (t(s.personaFree)) lines.push(t(s.personaFree));
+    return lines.join("\n");
+  }
+
+  function fieldNode(spec) {
+    if (spec.type === "note") {
+      // text 可以是函数：渲染时才求值，能读到已经推上来的 meta
+      return el("div", "rdesc", typeof spec.text === "function" ? spec.text() : spec.text);
+    }
+    if (spec.type === "asrProbe") {
+      const wrap = el("div", "row");
+      wrap.style.display = "block";
+      wrap.appendChild(el("div", "rlabel", "识别自检"));
+      wrap.appendChild(el("div", "rdesc", "选一个本地音频（wav/mp3/m4a…），看它能不能真的转成文字 —— 顺便验证 Key 和模型是否可用。"));
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "audio/*";
+      input.style.display = "none";
+      input.onchange = () => {
+        const f = input.files && input.files[0];
+        input.value = "";
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || "");
+          const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+          runAction("__data:asr-probe", { audio: b64, name: f.name });
+        };
+        reader.readAsDataURL(f);
+      };
+      wrap.appendChild(input);
+      const b = el("button", "btn btn-sm btn-primary", "选音频自检");
+      b.style.marginTop = "8px";
+      b.onclick = () => input.click();
+      wrap.appendChild(b);
+      const t = (state.meta.data || {}).asrTest;
+      if (t && t.text) {
+        const out = el("div", "chatitem ai");
+        out.style.marginTop = "8px";
+        out.appendChild(el("b", null, "识别结果 · " + t.at));
+        out.appendChild(el("div", null, t.text));
+        wrap.appendChild(out);
+      }
+      return wrap;
+    }
+    if (spec.type === "personaTest") {
+      const wrap = el("div", "row");
+      wrap.style.display = "block";
+      const head = el("div", "rlabel", "试演一句");
+      const desc = el("div", "rdesc", "真发一次请求，用现在这套人设让它打招呼 —— 看到的回复就是模型实际拿到的人设。");
+      const btn = el("button", "btn btn-sm btn-primary", "用人设试演");
+      btn.style.marginTop = "8px";
+      btn.onclick = () => runAction("__data:persona-test", "人设试演");
+      wrap.append(head, desc, btn);
+      const t = (state.meta.data || {}).personaTest;
+      if (t && t.text) {
+        const out = el("div", "chatitem ai");
+        out.style.marginTop = "8px";
+        out.appendChild(el("b", null, "模型回复 · " + t.at));
+        out.appendChild(el("div", null, t.text));
+        wrap.appendChild(out);
+      }
+      return wrap;
+    }
+    if (spec.type === "personaPreview") {
+      const wrap = el("div", "row");
+      wrap.style.display = "block";
+      const head = el("div", "rlabel", "最终提示词预览（只读）");
+      const pre = document.createElement("textarea");
+      pre.id = "personaPre";
+      pre.readOnly = true;
+      pre.rows = 8;
+      pre.value = composePersonaText() || "（还没填内容）";
+      pre.style.marginTop = "6px";
+      wrap.append(head, pre);
+      return wrap;
+    }
+    // 写-only 的 Key：面板永远不回显明文，只显示「已配置/未配置」
+    if (spec.type === "secret") {
+      const d = state.meta.data || {};
+      const configured = !!(d.keys && d.keys[spec.key]);
+      const values = d.keyValues || {};
+      const current = values[spec.key] || "";
+      const isBuiltin = spec.key === "asr" && !!values.asrBuiltin;
+      const hint = spec.desc || (isBuiltin ? "用的是内置 Key（留空保存 = 继续用内置）" : configured ? "已配置" : "还没配置");
+      const { row, ctl } = rowWrap(spec.label, hint);
+      // 只有 ASR 这类「用户自己贴过、明确要看」的 Key 才明文回显；
+      // 付费 Key（小助手/语音朗读）面板根本不拿到值，只能覆盖写入。
+      const reveal = !!current;
+      const inp = document.createElement("input");
+      inp.type = reveal ? "text" : "password";
+      inp.value = current;
+      inp.placeholder = reveal ? "粘贴 Key" : configured ? "已配置（不回显），留空不改" : "粘贴 Key";
+      inp.spellcheck = false;
+      inp.autocomplete = "off";
+      inp.style.fontFamily = "ui-monospace,Consolas,monospace";
+      inp.style.width = "min(240px, 46vw)";
+      const save = el("button", "btn btn-sm btn-primary", "保存");
+      save.onclick = () => runAction(`__key:${spec.key}`, { value: inp.value });
+      const clr = el("button", "btn btn-sm", "清除");
+      clr.onclick = () => { if (confirm("清空这个 Key？清空后回到内置/未配置状态。")) runAction(`__key:${spec.key}`, { value: "" }); };
+      ctl.append(inp, save, clr);
+      return row;
+    }
+    // 快捷键：在浏览器里直接按组合键录
+    if (spec.type === "hotkey") {
+      const { row, ctl } = rowWrap(spec.label, spec.desc);
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.readOnly = true;
+      inp.value = (state.settings.assistant && state.settings.assistant.shortcut) || "";
+      inp.placeholder = "未设置";
+      const rec = el("button", "btn btn-sm", "录制");
+      let capturing = false;
+      const onKey = (e) => {
+        if (!capturing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") { done(); return; }
+        if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+        const mods = [];
+        if (e.ctrlKey) mods.push("Ctrl");
+        if (e.altKey) mods.push("Alt");
+        if (e.shiftKey) mods.push("Shift");
+        if (e.metaKey) mods.push("Super");
+        const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        inp.value = [...mods, k].join("+");
+        done();
+      };
+      const done = () => { capturing = false; rec.textContent = "录制"; window.removeEventListener("keydown", onKey, true); };
+      rec.onclick = () => {
+        if (capturing) { done(); return; }
+        capturing = true; rec.textContent = "按下组合键…";
+        window.addEventListener("keydown", onKey, true);
+      };
+      const save = el("button", "btn btn-sm btn-primary", "保存");
+      save.onclick = () => runAction("__data:hotkey-set", { value: inp.value });
+      const clr = el("button", "btn btn-sm", "清除");
+      clr.onclick = () => runAction("__data:hotkey-set", { value: "" });
+      ctl.append(inp, rec, save, clr);
+      return row;
+    }
+    // 「开关 + 动作」：状态来自桌宠上报的运行时状态，点了就跑对应功能
+    if (spec.type === "actionSwitch") {
+      const on = !!(state.meta.ui || {})[spec.stateKey];
+      const { row, ctl } = rowWrap(spec.label, spec.desc);
+      const b = el("button", "sw");
+      b.setAttribute("role", "switch");
+      b.setAttribute("aria-checked", String(on));
+      b.onclick = () => {
+        const next = b.getAttribute("aria-checked") !== "true";
+        b.setAttribute("aria-checked", String(next));
+        runAction(spec.action, spec.label);
+      };
+      ctl.appendChild(b);
+      return row;
+    }
+    if (spec.type === "actions") {
+      const wrap = el("div", "btn-row");
+      spec.items.forEach((it) => {
+        const b = el("button", "btn btn-sm" + (it.primary ? " btn-primary" : ""), it.label);
+        b.onclick = () => runAction(it.id, it.label);
+        wrap.appendChild(b);
+      });
+      return wrap;
+    }
+
+    const cur = currentValue(spec.path);
+    const { row, ctl } = rowWrap(spec.label, spec.desc);
+
+    if (spec.type === "switch") {
+      const b = el("button", "sw");
+      b.setAttribute("role", "switch");
+      b.setAttribute("aria-checked", String(!!cur));
+      b.onclick = () => {
+        const next = b.getAttribute("aria-checked") !== "true";
+        b.setAttribute("aria-checked", String(next));
+        commit(spec.path, next, 0);
+      };
+      ctl.appendChild(b);
+    } else if (spec.type === "range") {
+      const read = el("span", "readout", fmtNum(cur, spec));
+      const inp = document.createElement("input");
+      inp.type = "range"; inp.min = spec.min; inp.max = spec.max; inp.step = spec.step;
+      inp.value = String(cur ?? spec.min);
+      inp.oninput = () => {
+        const v = Number(inp.value);
+        read.textContent = fmtNum(v, spec);
+        if (spec.path.startsWith("boundsPadding") && !(state.meta.ui || {}).modelBounds) {
+          runAction("model-bounds-toggle", "显示绿框"); // 拖边界时自动开绿框，否则看不见边在哪
+        }
+        commit(spec.path, v, 120); // 拖动即生效
+      };
+      ctl.appendChild(inp); ctl.appendChild(read);
+      if (spec.unit && spec.unit !== "×") ctl.appendChild(el("span", "unit", spec.unit));
+    } else if (spec.type === "number") {
+      const inp = document.createElement("input");
+      inp.type = "number"; inp.min = spec.min; inp.max = spec.max; inp.value = String(cur ?? "");
+      inp.oninput = () => {
+        const n = inp.value === "" ? null : Number(inp.value);
+        if (n === null || Number.isNaN(n)) return;
+        commit(spec.path, n, 600);
+      };
+      ctl.appendChild(inp);
+      if (spec.unit) ctl.appendChild(el("span", "unit", spec.unit));
+    } else if (spec.type === "text") {
+      const inp = document.createElement("input");
+      inp.type = "text"; inp.value = cur ?? ""; inp.placeholder = spec.placeholder || "";
+      inp.oninput = () => commit(spec.path, inp.value.trim(), 600);
+      ctl.appendChild(inp);
+    } else if (spec.type === "textarea") {
+      const ta = document.createElement("textarea");
+      ta.rows = spec.rows || 5;
+      ta.value = cur ?? ""; ta.placeholder = spec.placeholder || "";
+      ta.oninput = () => commit(spec.path, ta.value, 600);
+      row.innerHTML = "";
+      if (spec.label) row.appendChild(el("div", "rlabel", spec.label)).style.marginBottom = "6px";
+      row.style.display = "block";
+      row.appendChild(ta);
+      return row;
+    } else if (spec.type === "lines") {
+      const ta = document.createElement("textarea");
+      ta.rows = spec.rows || 4; ta.placeholder = spec.placeholder || "";
+      ta.value = Array.isArray(cur) ? cur.join("\n") : "";
+      ta.oninput = () => commit(spec.path, ta.value.split("\n").map((x) => x.trim()).filter(Boolean), 600);
+      row.querySelector(".rtext")?.remove();
+      row.style.display = "block";
+      row.appendChild(ta);
+      return row;
+    } else if (spec.type === "select") {
+      const sel = document.createElement("select");
+      const opts = optionsOf(spec);
+      // 存档里的值可能已经不在候选里（比如换过供应商），补一个当前值，别让选择框显示成空白
+      if (cur != null && cur !== "" && !opts.some(([v]) => String(v) === String(cur))) opts.unshift([String(cur), String(cur)]);
+      if (cur === "" || cur == null) sel.appendChild(new Option("自动", ""));
+      opts.forEach(([v, lab]) => sel.appendChild(new Option(lab, String(v))));
+      sel.value = cur == null ? "" : String(cur);
+      sel.onchange = () => commit(spec.path, sel.value, 0);
+      ctl.appendChild(sel);
+    }
+    return row;
+  }
+
+  function fmtNum(v, spec) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    if (spec.unit === "×") return n.toFixed(2).replace(/0$/, "") + "×";
+    const dec = spec.step && spec.step < 0.1 ? 2 : 0;
+    return n.toFixed(dec);
+  }
+
+  function statusCard() {
+    const m = state.meta || {};
+    const s = state.settings || {};
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "状态"));
+    const kv = el("div", "kv");
+    const put = (k, v) => { kv.appendChild(el("div", null, k)); kv.appendChild(el("div", null, v)); };
+    put("版本", m.version || "—");
+    put("运行平台", m.platform || "—");
+    put("当前模型", m.model || "—");
+    put("小助手", s.assistant?.enabled ? "已启用 · " + ((m.providers || []).find((p) => p.id === s.assistant?.provider)?.label || s.assistant?.provider || "") : "未启用");
+    put("语音朗读", s.tts?.enabled ? "已启用" : "未启用");
+    put("控制面板地址", location.origin);
+    card.appendChild(kv);
+    return card;
+  }
+
+  /** API Key 与用量 */
+  function keysCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "API Key 与用量"));
+    card.appendChild(el("p", "cd", "Key 存在系统钥匙串/DPAPI 里，面板只显示「配没配」，不回显明文。"));
+    card.appendChild(fieldNode({ type: "secret", key: "assistant", label: "小助手 API Key" }));
+    const d = state.meta.data || {};
+    const u = d.usage || {};
+    const row = el("div", "row");
+    const t = el("div", "rtext");
+    t.appendChild(el("div", "rlabel", "AI 用量"));
+    t.appendChild(el("div", "rdesc", `调用 ${u.calls || 0} 次` + (u.prompt ? `，输入 ${u.prompt} tokens` : "") + (u.completion ? `，输出 ${u.completion} tokens` : "")));
+    row.appendChild(t);
+    const ctl = el("div", "rctl");
+    const b = el("button", "btn btn-sm", "清零");
+    b.onclick = () => runAction("__data:usage-reset", "清零用量");
+    ctl.appendChild(b);
+    row.appendChild(ctl);
+    card.appendChild(row);
+    const models = d.assistantModels || [];
+    if (models.length) {
+      card.appendChild(el("div", "act-title", "可用模型（点一下填进「模型」）"));
+      const wrap = el("div", "btn-row");
+      models.slice(0, 24).forEach((mm) => {
+        const btn = el("button", "btn btn-sm", mm);
+        btn.onclick = () => { commit("assistant.model", mm, 0); renderSection(); };
+        wrap.appendChild(btn);
+      });
+      card.appendChild(wrap);
+    }
+    return card;
+  }
+
+  /** 对话记录 */
+  function chatCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "对话记录"));
+    card.appendChild(el("p", "cd", "只读展示最近 30 条（主动问候/主动学习已过滤）。"));
+    const btns = el("div", "btn-row");
+    const load = el("button", "btn btn-sm btn-primary", "读取记录");
+    load.onclick = () => runAction("__data:chat-load", "读取对话");
+    const clr = el("button", "btn btn-sm btn-danger", "清空");
+    clr.onclick = () => { if (confirm("清空全部对话记录？不可恢复。")) runAction("__data:chat-clear", "清空对话"); };
+    btns.append(load, clr);
+    card.appendChild(btns);
+    const list = (state.meta.data && state.meta.data.chat) || [];
+    if (!list.length) { card.appendChild(el("div", "empty", "还没读取（点上面「读取记录」）")); return card; }
+    const box = el("div", "chatlist");
+    list.forEach((m) => {
+      const it = el("div", "chatitem " + (m.role === "user" ? "me" : "ai"));
+      it.appendChild(el("b", null, m.role === "user" ? "你" : "Petra"));
+      it.appendChild(el("div", null, m.content));
+      box.appendChild(it);
+    });
+    card.appendChild(box);
+    return card;
+  }
+
+  /** 抽卡 */
+  function cardCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "抽卡"));
+    card.appendChild(el("p", "cd", "每天一张，攒图鉴。"));
+    card.appendChild(fieldNode({ path: "dailyCard.enabled", label: "每日抽卡", type: "switch" }));
+    const d = (state.meta.data && state.meta.data.card) || null;
+    const out = el("div", "cardout");
+    if (d && d.card) {
+      out.appendChild(el("div", "c-emoji", d.card.emoji || "🎴"));
+      out.appendChild(el("div", "c-theme", `${d.card.theme || d.card.id}`));
+      out.appendChild(el("div", "c-rarity", `${d.rarity || d.card.rarity || ""}`));
+      if (d.aiText) out.appendChild(el("div", "c-text", d.aiText));
+    } else {
+      out.appendChild(el("div", "empty", "今天还没抽"));
+    }
+    card.appendChild(out);
+    const b = el("button", "btn btn-primary btn-sm", d ? "再抽一次（今天已抽过）" : "抽一张");
+    b.onclick = () => runAction("__data:card-draw", "抽卡");
+    card.appendChild(b);
+    return card;
+  }
+
+  /** 日记本 */
+  function diaryCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "日记本"));
+    card.appendChild(el("p", "cd", "点「读取」把这边的日记拉下来看，只读。"));
+    const b = el("button", "btn btn-sm btn-primary", "读取日记");
+    b.onclick = () => runAction("__data:diary-load", "读取日记");
+    card.appendChild(b);
+    const list = (state.meta.data && state.meta.data.diaries) || [];
+    if (!list.length) { card.appendChild(el("div", "empty", "还没读取")); return card; }
+    const box = el("div", "chatlist");
+    list.slice(-8).reverse().forEach((d) => {
+      const it = el("div", "chatitem");
+      it.appendChild(el("b", null, d.date));
+      it.appendChild(el("div", null, d.text));
+      box.appendChild(it);
+    });
+    card.appendChild(box);
+    return card;
+  }
+
+  /** 动作试玩 */
+  function actionPlayCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "动作试玩"));
+    card.appendChild(el("p", "cd", "点一下让桌宠当场做这个动作。"));
+    const list = (state.meta.data && state.meta.data.actionList) || [];
+    if (!list.length) { card.appendChild(el("div", "empty", "当前模型没有动作库")); return card; }
+    const wrap = el("div", "btn-row");
+    list.forEach((a) => {
+      const b = el("button", "btn btn-sm", a.label);
+      b.onclick = () => runAction("__data:action-play", { id: a.id });
+      wrap.appendChild(b);
+    });
+    card.appendChild(wrap);
+    return card;
+  }
+
+  /** 反馈 */
+  function feedbackCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "反馈"));
+    card.appendChild(el("p", "cd", "直接发到我这边（附当前版本与最近日志）。"));
+    const ta = document.createElement("textarea");
+    ta.placeholder = "遇到了什么问题 / 想要什么功能…";
+    card.appendChild(ta);
+    const b = el("button", "btn btn-primary btn-sm", "发送反馈");
+    b.onclick = () => {
+      const text = ta.value.trim();
+      if (!text) { toast("先写点什么", "err"); return; }
+      runAction("__data:feedback-send", { text });
+      ta.value = "";
+    };
+    const wrap = el("div", "btn-row");
+    wrap.appendChild(b);
+    card.appendChild(wrap);
+    return card;
+  }
+
+  /** 模型卡：当前模型 / 切换 / 导入 / 删除 —— 对齐原「模型设置」面板的能力 */
+  function modelCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "模型"));
+    const m = state.meta.models || { builtin: [], imported: [], current: {} };
+    const cur = m.current || {};
+    const curName = (cur.name || "").replace(/\.psd$/i, "") || (cur.type === "live2d" ? "标准 Live2D 模型" : "—");
+
+    card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}。导入 .psd 会直接换成新模型；切换模型会自动把边界补偿重置为 0（不同轮廓，上一个调好的值不适用）。`));
+
+    // 切换
+    const row = el("div", "row");
+    const txt = el("div", "rtext");
+    txt.appendChild(el("div", "rlabel", "切换到"));
+    txt.appendChild(el("div", "rdesc", "内置模型随程序打包，已导入的来自你自己的 PSD"));
+    row.appendChild(txt);
+    const ctl = el("div", "rctl");
+    const sel = document.createElement("select");
+    const opts = [
+      ...(m.builtin || []).map((f) => [`__model:builtin:${f}`, `内置 · ${f.replace(/\.psd$/i, "")}`]),
+      ...(m.imported || []).map((f) => [`__model:imported:${f}`, `已导入 · ${f.replace(/\.psd$/i, "")}`]),
+    ];
+    if (!opts.length) sel.appendChild(new Option("（暂无可用模型）", ""));
+    opts.forEach(([v, lab]) => {
+      const o = new Option(lab, v);
+      if (cur.name === v.split(":").slice(2).join(":")) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => {
+      if (!sel.value) return;
+      const want = sel.value.split(":").slice(2).join(":");
+      runAction(sel.value, sel.options[sel.selectedIndex].text);
+      void refreshUntilCurrent(want);
+    };
+    ctl.appendChild(sel);
+    row.appendChild(ctl);
+    card.appendChild(row);
+
+    // 导入 / 删除
+    const btns = el("div", "btn-row");
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".psd";
+    fileInput.style.display = "none";
+    fileInput.onchange = () => {
+      const f = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (f) void uploadPsd(f);
+    };
+    card.appendChild(fileInput);
+    const impBtn = el("button", "btn btn-primary btn-sm", "＋ 导入 PSD 模型");
+    impBtn.onclick = () => fileInput.click();
+    btns.appendChild(impBtn);
+    if (cur.type === "import" && cur.name) {
+      const delBtn = el("button", "btn btn-danger btn-sm", "删除当前模型");
+      delBtn.onclick = () => {
+        if (!confirm(`确定删除「${curName}」吗？删除后要重新导入才能恢复。`)) return;
+        runAction(`__model:delete:${cur.name}`, "删除模型");
+        void refreshUntilCurrent("");
+      };
+      btns.appendChild(delBtn);
+    }
+    // 只会新增不会丢：PSD 先落到 models 目录，再由桌宠切过去
+    card.appendChild(btns);
+    card.appendChild(el("div", "rdesc", "导入的 PSD 与「把文件拖进桌宠窗口」落在同一个目录，两种方式可以混用。"));
+    return card;
+  }
+
+  /**
+   * 模型操作是异步的（要卸下旧模型、读新 PSD、重建视图），固定延时猜不准。
+   * 这里轮询到「桌宠报上来的当前模型 == 期望值」为止，最多等 15 秒。
+   */
+  async function refreshUntilCurrent(wantName) {
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 600));
+      await refresh(true);
+      const cur = (state.meta.models && state.meta.models.current && state.meta.models.current.name) || "";
+      if (!wantName || cur === wantName) return;
+    }
+  }
+
+  /** 面板里选的 PSD → 二进制 POST 给桌宠，落地后它会自己切换并重载 */
+  async function uploadPsd(file) {
+    if (!/\.psd$/i.test(file.name)) { toast("只支持 .psd 文件", "err"); return; }
+    toast(`正在导入 ${file.name}…`);
+    try {
+      const res = await fetch(`/api/import?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "x-panel-token": TOKEN, "content-type": "application/octet-stream" },
+        body: await file.arrayBuffer(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) throw new Error(body.error || ("HTTP " + res.status));
+      toast(`已导入 ${body.name}，桌宠正在切换…`);
+      void refreshUntilCurrent(body.name);
+    } catch (e) {
+      toast("导入失败：" + e.message, "err");
+    }
+  }
+
+  function quickCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "常用动作"));
+    const row = el("div", "btn-row");
+    (state.meta.quick || []).forEach((it) => {
+      const b = el("button", "btn btn-sm" + (it.primary ? " btn-primary" : ""), it.label);
+      b.onclick = () => runAction(it.id, it.label);
+      row.appendChild(b);
+    });
+    if (!row.children.length) row.appendChild(el("div", "empty", "没有可用的快捷动作"));
+    card.appendChild(row);
+    return card;
+  }
+
+  function selfCheckCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "自检"));
+    card.appendChild(el("p", "cd", "核对「功能清单」里的每一项在当前桌宠里都还找得到对应实现 —— 只检查、不执行，不会改任何设置。"));
+    const row = el("div", "btn-row");
+    const b = el("button", "btn btn-primary btn-sm", "检查全部功能");
+    b.onclick = () => runAction("__selfcheck", "功能自检");
+    row.appendChild(b);
+    card.appendChild(row);
+    const r = state.meta.selfcheck;
+    if (r) {
+      const ok = !r.missing || r.missing.length === 0;
+      card.appendChild(el("div", "rdesc", `${r.at} 检查过：菜单项 ${r.total} 条` + (ok ? "，全部可用 ✓" : `，缺失 ${r.missing.length} 条：${r.missing.join("、")}`)));
+    }
+    return card;
+  }
+
+  function actionsAllCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "功能清单"));
+    const groups = state.meta.actions || [];
+    if (!groups.length) {
+      card.appendChild(el("div", "empty", "桌宠还没把功能清单推上来 —— 确认 Petra 正在运行。"));
+      return card;
+    }
+    groups.forEach((g) => {
+      const box = el("div", "act-group");
+      box.appendChild(el("div", "act-title", g.group));
+      const row = el("div", "btn-row");
+      (g.items || []).forEach((it) => {
+        const b = el("button", "btn btn-sm", it.label);
+        b.onclick = () => runAction(it.id, it.label);
+        row.appendChild(b);
+      });
+      box.appendChild(row);
+      card.appendChild(box);
+    });
+    return card;
+  }
+
+  function renderSection() {
+    const sec = SECTIONS.find((s) => s.id === state.section) || SECTIONS[0];
+    const page = $("#page");
+    page.innerHTML = "";
+    const head = el("div", "section-head");
+    head.appendChild(el("h1", null, sec.title));
+    head.appendChild(el("p", null, sec.desc));
+    page.appendChild(head);
+
+    const grid = el("div", "grid");
+    sec.cards.forEach((cardSpec) => {
+      if (cardSpec.type === "status") return grid.appendChild(statusCard());
+      if (cardSpec.type === "model") return grid.appendChild(modelCard());
+      if (cardSpec.type === "keys") return grid.appendChild(keysCard());
+      if (cardSpec.type === "chat") return grid.appendChild(chatCard());
+      if (cardSpec.type === "card") return grid.appendChild(cardCard());
+      if (cardSpec.type === "diary") return grid.appendChild(diaryCard());
+      if (cardSpec.type === "actionplay") return grid.appendChild(actionPlayCard());
+      if (cardSpec.type === "feedback") return grid.appendChild(feedbackCard());
+      if (cardSpec.type === "quick") return grid.appendChild(quickCard());
+      if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
+      if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
+      const card = el("div", "card");
+      card.appendChild(el("h2", null, cardSpec.title));
+      if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));
+      (cardSpec.fields || []).forEach((f) => card.appendChild(fieldNode(f)));
+      grid.appendChild(card);
+    });
+    page.appendChild(grid);
+    syncNavIndicator();
+  }
+
+  function renderNav() {
+    const island = $("#island");
+    island.querySelectorAll("button").forEach((b) => b.remove());
+    SECTIONS.forEach((s) => {
+      const b = el("button", state.section === s.id ? "active" : null, s.label);
+      b.onclick = () => {
+        state.section = s.id;
+        renderNav(); renderSection();
+      };
+      island.appendChild(b);
+    });
+    requestAnimationFrame(syncNavIndicator);
+  }
+
+  let indPrimed = false;
+  function syncNavIndicator() {
+    const island = $("#island"), ind = $("#ind");
+    const active = island.querySelector("button.active");
+    if (!active) return;
+    if (!indPrimed) {
+      // 第一次定位直接跳到位：否则会从左上角滑过来，截图里看着像两项同时选中
+      ind.style.transition = "none";
+      indPrimed = true;
+    }
+    ind.style.width = active.offsetWidth + "px";
+    ind.style.transform = "translateX(" + active.offsetLeft + "px)";
+    if (ind.style.transition === "none") {
+      void ind.offsetWidth; // 强制回流，下一帧再恢复动画
+      requestAnimationFrame(() => { ind.style.transition = ""; });
+    }
+  }
+  window.addEventListener("resize", syncNavIndicator);
+
+
+  /**
+   * 执行一个功能。第二参可以是文字（只用于提示），也可以是对象（要带给桌宠的参数）。
+   * 带参数的动作（填 Key、发反馈、播放指定动作…）走 payload，Rust 原样转给前端。
+   */
+  async function runAction(id, labelOrPayload, maybeLabel) {
+    const isPayload = labelOrPayload && typeof labelOrPayload === "object";
+    const payload = isPayload ? labelOrPayload : undefined;
+    const label = isPayload ? maybeLabel : labelOrPayload;
+    try {
+      const body = payload ? { id, payload } : { id };
+      await api("/api/action", { method: "POST", body: JSON.stringify(body) });
+      toast("已让桌宠执行：" + (label || id.split(":").pop()));
+      // 数据类动作可能较慢（抽卡要调模型、拉日记要读文件），多等一会儿再刷新
+      setTimeout(() => refresh(true), id.startsWith("__data:") ? 2000 : 400);
+      if (id.startsWith("__data:")) setTimeout(() => refresh(true), 4000);
+    } catch (e) {
+      toast("执行失败：" + e.message, "err");
+    }
+  }
+
+  // ---------- 状态拉取 ----------
+  function renderPills() {
+    const s = state.settings || {}, m = state.meta || {};
+    const pills = $("#pills");
+    pills.innerHTML = "";
+    const add = (dotCls, label, value) => {
+      const p = el("span", "pill");
+      p.appendChild(el("span", "dot " + dotCls));
+      p.appendChild(document.createTextNode(label + " "));
+      if (value != null) p.appendChild(el("b", null, value));
+      pills.appendChild(p);
+    };
+    add(state.online ? "on" : "err", "桌宠", state.online ? "在线" : "未连接");
+    add("off", "版本", m.version || "—");
+    add("off", "模型", m.model || "—");
+    add(s.assistant?.enabled ? "on" : "off", "小助手", s.assistant?.enabled ? "开" : "关");
+    add(s.tts?.enabled ? "on" : "off", "朗读", s.tts?.enabled ? "开" : "关");
+    add(s.hourlyChime ? "on" : "off", "整点", s.hourlyChime ? "开" : "关");
+  }
+
+  async function refresh(silent) {
+    try {
+      const data = await api("/api/state");
+      state.online = true;
+      state.settings = data.settings || {};
+      state.meta = data.meta || {};
+      state.seq = data.seq || 0;
+      $("#subline").textContent = "已连接 · " + (state.meta.model || "桌宠运行中");
+      $("#footStat").textContent = "配置版本 #" + state.seq;
+      renderPills();
+      renderSection();
+      return true;
+    } catch (e) {
+      state.online = false;
+      $("#subline").textContent = "等待桌宠推送配置…（" + e.message + "）";
+      renderPills();
+      if (!silent) toast("拉取失败：" + e.message, "err");
+      return false;
+    }
+  }
+
+  // 轮询：只当「桌宠是否还在跑」的心跳用，不动表单（免得把用户正在编辑的值冲掉）
+  async function heartbeat() {
+    try {
+      await api("/api/ping");
+      if (!state.online) await refresh(true);
+      state.online = true;
+    } catch (_) {
+      state.online = false;
+    }
+    renderPills();
+  }
+
+  // ---------- 事件 ----------
+  $("#themeBtn").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  $("#btnShowPet").onclick = () => runAction("show-pet", "把桌宠叫到前面");
+
+
+  window.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toast("已经是即改即生效了，不用保存"); }
+  });
+
+  // ---------- 启动 ----------
+  renderNav();
+  renderSection();
+  refresh(true);
+  setInterval(heartbeat, 5000);
+  // 定时同步外部改动（比如你在右键菜单里也改了东西）；但**有未保存草稿时不动表单**，
+  // 否则页面每 30 秒重建一次，用户正在调的开关会「自己弹回去」——那是纯误导。
+  // 定时同步外部改动（比如你在右键菜单里改了什么）；正在输入时不重建表单，否则会丢焦点
+  setInterval(() => {
+    if (!state.online) return;
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    refresh(true);
+  }, 30000);
+})();
+</script>
+</body>
+</html>

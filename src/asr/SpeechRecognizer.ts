@@ -32,6 +32,16 @@ import {
   type ListenState,
   type ListenTiming,
 } from "./asrLogic";
+import { loadSettings } from "../utils/settings";
+
+/** 用户在设置里要求「先走云端模型」吗（默认就是先走云端） */
+function preferCloudAsr(): boolean {
+  try {
+    return loadSettings().asr?.cloudFirst !== false;
+  } catch {
+    return true;
+  }
+}
 
 // ---------- 配置 ----------
 /**
@@ -144,7 +154,7 @@ export class SpeechRecognizer {
 
   constructor(handlers: RecognizerHandlers = {}) {
     this.handlers = handlers;
-    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken);
+    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
   }
 
   setHandlers(handlers: RecognizerHandlers): void { this.handlers = handlers; }
@@ -318,7 +328,7 @@ export class SpeechRecognizer {
    */
   private degradeToSiliconFlow(reason: string, reportToUser: boolean): void {
     this.webSpeechBroken = true;
-    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken);
+    this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
     const rec = this.recognition;
     this.recognition = null;
     this.finishing = true; // abort 也会触发 onend，别让它再走"引擎自己断了"的分支

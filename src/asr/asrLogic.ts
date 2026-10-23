@@ -35,7 +35,13 @@ export function isMicProblemError(code: string): boolean {
  * 有原生识别且它没被证明坏掉 → 原生（边说边出字、不花识别费）；
  * 否则走在线识别（Rust 侧调硅基流动，需要用户配 Key）。
  */
-export function pickBackend(hasWebSpeech: boolean, webSpeechBroken: boolean): AsrBackend {
+export function pickBackend(
+  hasWebSpeech: boolean,
+  webSpeechBroken: boolean,
+  preferCloud = false,
+): AsrBackend {
+  // preferCloud：用户明确要求「先用模型识别」，那就不看原生有没有
+  if (preferCloud) return "siliconflow";
   return hasWebSpeech && !webSpeechBroken ? "web-speech" : "siliconflow";
 }
 

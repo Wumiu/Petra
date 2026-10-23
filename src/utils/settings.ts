@@ -20,11 +20,41 @@ export interface BoundsPadding {
   bottom: number;
 }
 
+/**
+ * 结构化人设：控制面板「人设」页那几栏。
+ * 最终仍会拼成一段文本写回 `assistant.persona` —— 下游（对话/日记/抽卡/麻将搭话）
+ * 都只认 persona 一个字段，这里只是给它一个更好填的编辑器。
+ */
+export interface PersonaFields {
+  /** 它是谁（名字） */
+  name: string;
+  age: string;
+  /** 身份 / 职业 */
+  identity: string;
+  /** 时代 / 世界观 */
+  world: string;
+  /** 核心欲望 / 动机 */
+  desire: string;
+  /** 性格关键词 */
+  traits: string;
+  /** 说话方式 */
+  speech: string;
+  /** 口头禅 */
+  catchphrase: string;
+  /** 喜欢用的表情 / 动作 */
+  emoji: string;
+}
+
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
   model: string;
+  /** 最终生效的人设文本（由结构化字段 + 自由补充拼成，下游只读这个） */
   persona: string;
+  /** 用户自己写的自由人设（不参与结构化拼装，单独存） */
+  personaFree: string;
+  /** 结构化人设字段 */
+  personaFields: PersonaFields;
   customBaseUrl: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
@@ -113,6 +143,12 @@ export interface Settings {
   /** 语音识别（输入）配置 */
   asr: {
     /**
+     * 是否优先用云端模型识别（默认 true）。
+     * 开：麦克风直接走硅基流动的 XingChen ASR，识别质量比 Windows 系统识别稳；
+     * 关：Windows 上先试浏览器原生 SpeechRecognition，失败再降级到云端。
+     */
+    cloudFirst: boolean;
+    /**
      * 麦克风权限开关（应用内，立即生效）。
      * 关掉后点 🎤 直接提示权限已关闭、不会去开麦克风；
      * 同时在「🎤 语音识别设置」里会一并同步到 Windows 的麦克风隐私设置。
@@ -144,6 +180,18 @@ const DEFAULTS: Settings = {
     provider: "deepseek",
     model: "",
     persona: "",
+    personaFree: "",
+    personaFields: {
+      name: "",
+      age: "",
+      identity: "",
+      world: "",
+      desire: "",
+      traits: "",
+      speech: "",
+      catchphrase: "",
+      emoji: "",
+    },
     customBaseUrl: "",
     greetInterval: 20,
     nickname: "",
@@ -173,6 +221,7 @@ const DEFAULTS: Settings = {
     speakerId: "",
   },
   asr: {
+    cloudFirst: true,
     micAllowed: true,
   },
 };
@@ -187,6 +236,27 @@ const ACTIVITY_FACTOR: Record<ActivityLevel, number> = {
 let currentFactor = ACTIVITY_FACTOR[DEFAULTS.activity];
 let currentLevel: ActivityLevel = DEFAULTS.activity;
 
+/**
+ * 结构化人设 → 一段提示词。
+ * 只拼非空项；自由人设放在最后，方便用户写「补充说明」。
+ */
+export function composePersona(a: AssistantSettings): string {
+  const f = a.personaFields ?? DEFAULTS.assistant.personaFields;
+  const lines: string[] = [];
+  if (f.name?.trim()) lines.push(`你的名字是「${f.name.trim()}」。`);
+  if (f.age?.trim()) lines.push(`年龄：${f.age.trim()}`);
+  if (f.identity?.trim()) lines.push(`身份：${f.identity.trim()}`);
+  if (f.world?.trim()) lines.push(`所处世界：${f.world.trim()}`);
+  if (f.desire?.trim()) lines.push(`你真正想要的：${f.desire.trim()}`);
+  if (f.traits?.trim()) lines.push(`性格：${f.traits.trim()}`);
+  if (f.speech?.trim()) lines.push(`说话方式：${f.speech.trim()}`);
+  if (f.catchphrase?.trim()) lines.push(`口头禅：${f.catchphrase.trim()}`);
+  if (f.emoji?.trim()) lines.push(`喜欢用的表情/动作：${f.emoji.trim()}`);
+  const free = (a.personaFree ?? "").trim();
+  if (free) lines.push(free);
+  return lines.join("\n");
+}
+
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
@@ -195,7 +265,14 @@ export function loadSettings(): Settings {
     const s: Settings = {
       ...DEFAULTS,
       ...parsed,
-      assistant: { ...DEFAULTS.assistant, ...(parsed.assistant ?? {}) },
+      assistant: {
+        ...DEFAULTS.assistant,
+        ...(parsed.assistant ?? {}),
+        // 旧存档只有 persona：把它当作「自由人设」，别让用户升级后看到空白
+        personaFree:
+          (parsed.assistant?.personaFree ?? parsed.assistant?.persona ?? "") as string,
+        personaFields: { ...DEFAULTS.assistant.personaFields, ...(parsed.assistant?.personaFields ?? {}) },
+      },
       diary: { ...DEFAULTS.diary, ...(parsed.diary ?? {}) },
       dailyCard: { ...DEFAULTS.dailyCard, ...(parsed.dailyCard ?? {}) },
       tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },

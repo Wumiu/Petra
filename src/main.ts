@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { getCurrentWindow, LogicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, PhysicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 // 启动错误捕获：崩溃时直接显示在屏幕上
@@ -26,10 +26,10 @@ import { setupTrashDrop } from "./features/trash/TrashHandler";
 import { setupContextMenu, type MenuItemSpec } from "./ui/ContextMenu";
 import { openSettingsPanel, closeSettingsPanel } from "./ui/SettingsPanel";
 import { trackEvent, incrementInteractionCount, trackAppUse, trackMusic } from "./features/diary/DiaryEventTracker";
-import { checkAndGenerateDiary, takeDiaryStorageWarning } from "./features/diary/DiaryManager";
+import { checkAndGenerateDiary, takeDiaryStorageWarning, loadDiaries } from "./features/diary/DiaryManager";
 import { formatWeatherHtml } from "./features/weather/WeatherFormat";
 import { toggleDiaryPanel } from "./features/diary/DiaryPanel";
-import { hasDrawnToday } from "./features/card/DailyCardManager";
+import { hasDrawnToday, getTodayDraw, dailyDraw } from "./features/card/DailyCardManager";
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
@@ -38,7 +38,8 @@ import { copyText } from "./ui/clipboard";
 import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
 import { infoPanelPlacement } from "./ui/infoPanelPlacement";
 import { clamp } from "./utils/math";
-import { loadSettings, saveSettings, type Settings, type AssistantProvider } from "./utils/settings";
+import { loadSettings, saveSettings as saveSettingsRaw, composePersona, type Settings, type AssistantProvider } from "./utils/settings";
+import { OUTPUT_LANGUAGE_OPTIONS } from "./utils/outputLanguage";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
@@ -53,7 +54,7 @@ import {
 import { startHourlyChime, stopHourlyChime, formatQuietRange } from "./features/hourly/HourlyChime";
 import { mountHandAxisControls } from "./live2d/psd/HandAxisPicker";
 import { buildHourlyQuietMenuItems } from "./features/hourly/HourlyQuietRows";
-import { listModels, PROVIDERS, getUsageStats, resetUsageStats } from "./assistant/AssistantClient";
+import { listModels, PROVIDERS, getUsageStats, resetUsageStats, chatStream } from "./assistant/AssistantClient";
 import { registerEmotionReactor, reactToTouch, getMoodDriverValue, emotionExpression, emotionToAction } from "./assistant/EmotionEngine";
 import { showEmotionPopup } from "./assistant/EmotionPopups";
 import { listMiniGames, openMiniGame, closeMiniGame, isMiniGameOpen, activeMiniGameId, setMiniGameLifecycle } from "./games/host";
@@ -299,6 +300,18 @@ let actionDebugHidden = false;
 function attachView(v: PetView) {
   const stage = document.getElementById("stage")!;
   v.attachTo(stage, app.app.stage);
+}
+
+/**
+ * 设置落盘 + 通知控制面板。
+ *
+ * 全项目有 30 处 `saveSettings(settings)`，逐个改成「顺便推给面板」既啰嗦又容易漏，
+ * 所以在这里包一层：落盘走 saveSettingsRaw（原来的实现），推送按 300ms 防抖
+ * （拖滑条会连续触发，只需要最后一次）。
+ */
+function saveSettings(s: Settings) {
+  saveSettingsRaw(s);
+  schedulePanelSync();
 }
 
 /** 应用模型缩放：窗口固定 700x700，模型显示大小按基准 300px 缩放 */
@@ -1224,8 +1237,39 @@ async function boot() {
     void checkUpdate(false);
   }, UPDATE_CHECK_DELAY);
 
-  // 托盘菜单「设置」：Rust 侧发 open-settings 事件（以前是空实现，点了没反应）
-  void listen("open-settings", () => openSettingsWindow());
+  // 托盘菜单「控制面板」：Rust 侧发 open-control-panel，起本地服务并用浏览器打开
+  void listen("open-control-panel", () => void openControlPanel());
+  // 控制面板改参数 → Rust 深合并后 emit 回来，这里应用到运行中的桌宠
+  void listen<{ patch: Record<string, unknown> }>("panel:apply", (e) => {
+    void applyPanelPatch(e.payload?.patch ?? {});
+  });
+  // 控制面板点功能按钮 → 直接跑右键菜单里同一个 onPick
+  void listen<{ id: string; payload?: unknown }>("panel:action", (e) =>
+    runPanelAction(e.payload?.id ?? "", e.payload?.payload),
+  );
+  // 控制面板里导入的 PSD 已经由 Rust 写进 models 目录，这里补上「切换 + 重载」
+  void listen<{ name: string }>("panel:model-imported", (e) => {
+    const name = e.payload?.name ?? "";
+    if (!name) return;
+    localStorage.setItem(PSD_KEY, name);
+    resetBoundsOnModelSwitch();
+    void reloadView().then(() => pushPanelState());
+    toast(`已导入并切换到 ${name.replace(/\.psd$/i, "")}`);
+  });
+  // 面板服务起来了（可能是托盘/调试自启动起来的）→ 补推一次当前设置
+  void listen("panel:ready", () => {
+    panelEverOpened = true;
+    void pushPanelState();
+  });
+  // boot 兜底：服务若在本页面注册监听之前就起来了，上面的 listen 收不到那条事件
+  void invoke<number | null>("panel_running")
+    .then((port) => {
+      if (port) {
+        panelEverOpened = true;
+        void pushPanelState();
+      }
+    })
+    .catch(() => {});
 
   listen<string | object>("audio:error", (e) => {
     toast(`音频走丢了：${typeof e.payload === "string" ? e.payload : JSON.stringify(e.payload)}`, "warn");
@@ -2301,9 +2345,10 @@ function nudgeLyricOffset(deltaMs: number): void {
   toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}（本首记住）`);
 }
 
-function buildMenu(engine: BehaviorEngine): MenuItemSpec[] {
+function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): MenuItemSpec[] {
   // 待机模式下：菜单只保留"待机模式 开/关"这一条，其余内容一律不显示。
-  if (settings.idleMode) {
+  // 控制面板例外（ignoreIdle）：它是「功能清单」，睡着时也得能把人叫醒之外的项都点得到。
+  if (settings.idleMode && !opts?.ignoreIdle) {
     return [
       { id: "idle", label: "待机模式", state: "开", onPick: () => void toggleIdle() },
       { id: "idle-hint", label: "睡着啦，喊我起来吧", hint: true },
@@ -2758,7 +2803,8 @@ function buildMenu(engine: BehaviorEngine): MenuItemSpec[] {
  * buildMenu(engine) 仍是唯一的全量菜单数据源——设置窗口与右键菜单共用同一份
  * 项定义与 onPick 闭包，保证被转移的功能行为与原来完全一致。
  */
-const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "daily-card", "minigames", "assistant"]);
+// 抽卡已经有面板原生界面（娱乐 → 抽卡），不再占右键菜单；游戏本体仍在桌宠窗口里跑
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant"]);
 
 function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   const all = buildMenu(engine);
@@ -2769,9 +2815,9 @@ function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
     ...kept,
     { id: "sep", separator: true },
     {
-      id: "open-settings",
-      label: "⚙️ 设置",
-      onPick: () => openSettingsWindow(),
+      id: "open-control-panel",
+      label: "⚙️ 控制面板",
+      onPick: () => void openControlPanel(),
     },
   ];
 }
@@ -2829,8 +2875,670 @@ function buildSettingsItems(engine: BehaviorEngine): MenuItemSpec[] {
   return buildMenu(engine).filter((i) => !COMPACT_MENU_KEEP.has(i.id) && !i.separator);
 }
 
+// ==================== 控制面板（浏览器） ====================
+//
+// 设计：**设置的单一事实源仍然是本页面的 `settings` + localStorage**。
+// 浏览器面板不自己存一份，它读写的是 Rust 里的一份副本，改动通过事件回到这里应用：
+//   打开：panel_prepare（起服务）→ pushPanelState（推当前设置）→ open_url
+//   改值：面板 POST /api/settings → Rust 深合并 → emit panel:apply → applyPanelPatch
+//   点功能：面板 POST /api/action → emit panel:action → runPanelAction（复用右键菜单 onPick）
+// 好处是「面板改的」和「右键菜单改的」永远是同一份内存设置，不会出现两套抽屉。
+
+/** 面板要显示的数据（按需加载：对话记录、日记只在用户点开时读一次） */
+let panelChat: { role: string; content: string }[] = [];
+let panelDiaries: { date: string; text: string }[] = [];
+let panelAssistantModels: string[] = [];
+let panelKeys = { assistant: false, tts: false, asr: false };
+/** 面板上直接显示出来的 Key 明文（用户明确要求「不怕泄露，贴在控制台上」） */
+/**
+ * 面板上「可以直接看到明文」的 Key —— **只有 ASR**（用户自己贴过、且要求贴出来）。
+ * 小助手 / 语音朗读这类付费 Key 一律不回显：面板只知道"配没配"，连遮罩串都不发。
+ */
+let panelKeyValues = { asr: "", asrBuiltin: false };
+/** 云端识别模型名（面板上显示用） */
+let panelAsrModel = "";
+/** 面板「试演一句」的结果 */
+let panelPersonaTest: { text: string; at: string } | null = null;
+/** 面板「识别自检」的结果 */
+let panelAsrTest: { text: string; at: string; model: string } | null = null;
+
+/** 把三类 Key 的「有没有」状态同步给面板（只回布尔，绝不把 Key 本身推过去） */
+async function refreshPanelKeys(): Promise<void> {
+  const [a, t, r] = await Promise.all([
+    invoke<string>("get_api_key").catch(() => ""),
+    invoke<string>("get_tts_key").catch(() => ""),
+    invoke<boolean>("asr_key_ready").catch(() => false),
+  ]);
+  panelKeys = { assistant: !!a, tts: !!t, asr: !!r };
+  const asrInfo = await invoke<{ key: string; builtin: boolean }>("asr_key_info").catch(() => null);
+  panelKeyValues = { asr: asrInfo?.key ?? "", asrBuiltin: !!asrInfo?.builtin };
+  panelAsrModel = await invoke<string>("asr_model_name").catch(() => "");
+}
+
+/** 面板要显示的模型清单（内置 + 已导入），切换/导入/删除后刷新 */
+let panelModels: { builtin: string[]; imported: string[] } = { builtin: [], imported: [] };
+
+/** 从 Rust 重新拉一遍模型清单（内置来自 manifest，已导入来自 models 目录） */
+async function refreshPanelModels(): Promise<void> {
+  try {
+    panelModels.imported = await invoke<string[]>("list_models");
+  } catch {
+    panelModels.imported = [];
+  }
+  try {
+    const raw = await invoke<string>("read_model_manifest");
+    const m = JSON.parse(raw) as { type?: string; files?: string[]; file?: string; active?: string };
+    if (m?.type === "psd" && Array.isArray(m.files) && m.files.length) panelModels.builtin = m.files;
+    else if (m?.type === "psd" && m.file) panelModels.builtin = [m.file];
+    else if (m?.active) panelModels.builtin = [m.active];
+    else panelModels.builtin = [];
+  } catch {
+    panelModels.builtin = [];
+  }
+}
+
+/** 面板「功能自检」的结果（动作页显示）：只检查每一项能不能在菜单里找到对应的 onPick */
+let panelSelfCheck: { at: string; total: number; missing: string[] } | null = null;
+
+/** 面板是否已经开过（没开过就别白推 IPC） */
+let panelEverOpened = false;
+let panelSyncTimer: number | null = null;
+/** 版本号（面板顶栏显示），boot 时填 */
+let appVersion = "";
+
+/** 把设置与元数据推给控制面板：面板每次 GET /api/state 读的就是这份 */
+async function pushPanelState(): Promise<void> {
+  await refreshPanelModels();
+  await refreshPanelKeys();
+  try {
+    await invoke("panel_push_settings", {
+      settings: JSON.stringify(settings),
+      meta: JSON.stringify(buildPanelMeta()),
+    });
+  } catch (e) {
+    console.warn("控制面板：推送设置失败", e);
+  }
+}
+
+/** 设置变更后延后推送（拖滑条会连发，攒 300ms 只推最后一次） */
+function schedulePanelSync(): void {
+  if (!panelEverOpened) return;
+  if (panelSyncTimer !== null) window.clearTimeout(panelSyncTimer);
+  panelSyncTimer = window.setTimeout(() => {
+    panelSyncTimer = null;
+    void pushPanelState();
+  }, 300);
+}
+
+/** 面板要渲染的元数据：版本、平台、当前模型、供应商表、语言表、功能清单 */
+function buildPanelMeta() {
+  return {
+    version: appVersion,
+    platform: PLATFORM === "win" ? "Windows" : PLATFORM === "mac" ? "macOS" : "Linux",
+    model: currentModel.name || currentModel.type,
+    providers: Object.entries(PROVIDERS).map(([id, p]) => ({ id, label: p.label, model: p.defaultModel })),
+    languages: OUTPUT_LANGUAGE_OPTIONS,
+    actions: flattenMenuActions(),
+    ui: {
+      modelBounds: debugModelBoundsVisible,
+      debugBorder: debugBorderVisible,
+    },
+    models: {
+      builtin: panelModels.builtin,
+      imported: panelModels.imported,
+      current: { type: currentModel.type, name: currentModel.name ?? "" },
+    },
+    selfcheck: panelSelfCheck,
+    data: {
+      keys: panelKeys,
+      keyValues: panelKeyValues,
+      usage: getUsageStats(),
+      chat: panelChat,
+      diaries: panelDiaries,
+      card: getTodayDraw(),
+      actionList: listActions(),
+      assistantModels: panelAssistantModels,
+      personaTest: panelPersonaTest,
+      asrModel: panelAsrModel,
+      asrTest: panelAsrTest,
+    },
+    quick: [
+      { id: "show-pet", label: "把桌宠叫到前面" },
+      { id: "model-bounds-toggle", label: "调整模型边界" },
+      { id: "assistant", label: "打开小助手" },
+      { id: "daily-card", label: "今日抽卡" },
+      { id: "minigames", label: "小游戏" },
+      { id: "hide", label: "隐藏桌宠" },
+      { id: "restart", label: "重启" },
+    ],
+  };
+}
+
+/**
+ * 把右键菜单的树摊平成「分组 → 可点项」。
+ * 只收有 onPick 且有文字的叶子：子菜单父行点了没反应，收进去只会让用户以为坏了。
+ */
+function flattenMenuActions(): { group: string; items: { id: string; label: string }[] }[] {
+  if (!engine) return [];
+  let all: MenuItemSpec[] = [];
+  try {
+    // ignoreIdle：睡着时也要给面板「全量清单」，否则清单会少一大半
+    all = buildMenu(engine, { ignoreIdle: true });
+  } catch (e) {
+    console.warn("控制面板：读取菜单失败", e);
+    return [];
+  }
+  const byGroup = new Map<string, { id: string; label: string }[]>();
+  const clean = (s: string) => s.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  const walk = (items: MenuItemSpec[], trail: string[]) => {
+    for (const it of items) {
+      if (it.separator || it.hint) continue;
+      if (it.submenu?.length) {
+        walk(it.submenu, trail.length ? trail : [clean(it.label ?? it.id)]);
+        continue;
+      }
+      // 「控制面板」自己那一项不列进去：在面板里点它只会再开一个面板标签页。
+      // PANEL_NATIVE_IDS 里的功能已经搬到面板原生界面，也不列（否则点了还是弹旧窗口）。
+      if (!it.onPick || !it.label || it.id === "open-control-panel" || PANEL_NATIVE_IDS.has(it.id)) continue;
+      const group = trail[0] ?? "常用";
+      const arr = byGroup.get(group) ?? [];
+      if (!arr.some((x) => x.id === it.id)) arr.push({ id: it.id, label: clean(it.label) });
+      byGroup.set(group, arr);
+    }
+  };
+  walk(all, []);
+  return [...byGroup.entries()].map(([group, items]) => ({ group, items }));
+}
+
+/** 深合并补丁到设置对象（对象递归、数组整体替换，与 Rust 侧 deep_merge 同语义） */
+function deepAssign(target: Record<string, unknown>, patch: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    const cur = target[k];
+    if (
+      v && typeof v === "object" && !Array.isArray(v) &&
+      cur && typeof cur === "object" && !Array.isArray(cur)
+    ) {
+      deepAssign(cur as Record<string, unknown>, v as Record<string, unknown>);
+    } else {
+      target[k] = v;
+    }
+  }
+}
+
+/**
+ * 应用控制面板送来的补丁。
+ * 绝大多数设置是「用的时候现读」，改完自动生效；少数需要立刻作用到引擎/播放器上的，
+ * 在这里逐条走原来的入口（复用已有函数，避免面板长出一条平行的第二套逻辑）。
+ */
+async function applyPanelPatch(patch: Record<string, unknown>): Promise<void> {
+  const changed = new Set(Object.keys(patch ?? {}));
+  if (!changed.size) return;
+  deepAssign(settings as unknown as Record<string, unknown>, patch);
+  // 留一条日志：面板改了什么一眼能在 pet.log 里查到（用户报「面板改了没反应」时靠它定位）
+  void invoke("debug_mark", { msg: `[panel] 应用补丁：${[...changed].join(", ")}` }).catch(() => {});
+  saveSettingsRaw(settings); // 只落盘；末尾统一回推一次，别在这里触发防抖循环
+  if (changed.has("modelScale")) await applyModelScale(settings.modelScale);
+  if (changed.has("boundsPadding")) (view as any)?.setBoundsPadding?.(settings.boundsPadding);
+  if (changed.has("activity")) engine?.setActivityLevel(settings.activity);
+  if (changed.has("mouseTrack")) {
+    engine?.setTracking(settings.mouseTrack);
+    void invoke("set_pet_tracking", { enabled: settings.mouseTrack }).catch(() => {});
+  }
+  if (changed.has("idleMode")) await applyIdleState();
+  if (changed.has("audioEnabled")) {
+    void invoke("set_audio_enabled", { enabled: settings.audioEnabled }).catch(() => {});
+  }
+  if (
+    changed.has("hourlyChime") || changed.has("hourlyChimeQuiet") ||
+    changed.has("hourlyQuietStart") || changed.has("hourlyQuietEnd")
+  ) {
+    applyHourlyChime();
+  }
+  if (changed.has("musicLyrics")) {
+    if (settings.musicLyrics) startMusicLyrics();
+    else stopMusicLyrics();
+  }
+  if (changed.has("lyricsTranslate")) setLyricsTranslate(settings.lyricsTranslate);
+  if (
+    changed.has("gameSound") || changed.has("gameMusic") ||
+    changed.has("gameSoundVolume") || changed.has("gameMusicVolume")
+  ) {
+    // 麻将音效模块自己监听这个事件重新读设置（它不 import settings，避免循环依赖）
+    window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
+  }
+  if (changed.has("asr")) {
+    // 只写设置不够：Windows 的麦克风隐私开关得由 Rust 侧一起改，否则录音还是会被系统拦
+    const allow = !!settings.asr.micAllowed;
+    void invoke("set_mic_permission", { allow })
+      .then((msg) => toast(`麦克风${allow ? "已开启" : "已关闭"}（${msg}）`))
+      .catch(() => {});
+  }
+  if (changed.has("tts")) {
+    ttsPlayer.setConfig(settings.tts.enabled, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+  }
+  if (changed.has("assistant")) clearApiKeyCache();
+  // 人设页改的是结构化字段，这里统一拼成最终文本写回 persona —— 对话/日记/抽卡/麻将都读它
+  const aPatch0 = (patch as { assistant?: Record<string, unknown> }).assistant;
+  if (aPatch0 && ("personaFields" in aPatch0 || "personaFree" in aPatch0)) {
+    settings.assistant.persona = composePersona(settings.assistant);
+    saveSettingsRaw(settings);
+  }
+  // 快捷键在面板里手改的，也要真的跟系统重新注册一次（否则只有写进设置、按了没反应）
+  const aPatch = (patch as { assistant?: Record<string, unknown> }).assistant;
+  if (aPatch && "shortcut" in aPatch) {
+    const acc = (settings.assistant.shortcut ?? "").trim();
+    if (acc) {
+      void registerAssistantHotkey(acc).then((ok) => {
+        if (!ok) toast(`快捷键 ${acc} 注册失败，换个组合试试`, "warn");
+      });
+    } else {
+      void invoke("unregister_assistant_shortcut").catch(() => {});
+    }
+  }
+  // 桌宠这边也要有反馈：面板在浏览器里，用户看的是这块屏幕上的变化，
+  // 所以把它改了什么直接说出来，别让人对着浏览器猜「到底生效没有」。
+  const names = [...changed].map((k) => PANEL_FIELD_LABELS[k] ?? k);
+  const brief = names.slice(0, 3).join("、") + (names.length > 3 ? " 等" : "");
+  // 拖滑条会连续来很多条补丁，1.2 秒内只弹第一条，否则桌子上一串 toast 打架
+  const nowMs = Date.now();
+  if (nowMs - lastPanelToastAt > 1200) {
+    lastPanelToastAt = nowMs;
+    toast(`控制面板已生效：${brief}`);
+  }
+  schedulePanelSync();
+}
+
+/** 上一次因为控制面板弹提示的时间（拖滑条时用来节流） */
+let lastPanelToastAt = 0;
+
+/**
+ * 这些功能在控制面板里有原生界面了 —— 不要再作为「动作」列出来，
+ * 点了只会又弹一个旧的桌宠侧窗口，正是要被取代掉的那套。
+ */
+const PANEL_NATIVE_IDS = new Set([
+  "models", "size", "bounds", "border", "model-bounds-toggle",
+  "assistant-settings", "tts-config", "asr-config", "chat-history",
+  "feedback", "diary-open", "diary-track", "daily-card", "action-debug",
+  "assistant-hotkey", "assistant-hotkey-clear",
+]);
+
+/** 设置键 → 面板上的中文名，只用于「桌宠这边弹一句它改了什么」 */
+const PANEL_FIELD_LABELS: Record<string, string> = {
+  modelScale: "模型大小", boundsPadding: "边界补偿", activity: "活动频率", mouseTrack: "跟随鼠标",
+  idleMode: "待机模式", weatherBubble: "信息面板", weatherCity: "天气城市",
+  hourlyChime: "整点播报", hourlyChimeQuiet: "夜间免打扰", hourlyQuietStart: "免打扰开始",
+  hourlyQuietEnd: "免打扰结束", audioEnabled: "声音总开关", gameSound: "游戏音效",
+  gameSoundVolume: "音效音量", gameMusic: "麻将对局音乐", gameMusicVolume: "音乐音量",
+  assistant: "小助手", diary: "日记", dailyCard: "抽卡", musicLyrics: "歌词气泡",
+  lyricsTranslate: "歌词翻译", gameTalk: "麻将实时互动", tts: "语音朗读", asr: "语音识别",
+  allowAllShell: "免确认命令", allowAllFileWrite: "免确认写文件", fileDenyPaths: "禁止目录",
+};
+
+/**
+ * 把桌宠叫到眼前：显示窗口 → 置顶 → 如果它几乎整块跑出了工作区就挪回来。
+ *
+ * 为什么要挪：待机/漫游会让窗口一半挂在屏外（这套设计本来允许「部分出屏」），
+ * 而控制面板是「看着它调」的 —— 用户一打开面板却只看到半个身子，等于没法用。
+ * 待机模式下不动位置：那是它自己要睡在边上，硬拽回来会和引擎打架。
+ */
+async function ensurePetVisible(): Promise<void> {
+  try {
+    await invoke("show_pet");
+    await invoke("set_topmost", { on: true });
+    if (settings.idleMode) return;
+    const win = getCurrentWindow();
+    const pos = await win.outerPosition(); // 物理像素
+    const size = await win.outerSize();
+    const area = await invoke<{ left: number; top: number; width: number; height: number }>(
+      "work_area_at",
+      { x: pos.x + Math.round(size.width / 2), y: pos.y + Math.round(size.height / 2) },
+    );
+    const overlapW = Math.min(pos.x + size.width, area.left + area.width) - Math.max(pos.x, area.left);
+    const overlapH = Math.min(pos.y + size.height, area.top + area.height) - Math.max(pos.y, area.top);
+    const visible =
+      overlapW > 0 && overlapH > 0 ? (overlapW * overlapH) / (size.width * size.height) : 0;
+    if (visible < 0.35) {
+      const nx = Math.round(Math.min(Math.max(pos.x, area.left), area.left + area.width - size.width));
+      const ny = Math.round(Math.min(Math.max(pos.y, area.top), area.top + area.height - size.height));
+      await win.setPosition(new PhysicalPosition(nx, ny));
+      engine?.setPos(nx / scaleFactor, ny / scaleFactor);
+      savePetPosition(nx / scaleFactor, ny / scaleFactor);
+      toast("你把我跳出屏幕了，我挪回来啦");
+    }
+  } catch (e) {
+    console.warn("把桌宠叫到前面失败", e);
+  }
+}
+
+/** 面板填的 Key：只在本地 IPC 里传，Rust 侧加密存（DPAPI / Keychain），面板永远不会读回明文 */
+async function handlePanelKeyAction(kind: string, payload: unknown): Promise<void> {
+  const value = String((payload as { value?: unknown })?.value ?? "").trim();
+  try {
+    if (kind === "assistant") {
+      await invoke("set_api_key", { apiKey: value });
+      clearApiKeyCache();
+      toast(value ? "小助手 API Key 已保存" : "已清空小助手 API Key");
+    } else if (kind === "tts") {
+      await invoke("set_tts_key", { apiKey: value });
+      ttsApiKey = value;
+      ttsPlayer.setConfig(settings.tts.enabled, value, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+      toast(value ? "语音朗读 Key 已保存" : "已清空朗读 Key");
+    } else if (kind === "asr") {
+      await invoke("set_asr_key", { apiKey: value });
+      toast(value ? "语音识别 Key 已保存" : "已清空识别 Key");
+    }
+  } catch (e) {
+    toast(`保存失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+  }
+  await pushPanelState();
+}
+
+/** 面板要的数据（对话记录 / 日记 / 抽卡 / 播放动作 / 反馈 / 快捷键 / 拉模型列表） */
+async function handlePanelDataAction(kind: string, payload: unknown): Promise<void> {
+  const p = (payload ?? {}) as Record<string, unknown>;
+  try {
+    switch (kind) {
+      case "usage-reset":
+        resetUsageStats();
+        toast("用量统计已清零");
+        break;
+      case "chat-load": {
+        const raw = await invoke<string>("load_chat_history").catch(() => "");
+        const arr = JSON.parse(raw || "[]") as { role?: string; content?: string }[];
+        panelChat = arr
+          .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
+          .map((m) => ({
+            role: m.role as string,
+            content: String(m.content).split("\n---\n")[0].slice(0, 800),
+          }))
+          .filter((m) => !m.content.startsWith("[主动问候]") && !m.content.startsWith("[主动学习]"))
+          .slice(-30);
+        toast(`已读取 ${panelChat.length} 条对话`);
+        break;
+      }
+      case "chat-clear":
+        clearHistory();
+        panelChat = [];
+        toast("对话记录已清空");
+        break;
+      case "card-draw": {
+        const r = await dailyDraw();
+        toast(`今日抽到：${r?.card?.theme ?? r?.card?.id ?? "?"}`);
+        break;
+      }
+      case "diary-load":
+        panelDiaries = loadDiaries().map((d) => ({ date: d.date, text: String(d.content ?? "").slice(0, 1500) }));
+        toast(`已读取 ${panelDiaries.length} 篇日记`);
+        break;
+      case "feedback-send": {
+        const msg = String(p.text ?? "").trim();
+        if (!msg) {
+          toast("先写点什么再发", "warn");
+          return;
+        }
+        const res = await invoke<string>("send_feedback", { message: msg });
+        toast(res);
+        break;
+      }
+      case "action-play": {
+        const aid = String(p.id ?? "");
+        if (aid) {
+          view.playAction(aid, true);
+          toast("播放动作：" + aid);
+        }
+        break;
+      }
+      case "hotkey-set": {
+        const acc = String(p.value ?? "").trim();
+        settings.assistant.shortcut = acc;
+        saveSettings(settings);
+        if (acc) {
+          const ok = await registerAssistantHotkey(acc);
+          toast(ok ? `呼出快捷键已设为 ${acc}` : `快捷键 ${acc} 注册失败，换一个试试`, ok ? "info" : "warn");
+        } else {
+          await invoke("unregister_assistant_shortcut").catch(() => {});
+          toast("已清除呼出快捷键");
+        }
+        break;
+      }
+      case "persona-test": {
+        const apiKey = await invoke<string>("get_api_key").catch(() => "");
+        const persona = composePersona(settings.assistant);
+        if (!persona.trim()) {
+          toast("人设还是空的，先填两句再试", "warn");
+          return;
+        }
+        if (!apiKey && settings.assistant.provider !== "ollama") {
+          toast("还没配 API Key，没法试演", "warn");
+          return;
+        }
+        toast("正在用它的人设试演一句…");
+        const res = await chatStream(
+          settings.assistant.provider,
+          apiKey,
+          settings.assistant.model,
+          [{ role: "user", content: "（试演）用你现在的设定跟我打一句招呼，不超过 20 字，别解释。" }],
+          persona,
+          [],
+          settings.assistant.customBaseUrl,
+          () => {},
+          false,
+        );
+        panelPersonaTest = { text: res.text.trim(), at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
+        toast("试演完成");
+        break;
+      }
+      case "asr-probe": {
+        const audio = String(p.audio ?? "");
+        if (!audio) { toast("没有收到音频", "warn"); return; }
+        toast("正在识别…");
+        const text = await invoke<string>("asr_transcribe", { audio });
+        panelAsrTest = {
+          text: text || "（识别结果为空）",
+          at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+          model: panelAsrModel,
+        };
+        toast("识别完成");
+        break;
+      }
+      case "models-fetch": {
+        const key = await invoke<string>("get_api_key").catch(() => "");
+        panelAssistantModels = await listModels(
+          settings.assistant.provider,
+          key,
+          settings.assistant.customBaseUrl,
+        );
+        toast(`拿到 ${panelAssistantModels.length} 个模型`);
+        break;
+      }
+      default:
+        toast(`未实现的面板动作：${kind}`, "warn");
+        return;
+    }
+  } catch (e) {
+    console.error("控制面板：数据动作失败", e);
+    toast(`操作失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+  }
+  await pushPanelState();
+}
+
+/** 面板上的模型操作：切内置 / 切已导入 / 删已导入 */
+async function handlePanelModelAction(id: string): Promise<void> {
+  if (id === "__model:adjust") {
+    toggleModelAdjustPanel();
+    return;
+  }
+  const rest = id.slice("__model:".length);
+  const sep = rest.indexOf(":");
+  const kind = sep < 0 ? rest : rest.slice(0, sep);
+  const file = sep < 0 ? "" : rest.slice(sep + 1);
+  void invoke("debug_mark", { msg: `[panel] 模型操作：${kind} ${file}` }).catch(() => {});
+  if (!file) return;
+  try {
+    if (kind === "builtin") {
+      const changed = !(currentModel.type === "manifest" && currentModel.name === file);
+      localStorage.setItem(BUILTIN_KEY, file);
+      localStorage.removeItem(PSD_KEY);
+      if (changed) resetBoundsOnModelSwitch();
+      await reloadView();
+      toast(`已切换到内置模型 ${file.replace(/\.psd$/i, "")}`);
+    } else if (kind === "imported") {
+      const changed = !(currentModel.type === "import" && currentModel.name === file);
+      localStorage.setItem(PSD_KEY, file);
+      if (changed) resetBoundsOnModelSwitch();
+      await reloadView();
+      toast(`已切换到 ${file.replace(/\.psd$/i, "")}`);
+    } else if (kind === "delete") {
+      if (currentModel.type === "import" && currentModel.name === file) {
+        // 正在用的模型不能直接删：先退回内置，再删文件（与内置面板同一套顺序）
+        const fallback = panelModels.builtin[0];
+        if (fallback) {
+          localStorage.setItem(BUILTIN_KEY, fallback);
+          localStorage.removeItem(PSD_KEY);
+          resetBoundsOnModelSwitch();
+          await reloadView();
+        }
+      }
+      await invoke("delete_imported_model", { name: file });
+      toast(`已删除模型 ${file.replace(/\.psd$/i, "")}`);
+    }
+  } catch (e) {
+    console.error("控制面板：模型操作失败", e);
+    toast(`操作失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+  }
+  await pushPanelState();
+}
+
+/** 控制面板里点了一个功能按钮：找到右键菜单里同一个 id 并执行 */
+function runPanelAction(id: string, payload?: unknown): void {
+  if (!engine || !id) return;
+  // 面板里「填表提交」类动作：把值带回桌宠这边执行（Key 只在本地进程间传，不经网络）
+  if (id.startsWith("__key:")) {
+    void handlePanelKeyAction(id.slice(6), payload);
+    return;
+  }
+  if (id.startsWith("__data:")) {
+    void handlePanelDataAction(id.slice(7), payload);
+    return;
+  }
+  // 「把桌宠叫到前面」不是菜单项，是面板自己的入口：被隐藏/被窗口压住时用
+  if (id === "show-pet") {
+    void invoke("debug_mark", { msg: "[panel] 把桌宠叫到前面" }).catch(() => {});
+    void ensurePetVisible().then(() => toast("我在这儿～"));
+    return;
+  }
+  // 「检查全部功能」：只做「能不能在菜单里找到并执行」的静态核对，不真的点下去，
+  // 免得自检本身把设置改了。这就是用户要的那句「和原来的设置一样能用」的可验证版本。
+  if (id === "__selfcheck") {
+    let all: MenuItemSpec[] = [];
+    try {
+      all = buildMenu(engine, { ignoreIdle: true });
+    } catch (e) {
+      console.warn("控制面板：自检读取菜单失败", e);
+    }
+    const ids = new Set<string>();
+    const walkIds = (items: MenuItemSpec[]) => {
+      for (const it of items) {
+        if (it.submenu?.length) walkIds(it.submenu);
+        else if (it.onPick && it.label) ids.add(it.id);
+      }
+    };
+    walkIds(all);
+    const missing = flattenMenuActions()
+      .flatMap((g) => g.items)
+      .map((it) => it.id)
+      .filter((x) => !ids.has(x) && x !== "show-pet");
+    panelSelfCheck = {
+      at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+      total: ids.size,
+      missing: [...new Set(missing)],
+    };
+    void invoke("debug_mark", {
+      msg: `[panel] 功能自检：菜单项 ${ids.size} 条，缺失 ${panelSelfCheck.missing.length} 条 ${missing.join(",")}`,
+    }).catch(() => {});
+    toast(
+      panelSelfCheck.missing.length
+        ? `自检完成：${panelSelfCheck.missing.length} 项对不上（${panelSelfCheck.missing.join("、")}）`
+        : `自检完成：${panelSelfCheck.total} 项功能全部可用`,
+      panelSelfCheck.missing.length ? "warn" : "info",
+    );
+    void pushPanelState();
+    return;
+  }
+  // 模型相关不是菜单项（菜单里是「模型设置」那个面板），面板要能直接切/删，
+  // 所以这里约定一组伪 id：__model:builtin:<文件> / __model:imported:<文件> / __model:delete:<文件>
+  if (id.startsWith("__model:")) {
+    void handlePanelModelAction(id);
+    return;
+  }
+  void invoke("debug_mark", { msg: `[panel] 点功能：${id}` }).catch(() => {});
+  let found: MenuItemSpec | null = null;
+  const walk = (items: MenuItemSpec[]) => {
+    for (const it of items) {
+      if (found) return;
+      if (it.id === id && it.onPick) {
+        found = it;
+        return;
+      }
+      if (it.submenu?.length) walk(it.submenu);
+    }
+  };
+  try {
+    // 同样用 ignoreIdle 的全量菜单：待机时也能从面板里点「待机模式」把自己叫醒
+    walk(buildMenu(engine, { ignoreIdle: true }));
+  } catch (e) {
+    console.warn("控制面板：执行功能失败", e);
+  }
+  if (!found) {
+    void invoke("debug_mark", { msg: `[panel] 未找到功能：${id}` }).catch(() => {});
+    toast(`没找到这个功能：${id}`, "warn");
+    return;
+  }
+  try {
+    (found as MenuItemSpec).onPick?.();
+    schedulePanelSync();
+  } catch (e) {
+    console.error(e);
+    toast("功能执行失败", "warn");
+  }
+}
+
+/** 右键菜单与托盘的统一入口：起服务 → 推设置 → 用默认浏览器打开 */
+async function openControlPanel(): Promise<void> {
+  try {
+    const url = await invoke<string>("panel_prepare");
+    await pushPanelState();
+    panelEverOpened = true;
+    await invoke("open_url", { url });
+    // 面板是用来「看着桌宠调它」的：先确保它没被隐藏、也没被浏览器压住。
+    // 这一步失败不该影响打开面板本身，所以单独 try。
+    await ensurePetVisible();
+    toast("控制面板已在浏览器打开，我在屏幕上，改完立刻能看到");
+  } catch (e) {
+    console.warn("控制面板：启动失败", e);
+    toast("控制面板打不开，先用内置设置窗口", "warn");
+    openSettingsWindow();
+  }
+}
+
+void getVersion()
+  .then((v) => {
+    appVersion = v;
+    schedulePanelSync();
+  })
+  .catch(() => {});
+
+
 async function toggleIdle() {
   settings.idleMode = !settings.idleMode;
+  await applyIdleState();
+}
+
+/**
+ * 把 settings.idleMode 的当前值真正执行到引擎上（进入/退出待机）。
+ * 从 toggleIdle 里拆出来是因为控制面板也会改 idleMode —— 两条入口必须走同一套逻辑。
+ */
+async function applyIdleState() {
   saveSettings(settings);
   if (settings.idleMode) {
     // 进入待机：收起所有打开的窗口/面板/对话框，待机期间一律不显示
