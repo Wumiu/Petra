@@ -509,10 +509,17 @@
         data[di + 3] = eff[y * W + x];
       }
     }
+    // 覆盖率（不透明像素 / 包围盒面积）：给消费方判断"这层是不是噪点尘埃层"用。
+    // see-through 之类的拆分有时会留下布满零星噪点的整画布图层，包围盒因此横跨整张
+    // canvas；渲染侧要靠这个值把它们排除出角色包围盒（否则绿框/点击区会被撑大）。
+    var opaqueCount = 0;
+    for (var ci = 3; ci < data.length; ci += 4) if (data[ci] > 8) opaqueCount++;
+    var coverage = w * h > 0 ? opaqueCount / (w * h) : 1;
     return {
       name: name, source: String(layer.name == null ? '' : layer.name), x: x0, y: y0, w: w, h: h, z: z,
       depth: slot.depth, group: slot.group, phys: slot.phys || null,
       opacity: layer.opacity == null ? 1 : Math.max(0, Math.min(1, layer.opacity)),
+      coverage: coverage,
       fade: slot.fade || null, side: side || null, strands: strands || null,
       img: { width: w, height: h, data: data }
     };

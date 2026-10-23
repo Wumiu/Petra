@@ -55,6 +55,17 @@ class TTSPlayer {
     if (!enabled) this.stop();
   }
 
+  /**
+   * 语音输出是否**真的**配置好了（开关 + Key + 音色都齐）。
+   *
+   * 气泡淡出时机要按这个判断：以前调用方读的是 `settings.tts.apiKey`，而那个字段
+   * 从来没被赋值（Key 存在 Rust 里，前端只在 setConfig 时传一次），条件恒 false，
+   * 于是「等播完再淡出」永远是死代码，长回复的气泡在朗读到一半时就消失了。
+   */
+  get configured(): boolean {
+    return this.enabled && Boolean(this.apiKey) && Boolean(this.speakerId);
+  }
+
   pushDelta(delta: string) {
     if (!this.enabled || !this.apiKey || !this.speakerId) return;
     if (this.stopped) return;
@@ -92,7 +103,9 @@ class TTSPlayer {
 
   private extractSentence(): string | null {
     this.buffer = this.buffer.replace(/^\n+/, "");
-    const match = /^(.{2,}?[。！？!?；;…])/s.exec(this.buffer);
+    // 句末标点：中文/日文全角 + 英文句点。
+    // 英文句点必须要求"后面跟空白或到结尾"，否则会把 3.14 / v1.2 这类小数点切开。
+    const match = /^(.{2,}?(?:[。！？!?；;…]|\.(?=\s|$)))/s.exec(this.buffer);
     if (!match) return null;
     const sentence = match[1];
     this.buffer = this.buffer.slice(sentence.length);
@@ -130,7 +143,11 @@ class TTSPlayer {
       if (!this.speaking) this.pump();
     } catch (e) {
       console.warn("[TTS] failed:", e);
+      // 失败也要标记 ready 并推进队列：以前只置 ready 不 pump()，若失败的是**队首**
+      // 那一句（长句最容易超时），整条队列会停在"ready 但 audio=null"的队首不动，
+      // 后面已经合成好的句子永远不播，整段回复静音。
       item.ready = true;
+      this.pump();
     }
   }
 

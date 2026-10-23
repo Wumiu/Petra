@@ -75,13 +75,19 @@ fn validate_app_name(input: &str) -> Result<String, String> {
         return Err("应用名称过长".into());
     }
     const FORBIDDEN: &[&str] = &[
-        "rm", "del", "delete", "format", "shutdown", "taskkill", "rd ", "rmdir",
-        "powershell", "cmd", "reg ", "net ", "sc ", "wmic", "mshta", "wscript",
+        "rm", "del", "delete", "format", "shutdown", "taskkill", "rd", "rmdir",
+        "powershell", "cmd", "reg", "net", "sc", "wmic", "mshta", "wscript",
         "cscript", "diskpart", "cipher", "fsutil", "bcdedit", "takeown", "vssadmin",
     ];
     let lower = name.to_lowercase();
+    // 按"词"匹配而不是裸子串：以前 contains("rm") 会把 Terminal（含 rm）、Dell（含 del）
+    // 之类的正常应用全部拦下。空格/连字符/下划线/点当分隔符后逐词比对。
+    let words: Vec<&str> = lower
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '.')
+        .filter(|w| !w.is_empty())
+        .collect();
     for f in FORBIDDEN {
-        if lower.contains(f) {
+        if words.iter().any(|w| *w == *f) {
             return Err(format!("应用名被拦截（含危险关键词 {f}）"));
         }
     }

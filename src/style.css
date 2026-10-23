@@ -699,6 +699,76 @@ body {
   gap: 8px;
   padding: 6px 2px;
 }
+/* 测试分支：设置行改成上下排布（标签在上、控件在下）。
+   原来是「API Key  [输入框]」这种左右排布，标签固定 64px 会挤压输入框；
+   改成纵向后标签独占一行、控件整行铺满。 */
+.as-set-row.is-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.as-set-row.is-stacked > .as-set-label {
+  width: auto;
+}
+/* 分组分隔线：按功能把设置项隔开（接入配置 / 预设 / 人设 / 功能 / 测试与用量） */
+.as-sep {
+  height: 0;
+  margin: 12px 0 10px;
+  border-top: 1px solid rgba(120, 100, 140, 0.18);
+}
+/* 纵向行里：动作按钮靠右、宽度按内容（不再拉满整行） */
+.as-set-row.is-stacked > .as-btn {
+  align-self: flex-end;
+}
+/* 开关行（.as-set-row--toggle）保持「标签在左、开关靠右」同一行；
+   纵向行里不会出现复选框。原生小方框换成与设置窗口一致的小开关。 */
+.as-set-row--toggle > .as-set-label {
+  /* 标签吃掉剩余宽度（否则 64px 会把「AI 对局互动」挤成两行），开关被推到最右 */
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+.as-set-row > input[type="checkbox"] {
+  align-self: center;
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 38px;
+  height: 21px;
+  /* 左边 auto = 靠右（横向开关行）；纵向行里不会走到这条规则 */
+  margin: 2px 0 2px auto;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #e6dfeb 0%, #f8f6fa 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(60, 40, 80, 0.30),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.9),
+    0 1px 1px rgba(255, 255, 255, 0.65);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.18s ease, box-shadow 0.18s ease;
+}
+.as-set-row > input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #ffffff 0%, #e6e0ec 62%, #cfc7d8 100%);
+  box-shadow: 0 1px 2px rgba(60, 40, 80, 0.35), 0 0 0 0.5px rgba(90, 60, 110, 0.12);
+  transition: transform 0.18s cubic-bezier(0.4, 1.5, 0.6, 1);
+}
+.as-set-row > input[type="checkbox"]:checked {
+  background: linear-gradient(180deg, #f6b3cd 0%, #e2699a 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(150, 40, 85, 0.38),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.34),
+    0 1px 1px rgba(255, 255, 255, 0.6);
+}
+.as-set-row > input[type="checkbox"]:checked::after {
+  transform: translateX(17px);
+}
 .as-set-label {
   width: 64px;
   flex-shrink: 0;

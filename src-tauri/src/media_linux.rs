@@ -109,7 +109,13 @@ fn sample_now_playing() -> (NowPlaying, bool) {
     {
         Ok(o) => o,
         Err(e) => {
-            crate::log_verbose(&format!("[media] playerctl 启动失败: {e}"));
+            // 只报一次：采样是 5 秒一次，没装 playerctl 时以前会把 debug 日志刷成
+            // 每 5 秒一条（真机跑一晚就是上万行）。调用方另有一次性降级说明。
+            static MISSING_LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !MISSING_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::log_line(&format!("[media] playerctl 启动失败（只提示一次）: {e}"));
+            }
             return (NowPlaying::default(), false);
         }
     };

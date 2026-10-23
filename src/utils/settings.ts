@@ -45,6 +45,21 @@ export interface PersonaFields {
   emoji: string;
 }
 
+/**
+ * 一组可复用的 API 配置（参考酒馆的"预设"）。
+ *
+ * 只存非敏感字段：**API Key 不进 settings**（settings 是 localStorage 明文），
+ * Key 按 `preset:<id>` 存进 Rust 侧（DPAPI / Keychain / Secret Service）。
+ */
+export interface AssistantPreset {
+  id: string;
+  /** 用户可改的名字（重命名） */
+  name: string;
+  provider: AssistantProvider;
+  customBaseUrl: string;
+  model: string;
+}
+
 export interface AssistantSettings {
   enabled: boolean;
   provider: AssistantProvider;
@@ -56,6 +71,12 @@ export interface AssistantSettings {
   /** 结构化人设字段 */
   personaFields: PersonaFields;
   customBaseUrl: string;
+  /** 保存的预设列表 */
+  presets: AssistantPreset[];
+  /** 当前应用的预设 id；手动改供应商/端点时会清空，Key 作用域随之回退到 provider */
+  activePresetId: string;
+  /** 持久化对话历史所属的输出语言（用于"换语言就清历史"，重启后不再误判） */
+  historyLang: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
   /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
@@ -95,6 +116,14 @@ export interface Settings {
   weatherCity: string;
   /** 天气气泡：点桌宠时弹出的信息面板（天气/待办/陪伴时间）；关掉后一律不弹 */
   weatherBubble: boolean;
+  /**
+   * 每个模型单独记录的角色边界松紧（key = 模型名）。
+   *
+   * 边界松紧本质上是「这个 PSD 的透明留白有多大」，换模型就该换一套；
+   * 以前是全局单值，在模型 A 上拖过滑条再切到 B，B 的绿框/点击区/气泡位置就全偏了。
+   */
+  boundsPaddings: Record<string, BoundsPadding>;
+  /** 旧版的全局边界松紧：只用于首次迁移，新代码请用 boundsPaddings */
   boundsPadding: BoundsPadding;
   passthrough: boolean;
   /** 免确认 shell（持久化，重启后保持） */
@@ -170,6 +199,7 @@ const DEFAULTS: Settings = {
   modelScales: {},
   weatherCity: "",
   weatherBubble: true,
+  boundsPaddings: {},
   boundsPadding: { left: 0, right: 0, top: 0, bottom: 0 },
   passthrough: false,
   allowAllShell: false,
@@ -193,6 +223,9 @@ const DEFAULTS: Settings = {
       emoji: "",
     },
     customBaseUrl: "",
+    presets: [],
+    activePresetId: "",
+    historyLang: "",
     greetInterval: 20,
     nickname: "",
     shortcut: "",

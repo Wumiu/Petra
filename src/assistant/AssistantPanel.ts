@@ -7,6 +7,7 @@ import { trackEvent } from "../features/diary/DiaryEventTracker";
 import { dailyDraw, hasDrawnToday, getTodayDraw, getCollectionProgress } from "../features/card/DailyCardManager";
 import { loadDiaries, getDiary } from "../features/diary/DiaryManager";
 import { loadSettings, saveSettings } from "../utils/settings";
+import { getApiKey, currentKeyScope } from "./apiKey";
 import { buildLanguageInstruction, buildLanguageReminder, langNameOf, splitTranslation } from "../utils/outputLanguage";
 import { appNameFromTitle, frontWindowForModel, isOwnWindow } from "../utils/foregroundApp";
 import {
@@ -31,10 +32,11 @@ let bubbles: HTMLElement | null = null;
 let input: HTMLTextAreaElement;
 let allowAllShell: HTMLInputElement;
 let history: ChatMessage[] = [];
-let lastChatLang = "";
 let memory: MemoryStore = [];
 let timer: number | null = null;
 let busy = false;
+/** 本次启动是否已从磁盘加载过历史（只加载一次，见 openAssistant） */
+let historyLoaded = false;
 let lifecycleOnOpen: (() => void) | null = null;
 let lifecycleOnClose: (() => void) | null = null;
 
@@ -112,17 +114,17 @@ function keepInputBarOnScreen(): void {
   }
 }
 
-// API Key 存 Rust 侧（DPAPI 加密），前端只缓存
+// API Key 存 Rust 侧（DPAPI 加密 / Keychain / Secret Service），前端只做按供应商的缓存
 let apiKeyCache = "";
 let apiKeyLoaded = false;
+/** 缓存对应的供应商：切换供应商后必须失效，否则会把 A 的 Key 发给 B */
+let apiKeyScope = "";
 
 async function ensureApiKey(): Promise<string> {
-  if (apiKeyLoaded) return apiKeyCache;
-  try {
-    apiKeyCache = await invoke<string>("get_api_key");
-  } catch {
-    apiKeyCache = "";
-  }
+  const scope = currentKeyScope();
+  if (apiKeyLoaded && apiKeyScope === scope) return apiKeyCache;
+  apiKeyCache = await getApiKey(scope);
+  apiKeyScope = scope;
   apiKeyLoaded = true;
   return apiKeyCache;
 }
@@ -130,6 +132,7 @@ async function ensureApiKey(): Promise<string> {
 export function clearApiKeyCache() {
   apiKeyLoaded = false;
   apiKeyCache = "";
+  apiKeyScope = "";
 }
 
 /** 小助手是否正在对话中（麻将 AI 点评用：正忙就跳过，避免抢话） */
@@ -242,6 +245,8 @@ async function loadHistory() {
   } catch {
     history = [];
   }
+  // 不再在这里重置"历史所属语言" —— 那会把「改语言就清历史」也一起关掉。
+  // 历史语言改为持久化在 settings.assistant.historyLang，见 send()。
 }
 function saveHistory() {
   // 整体覆盖写到 app_data_dir/chat-history.json；fire-and-forget，失败不阻塞对话
@@ -271,12 +276,21 @@ function ensureInput() {
   input.addEventListener("keydown", (e) => {
     // Enter 发送，Shift+Enter 换行（多行框的常规约定）
     if (e.key === "Enter" && !e.shiftKey) {
+      // 输入法组合中的 Enter 是"选词"，不是发送：以前这里只判断 key，
+      // 中文/日文输入法一按回车就把还没 commit 的拼音发出去，候选框也被 preventDefault 吞掉。
+      if (e.isComposing || (e as KeyboardEvent & { keyCode?: number }).keyCode === 229) return;
       e.preventDefault();
       const t = input.value.trim();
-      if (t) {
-        setInputValue("");
-        void send(t);
+      if (!t) return;
+      // busy 时 send() 会直接 return；先清空输入框就等于把这句话丢了。
+      // 和语音路径保持一致：留在输入框里并提示，别让用户以为发出去了。
+      if (busy) {
+        setInputValue(t);
+        toast("上一句还没答完，这句先放进输入框了", "warn");
+        return;
       }
+      setInputValue("");
+      void send(t);
     }
   });
   const btn = document.createElement("button");
@@ -284,10 +298,14 @@ function ensureInput() {
   btn.textContent = "发送";
   btn.addEventListener("click", () => {
     const t = input.value.trim();
-    if (t) {
-      setInputValue("");
-      void send(t);
+    if (!t) return;
+    if (busy) {
+      setInputValue(t);
+      toast("上一句还没答完，这句先放进输入框了", "warn");
+      return;
     }
+    setInputValue("");
+    void send(t);
   });
 
   // 语音输入按钮：点一下开始听，边说边出字，说完停顿自动发送；正在听时再点一下取消。
@@ -651,6 +669,7 @@ async function confirmFileWrite(action: string): Promise<boolean> {
     bubbles!.appendChild(row);
     positionBubbles();
     const finish = (ok: boolean) => {
+      pendingConfirms.delete(finish);
       if (ok && cb.checked) {
         const s = loadSettings();
         s.allowAllFileWrite = true;
@@ -660,6 +679,7 @@ async function confirmFileWrite(action: string): Promise<boolean> {
       positionBubbles();
       resolve(ok);
     };
+    pendingConfirms.add(finish);
     yes.addEventListener("click", () => finish(true));
     no.addEventListener("click", () => finish(false));
   });
@@ -782,7 +802,15 @@ export async function openAssistant(modelRect?: { left: number; top: number; rig
   ensureInput();
   ensureBubbles();
   loadMemory();
-  await loadHistory();
+  // 历史只在**本次启动第一次打开**时从磁盘加载一次：
+  //  · 以前每次打开都无条件重载 —— 工具执行/确认中会把内存里尚未落盘的 assistant+tool
+  //    序列覆盖掉，配对丢失后每轮请求 400；
+  //  · 后来改成 busy 时跳过 —— 又引入新问题：启动后第一次打开若正赶上主动问候/抽卡点评
+  //    （busy=true），历史根本没加载过，之后第一条消息就把 chat-history.json 整份覆盖掉。
+  if (!historyLoaded) {
+    await loadHistory();
+    historyLoaded = true;
+  }
   inputBar!.classList.remove("hidden");
   // 定位到模型（绿框）附近：默认放底部，放不下翻到上方；始终钳制在窗口可见区内（贴边自适应）
   if (modelRect) {
@@ -858,8 +886,27 @@ export function closeAssistant() {
   lifecycleOnClose?.();
 }
 
+/**
+ * 未决的「允许 / 拒绝」确认。
+ *
+ * 工具确认是 `await new Promise(...)`，只有点了按钮才 resolve。而进入待机、开小游戏、
+ * 关小助手、清空历史都会走 clearBubbles() 把整个气泡区 innerHTML="" —— 确认气泡被
+ * 连带删掉后 Promise 永远不会 resolve，`handleToolCalls → send` 的 finally 不执行，
+ * busy 永久为 true，之后每条消息都被静默丢弃，只能重启。
+ *
+ * 所以确认气泡都登记到这里，清空气泡区时统一按「拒绝」结清。
+ */
+const pendingConfirms = new Set<(ok: boolean) => void>();
+
+function cancelPendingConfirms() {
+  if (!pendingConfirms.size) return;
+  for (const settle of Array.from(pendingConfirms)) settle(false);
+  pendingConfirms.clear();
+}
+
 /** 清空左上角气泡区（关闭小助手模式时用） */
 export function clearBubbles() {
+  cancelPendingConfirms();
   if (bubbles) bubbles.innerHTML = "";
 }
 
@@ -995,6 +1042,9 @@ async function send(text: string) {
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
   ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
+  // 新消息开始就掐掉上一段语音：否则旧回复还在朗读，新回复的语音排在旧队列后面，
+  // 用户听到的内容和屏幕上的新回复完全对不上。
+  if (s.tts.enabled) ttsPlayer.stop();
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled) {
     const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
@@ -1013,11 +1063,23 @@ async function send(text: string) {
     return;
   }
   const outLang = s.assistant.outputLanguage;
-  // 换语言时清空对话历史
-  if (lastChatLang !== outLang && history.length > 0) {
-    history = [];
+  // 换语言时清空对话历史。
+  // 以前用内存变量 lastChatLang 作基准，重启后初值为空 → 第一次发送就误清历史；
+  // 后来在 loadHistory 里初始化又导致"改语言永远不清"。现在把历史所属语言**持久化**：
+  //   - 有记录且与当前不同 => 用户真的换了语言 => 清历史
+  //   - 没有记录（老用户升级）=> 认作当前语言，不动历史
+  const historyLang = s.assistant.historyLang ?? "";
+  if (history.length > 0) {
+    if (historyLang && historyLang !== outLang) history = [];
+    else if (!historyLang) {
+      s.assistant.historyLang = outLang;
+      saveSettings(s);
+    }
   }
-  lastChatLang = outLang;
+  if (s.assistant.historyLang !== outLang) {
+    s.assistant.historyLang = outLang;
+    saveSettings(s);
+  }
   // 语言提醒压在用户消息末尾：模型对末尾最敏感，放中段会被后面的中文语境带跑
   const langReminder = buildLanguageReminder(outLang ?? "");
   const userContent = langReminder ? `${text}\n${langReminder}` : text;
@@ -1182,7 +1244,7 @@ async function send(text: string) {
     // 以前这里刻意不淡出，气泡就一直挂到下一轮、把桌宠挡个正着。
     // 语音开着就等这一段播完再按字数计时（onIdle 只在「队列空且未在播」时触发一次，
     // 合成失败/没排上队时永不触发 -> 120 秒兜底）；语音关着直接按字数计时。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       let armed = false;
       const arm = () => {
         if (armed) return;
@@ -1245,7 +1307,6 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
   };
 
   for (const tc of calls) {
-    const before = history.length;
     // 次数预算用尽：不再执行，但**仍然**回一条明确结果 ——
     // 留下一条悬空的 tool_calls 会让下一轮请求直接 400。
     if (!budget.canCall()) {
@@ -1370,14 +1431,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
             no.textContent = "拒绝";
             row.append(label, yes, no);
             bubbles!.appendChild(row);
-            yes.addEventListener("click", () => {
+            // 登记到 pendingConfirms：气泡区被 clearBubbles() 清空时按「拒绝」结清，
+            // 否则这个 Promise 永远挂着、busy 永久 true（详见 pendingConfirms 注释）
+            const settle = (ok: boolean) => {
+              pendingConfirms.delete(settle);
               row.remove();
-              resolve(true);
-            });
-            no.addEventListener("click", () => {
-              row.remove();
-              resolve(false);
-            });
+              resolve(ok);
+            };
+            pendingConfirms.add(settle);
+            yes.addEventListener("click", () => settle(true));
+            no.addEventListener("click", () => settle(false));
           });
       let result: string;
       if (!doRun) {
@@ -1571,8 +1634,15 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       }
     }
 
-    // 兜底：所有分支都没命中（例如工具表里加了名字但忘了接处理）也必须回一条结果
-    if (history.length === before) {
+    // 兜底：所有分支都没命中（例如工具表里加了名字但忘了接处理）也必须回一条结果。
+    //
+    // 不能再用 `history.length === before` 判断"有没有命中"：delete_wrong_history 会先把
+    // 数组缩短 1 条、再 push 自己的 tool 结果，长度又回到 before，于是会误判成"没命中"
+    // 再补一条同 id 的结果 —— 模型看到互相矛盾的两条，服务端也可能直接 400。
+    // 这里改成看**最后一条 tool 结果是不是本次调用的 id**。
+    const lastMsg = history[history.length - 1];
+    const answered = lastMsg?.role === "tool" && lastMsg.tool_call_id === tc.id;
+    if (!answered) {
       history.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -1590,11 +1660,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       }
     }
 
-    // 统一截断这次调用产生的结果，避免一次 run_shell 把上下文吃掉
-    for (let i = before; i < history.length; i++) {
+    // 统一截断这次调用产生的结果，避免一次 run_shell 把上下文吃掉。
+    // 按 tool_call_id 从后往前找，不要用下标：delete_wrong_history 会先缩短数组，
+    // 用起始下标会越界/截错消息。
+    for (let i = history.length - 1; i >= 0; i--) {
       const msg = history[i];
-      if (msg.role === "tool" && typeof msg.content === "string") {
-        msg.content = truncateToolResult(tc.name, msg.content);
+      if (msg.role === "tool" && msg.tool_call_id === tc.id) {
+        if (typeof msg.content === "string") {
+          msg.content = truncateToolResult(tc.name, msg.content);
+        }
+        break;
       }
     }
   }
@@ -1830,7 +1905,7 @@ export async function triggerProactive() {
     if (emo !== "neutral") reactNow(emo);
     bubble.dataset.emotion = bubbleEmotion(emo);
     // 语音开着等播完再消失
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       ttsPlayer.onIdle(() => scheduleFade(bubble, 3000));
     } else {
       scheduleFade(bubble, 10000);
@@ -1884,7 +1959,7 @@ export async function triggerCardCommentary(card: { rarity: string; theme: strin
     // 不保存到主 history，避免影响主动问候
     // 语音开着：等播完再消失。onIdle 只在「队列空且未在播放」时触发一次，
     // 短文可能在注册回调前就播完（回调永不触发），故必须带超时兜底。
-    if (s.tts.enabled && s.tts.apiKey && s.tts.speakerId) {
+    if (ttsPlayer.configured) {
       let faded = false;
       ttsPlayer.onIdle(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } });
       setTimeout(() => { if (!faded) { faded = true; scheduleFade(bubble, 3000); } }, 120000);

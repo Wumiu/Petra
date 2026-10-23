@@ -330,6 +330,37 @@ fn looks_binary(bytes: &[u8]) -> bool {
     bytes.contains(&0)
 }
 
+/// 去掉末尾不完整的 UTF-8 前导序列（只应在按字节截断之后调用）。
+///
+/// 不处理的话：末尾半个汉字会让 from_utf8 整段失败，decode_text 在 Windows 上
+/// 退回 CP_ACP(GBK) 解一整篇 UTF-8 文本 —— 用户看到的是通篇乱码。
+fn trim_partial_utf8_tail(buf: &mut Vec<u8>) {
+    if buf.is_empty() {
+        return;
+    }
+    // 从末尾往回数续字节（0b10xxxxxx），最多 3 个，再多也不可能是合法的 UTF-8 序列
+    let mut cont = 0usize;
+    while cont < 4 && cont < buf.len() && (buf[buf.len() - 1 - cont] & 0xC0) == 0x80 {
+        cont += 1;
+    }
+    if cont >= buf.len() {
+        return;
+    }
+    let lead = buf[buf.len() - 1 - cont];
+    let need = match lead {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        // 非法前导（GBK 高位字节等）：不是 UTF-8 文本，别动它
+        _ => return,
+    };
+    if cont + 1 < need {
+        let keep = buf.len() - (cont + 1);
+        buf.truncate(keep);
+    }
+}
+
 /// 解码：先 UTF-8（吃掉 BOM），失败后在 Windows 上按系统 ANSI 代码页再试一次。
 fn decode_text(bytes: &[u8]) -> (String, TextEncoding) {
     let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
@@ -525,13 +556,26 @@ pub fn read_text_file(
         ));
     }
     let total_bytes = meta.len();
-    let bytes = std::fs::read(&g.real).map_err(|e| format!("读取失败：{e}"))?;
-    let size_capped = bytes.len() as u64 > MAX_READ_BYTES;
-    let slice = if size_capped {
-        &bytes[..MAX_READ_BYTES as usize]
-    } else {
-        &bytes[..]
-    };
+    // 只读需要的那一段：以前 std::fs::read 把整个文件读进内存再截断，
+    // 几百 MB 的日志会长时间卡死甚至 OOM。
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&g.real).map_err(|e| format!("读取失败：{e}"))?;
+        f.take(MAX_READ_BYTES as u64 + 4)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("读取失败：{e}"))?;
+    }
+    let size_capped = total_bytes > MAX_READ_BYTES;
+    if bytes.len() > MAX_READ_BYTES as usize {
+        bytes.truncate(MAX_READ_BYTES as usize);
+    }
+    // 截断点可能正好落在多字节字符中间：末尾半个 UTF-8 字符会让**整段**解码失败，
+    // decode_text 便在 Windows 上退回 CP_ACP(GBK) 解整篇 —— 中文文件全乱码。
+    if size_capped {
+        trim_partial_utf8_tail(&mut bytes);
+    }
+    let slice = &bytes[..];
     if looks_binary(slice) {
         return Err(format!(
             "「{}」看起来是二进制文件（含 NUL 字节），小助手只能读文本",
@@ -791,7 +835,11 @@ mod tests {
         std::fs::write(&outside, "x").unwrap();
         let link = temp_root().join("escape-link.txt");
         let _ = std::fs::remove_file(&link);
-        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(&outside, &link);
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(&outside, &link);
+        if result.is_err() {
             return;
         }
         let err = guard_with(&roots(), &[], &link.to_string_lossy()).unwrap_err();
@@ -827,6 +875,7 @@ mod tests {
     /// 调用方自己传 `\\?\…`（例如把我们上一条错误信息里的路径抄回来）时也要剥掉。
     /// 这里用**普通写法**拼出 verbatim 输入，别拿 canonicalize 过的路径去套 `\\?\`，
     /// 否则会拼出双前缀，测的就不是这件事了。
+    #[cfg(windows)]
     #[test]
     fn verbatim_input_is_echoed_clean() {
         let plain_root = std::env::temp_dir().join("petra-files-test");
@@ -913,7 +962,7 @@ mod tests {
 
     #[test]
     fn backup_name_appends_suffix() {
-        let p = backup_path(Path::new("D:\\a\\note.txt"));
+        let p = backup_path(&std::env::temp_dir().join("note.txt"));
         assert_eq!(p.file_name().unwrap().to_string_lossy(), "note.txt.petra-bak");
     }
 

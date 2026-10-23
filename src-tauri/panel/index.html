@@ -432,7 +432,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       desc: "对话模型的线路、人设、称呼与主动问候节奏。API Key 走系统钥匙串，不在这页明文保存。",
       cards: [
         {
-          title: "模型线路", desc: "换供应商后记得重新填 Key。",
+          title: "模型线路", desc: "Key 按供应商保存；已有预设可在动作页的小助手设置中管理。",
           fields: [
             { path: "assistant.enabled", label: "启用小助手", type: "switch" },
             { path: "assistant.provider", label: "供应商", type: "select", options: "providers" },
@@ -1073,7 +1073,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const cur = m.current || {};
     const curName = (cur.name || "").replace(/\.psd$/i, "") || (cur.type === "live2d" ? "标准 Live2D 模型" : "—");
 
-    card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}。导入 .psd 会直接换成新模型；切换模型会自动把边界补偿重置为 0（不同轮廓，上一个调好的值不适用）。`));
+    card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}。导入 .psd 会直接换成新模型；边界补偿按模型保存，切回时恢复。`));
 
     // 切换
     const row = el("div", "row");

@@ -167,6 +167,13 @@ async function onMedia(p: MediaPayload): Promise<void> {
     noLyrics = false;
     driftNotified = false;
     missingNotified = false;
+    // 重试预算必须按曲目重置：以前只在成功加载或媒体会话消失时归零，累计 3 次失败后
+    // 之后每首歌第一次失败就直接弹「切歌后会自动重试」并且一次都不重试，提示与行为相反。
+    retryCount = 0;
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     clearLyricBubbles();
     showSongBubble(title, artist);
     if (p.durationMs > 0 && p.positionMs > 0) clock.setServerPosition(p.positionMs);

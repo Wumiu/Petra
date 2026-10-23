@@ -132,6 +132,10 @@ function visiblePanelIds(): string[] {
 function render() {
   const host = panel;
   if (!host) return;
+  // 记住滚动位置：render() 会把整个内容区删掉重建，新元素 scrollTop 归零 ——
+  // 列表 20+ 行在 700 窗口里必然要滚，每点一下就跳回顶部会让人以为"点了没反应"。
+  const prevBody = host.querySelector(".sw-body") as HTMLElement | null;
+  const keepScroll = prevBody ? prevBody.scrollTop : 0;
   while (host.firstChild) host.removeChild(host.firstChild);
 
   // ---- 标题栏 ----
@@ -163,6 +167,21 @@ function render() {
     else general.push(item);
   }
   if (general.length) body.appendChild(group("通用", general));
+  // 恢复滚动位置（内容比上次短时浏览器会自动夹到合法范围）
+  if (keepScroll > 0) body.scrollTop = keepScroll;
+}
+
+/**
+ * 动作后重绘。
+ *
+ * 真实状态（开机自启、置顶、快捷键）大多是 `invoke().then` 或 `await` 之后才写回缓存，
+ * 立刻 render() 只会读到点击前的旧值，异步完成后又不再重绘 —— 表现为「开关显示滞后
+ * 一次点击」，第二次点又把第一次真正生效的操作切回去。所以补两次延迟重绘。
+ */
+function renderAfterAction() {
+  render();
+  window.setTimeout(() => render(), 200);
+  window.setTimeout(() => render(), 700);
 }
 
 /** 一组设置项（组标题 + 行） */
@@ -228,7 +247,7 @@ function row(item: MenuItemSpec, child: boolean): HTMLElement {
     sw.addEventListener("click", (ev) => {
       ev.stopPropagation();
       (item.onStatePick ?? item.onPick)?.();
-      render(); // 切换后整块重新取一遍最新值
+      renderAfterAction(); // 切换后重取最新值（异步状态补两次重绘）
     });
     r.appendChild(sw);
   } else if (item.state !== undefined) {
@@ -240,7 +259,7 @@ function row(item: MenuItemSpec, child: boolean): HTMLElement {
       st.addEventListener("click", (ev) => {
         ev.stopPropagation();
         item.onStatePick?.();
-        render(); // 状态变了，整块重新取一遍最新值
+        renderAfterAction(); // 状态变了，重取最新值（异步状态补两次重绘）
       });
     }
     r.appendChild(st);
@@ -255,7 +274,7 @@ function row(item: MenuItemSpec, child: boolean): HTMLElement {
   r.addEventListener("click", () => {
     const before = new Set(visiblePanelIds());
     item.onPick?.();
-    render(); // 动作后重渲染，刷新所有开/关状态
+    renderAfterAction(); // 动作后刷新所有开/关状态（异步状态补两次重绘）
     // 这一下真的点开了二级面板（调整模型边界 / 语音设置 / 对话记录…）才让位：
     // 设置窗口沉到最下面腾出角色和绿框，等那个面板关掉再自动变回原位。
     const justOpened = visiblePanelIds().filter((id) => !before.has(id));
