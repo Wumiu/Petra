@@ -600,6 +600,28 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   }
 
   /**
+   * 拖边界时自动亮绿框，但**不能一直亮着**：停手 8 秒自动收起。
+   * 这个框是调试用的，用户没主动开就不该留在屏幕上（已经两次被问「这个框怎么还在」）。
+   */
+  let boundsAutoTimer = null;
+  let boundsAutoOn = false;
+  function autoShowBounds() {
+    const shown = !!(state.meta.ui || {}).modelBounds;
+    if (!shown) {
+      boundsAutoOn = true;
+      runAction("model-bounds-toggle", "显示绿框");
+    }
+    if (boundsAutoTimer) clearTimeout(boundsAutoTimer);
+    boundsAutoTimer = setTimeout(() => {
+      boundsAutoTimer = null;
+      if (boundsAutoOn) {
+        boundsAutoOn = false;
+        runAction("model-bounds-toggle", "收起绿框");
+      }
+    }, 8000);
+  }
+
+  /**
    * 改一下就立刻生效（用户明确要求：不要「保存并生效」这一遍）。
    * 文本类会被连续输入打断，所以按类型给不同防抖：滑条 120ms、文本 600ms。
    */
@@ -810,6 +832,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       b.onclick = () => {
         const next = b.getAttribute("aria-checked") !== "true";
         b.setAttribute("aria-checked", String(next));
+        // 用户自己按的开关 = 明确意图，别再自动收起
+        boundsAutoOn = false;
+        if (boundsAutoTimer) { clearTimeout(boundsAutoTimer); boundsAutoTimer = null; }
         runAction(spec.action, spec.label);
       };
       ctl.appendChild(b);
@@ -846,9 +871,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       inp.oninput = () => {
         const v = Number(inp.value);
         read.textContent = fmtNum(v, spec);
-        if (spec.path.startsWith("boundsPadding") && !(state.meta.ui || {}).modelBounds) {
-          runAction("model-bounds-toggle", "显示绿框"); // 拖边界时自动开绿框，否则看不见边在哪
-        }
+        if (spec.path.startsWith("boundsPadding")) autoShowBounds();
         commit(spec.path, v, 120); // 拖动即生效
       };
       ctl.appendChild(inp); ctl.appendChild(read);
