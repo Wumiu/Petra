@@ -3517,17 +3517,27 @@ async fn asr_transcribe(app: AppHandle, audio: String) -> Result<String, String>
             .await
             .map_err(|e| format!("读取识别结果失败: {e}"))?;
         if status.is_success() {
-            if model != ASR_MODEL {
-                log_line(&format!("[asr] 主模型不可用，已退回 {model}"));
-            }
             let json: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| format!("识别结果解析失败: {e}"))?;
-            return Ok(json
+            let recognized = json
                 .get("text")
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .trim()
-                .to_string());
+                .to_string();
+            log_line(&format!(
+                "[asr] model={model} bytes={} status={status} textLen={}",
+                bytes.len(),
+                recognized.chars().count()
+            ));
+            // 200 但一个字都没有：可能是这个模型不认这种音频格式（录音是 webm/opus）。
+            // 先别急着把空串还给用户，换兜底模型再试一次——它有结果就用它的。
+            if recognized.is_empty() && model == ASR_MODEL {
+                log_line("[asr] 主模型返回空文本，改用兜底模型重试");
+                last_err = "没听清".to_string();
+                continue;
+            }
+            return Ok(recognized);
         }
         last_err = format!(
             "语音识别服务返回 {status}: {}",
@@ -3536,7 +3546,11 @@ async fn asr_transcribe(app: AppHandle, audio: String) -> Result<String, String>
         // 只有「模型不存在 / 没权限 / 参数不对」才值得换模型重试；
         // 401（Key 错）、429（限流）、5xx 换模型也没用，直接报错更诚实。
         let retryable = matches!(status.as_u16(), 400 | 403 | 404 | 422);
-        log_line(&format!("[asr] {model} 失败（{status}），retryable={retryable}"));
+        log_line(&format!(
+            "[asr] {model} 失败（{status}），retryable={retryable}，bytes={}，body={}",
+            bytes.len(),
+            text.chars().take(120).collect::<String>()
+        ));
         if !retryable {
             break;
         }

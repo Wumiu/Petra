@@ -612,6 +612,7 @@ function onVoiceKeydown(e: KeyboardEvent): void {
 async function toggleVoiceInput(): Promise<void> {
   const r = wireRecognizer();
   resetTimer(); // 碰麦克风也算"人在互动"，别让空闲超时把面板收走
+  void invoke("debug_mark", { msg: `[asr] 点麦克风 backend=${r.getBackendName()} recording=${r.isRecording()}` }).catch(() => {});
   if (r.isRecording()) {
     r.cancel();
     return;

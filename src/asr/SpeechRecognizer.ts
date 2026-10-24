@@ -43,6 +43,11 @@ function preferCloudAsr(): boolean {
   }
 }
 
+/** 把 ASR 每一步写进应用日志（用户报「说话没反应」时靠它定位到底卡在哪一步） */
+function asrLog(msg: string): void {
+  void invoke("debug_mark", { msg: `[asr] ${msg}` }).catch(() => {});
+}
+
 // ---------- 配置 ----------
 /**
  * 收尾时长统一放在 asrLogic 的 DEFAULT_LISTEN_TIMING 里（默认：说完停 **5 秒** 收尾，
@@ -50,8 +55,13 @@ function preferCloudAsr(): boolean {
  * 也避免"网页原生识别"和"录音 VAD"两条路各写一套数。
  */
 const LISTEN_TIMING: ListenTiming = DEFAULT_LISTEN_TIMING;
-/** 录音后端 VAD：音量 RMS 低于此值算静音 */
-const SILENCE_THRESHOLD = 0.015;
+/**
+ * 录音后端 VAD：音量 RMS 低于此值算静音。
+ * 原来是 0.015，实测普通笔记本麦克风说话时 RMS 常常只有 0.01 上下（尤其是离得远、
+ * 系统增益低的时候），会被整段判成"一直没听到人声"，最后收尾只得到一句
+ * 「没听到内容」——用户看到的就是"说话没反应"。降到 0.006 后正常说话能触发。
+ */
+const SILENCE_THRESHOLD = 0.006;
 /** 最短录音时长，太短丢弃 */
 const MIN_RECORD_MS = 500;
 
@@ -384,6 +394,7 @@ export class SpeechRecognizer {
         gotResult: false,
       };
 
+      asrLog(`录音开始 mime=${mime}`);
       rec.ondataavailable = (e) => { if (e.data?.size) this.chunks.push(e.data); };
       rec.onstop = () => {
         const blob = new Blob(this.chunks, { type: mime });
@@ -394,8 +405,12 @@ export class SpeechRecognizer {
         this.cleanupAudio();
         this.handlers.onStateChange?.(false);
         if (discard) return;
-        // 太短/太小：多半是误触，直接忽略，不花识别费
-        if (isTooShort(elapsed, blob.size, MIN_RECORD_MS)) return;
+        asrLog(`录音结束 elapsed=${elapsed}ms bytes=${blob.size}`);
+        // 太短/太小：多半是误触——但也可能是麦克风没真的收到声音，别静默吞掉
+        if (isTooShort(elapsed, blob.size, MIN_RECORD_MS)) {
+          this.handlers.onNoSpeech?.();
+          return;
+        }
         // 带上本次会话的 token：识别请求在途的 1~3 秒里用户关掉面板/开了小游戏/重新按麦克风，
         // cancel() 会让 token 失配，回来时就把这条结果丢掉（以前会把它直接发出去）
         void this.transcribe(blob, token);
@@ -412,6 +427,7 @@ export class SpeechRecognizer {
       this.handlers.onStateChange?.(false);
       // NotAllowedError / NotFoundError 都是"麦克风这一层"的问题，直接指到权限开关去
       const name = e instanceof DOMException ? e.name : "";
+      asrLog(`录音启动失败 name=${name} msg=${e instanceof Error ? e.message : String(e)}`);
       this.handlers.onError?.(
         name === "NotAllowedError" || name === "SecurityError"
           ? "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」"
@@ -496,19 +512,63 @@ export class SpeechRecognizer {
   }
 
   /** 把录音交给 Rust 侧转写（密钥不进前端） */
+  /**
+   * 录音是 webm/opus，但硅基流动的识别接口对 webm 基本不认（实测：两个模型都返回
+   * 200 + 空文本，而同一段音频转成 wav 就能识别出来）。所以上传前先解码成 PCM，
+   * 重采样到 16k 单声道再封成 wav —— Rust 侧按 RIFF 头会自动用 audio.wav 的
+   * filename/mime，不用改接口。
+   */
+  private async toWav(blob: Blob): Promise<Uint8Array | null> {
+    try {
+      const Ctx = window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const rate = 16000;
+      const Offline = window.OfflineAudioContext ||
+        (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+      const off = new Offline(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+      const src = off.createBufferSource();
+      src.buffer = decoded;
+      src.connect(off.destination);
+      src.start();
+      const rendered = await off.startRendering();
+      await ctx.close();
+      const pcm = rendered.getChannelData(0);
+      const wav = new Uint8Array(44 + pcm.length * 2);
+      const dv = new DataView(wav.buffer);
+      const ws = (o: number, str: string) => { for (let i = 0; i < str.length; i++) wav[o + i] = str.charCodeAt(i); };
+      ws(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); ws(8, "WAVE");
+      ws(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      ws(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+      for (let i = 0; i < pcm.length; i++) {
+        const v = Math.max(-1, Math.min(1, pcm[i]));
+        dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+      }
+      return wav;
+    } catch (e) {
+      asrLog(`转 wav 失败，改发原始录音：${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
   private async transcribe(blob: Blob, token: number): Promise<void> {
     try {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const wav = await this.toWav(blob);
+      const bytes = wav ?? new Uint8Array(await blob.arrayBuffer());
       let binary = "";
       const CHUNK = 0x8000; // 一次 apply 太多参数会爆栈，分块拼
       for (let i = 0; i < bytes.length; i += CHUNK) {
         binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
       }
       const audio = btoa(binary);
+      asrLog(`开始识别 bytes=${bytes.length}`);
       const text = await invoke<string>("asr_transcribe", { audio });
       // 在途期间被取消/新开了一轮录音：这条结果作废，不能弹也不能自动发送
       if (token !== this.startToken) return;
       const trimmed = (text || "").trim();
+      asrLog(`识别返回 ${trimmed.length} 字`);
       if (trimmed) this.handlers.onFinal?.(trimmed);
       else this.handlers.onNoSpeech?.(); // 服务返回空 = 没听清，不是错误
     } catch (e) {
