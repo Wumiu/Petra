@@ -20,6 +20,7 @@ import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
 import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
+import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
 /** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
@@ -1309,7 +1310,13 @@ async function send(text: string) {
         .join(" ");
       void invoke("debug_mark", { msg: `[assistant] 历史尾部：${tail}` }).catch(() => {});
     }
-    setBubbleText(loading, friendlyApiError(e));
+    // 气泡里已有完整说明，这里再在模型上方弹一条黄色提示：
+    // 气泡可能被收起或被挡住，HTTP 失败要让用户明确知道"这次请求没成功"。
+    const friendly = friendlyApiError(e);
+    if (/(API 错误|网络错误|响应超时|请求超时|Failed to fetch|fetch failed)/i.test(msgText)) {
+      notifyHttpError(friendly);
+    }
+    setBubbleText(loading, friendly);
     loading.dataset.emotion = "worried";
     // 出错时桌宠也难过一下，但不消耗任何 token
     reactNow("worried");

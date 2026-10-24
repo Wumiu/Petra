@@ -217,6 +217,10 @@ static LOG_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 /// 默认 debug 构建开、release 关；用户可在右键菜单「诊断日志」里切换，选择存到 logs/verbose。
 static VERBOSE_LOG: AtomicBool = AtomicBool::new(false);
 
+/// 日志事件用的 AppHandle：ERROR 级别日志会向前端 emit 一条 `petra:log-error`，
+/// 由桌宠在模型上方弹红色提示（前端不可见时只写日志，不弹）。
+static LOG_EVENT_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
 /// 前端心跳时间戳（毫秒）。前端每 5 秒 invoke 一次 app_heartbeat；
 /// 看门狗发现长时间不跳 => 界面卡死/白屏（WebView 渲染进程崩了、主线程被同步任务堵死等），
 /// 这类情况 JS 层根本发不出错误，只能靠外部观察。
@@ -373,6 +377,11 @@ fn trim_file(path: &std::path::Path, max: u64) {
 ///   - WARN / ERROR 另外写进 `error.log`，并附上最近 80 行上下文，
 ///     方便定位"错误发生之前发生了什么"。
 fn log_write(level: &str, verbose: bool, s: &str) {
+    log_write_ex(level, verbose, s, true);
+}
+
+/// emit=false 用于 panic hook：panic 过程中不要再跨线程发事件。
+fn log_write_ex(level: &str, verbose: bool, s: &str, emit: bool) {
     if verbose && !VERBOSE_LOG.load(Ordering::Relaxed) {
         return;
     }
@@ -409,6 +418,16 @@ fn log_write(level: &str, verbose: bool, s: &str) {
         let err_path = dir.join("error.log");
         append_file(&err_path, &block);
         trim_file(&err_path, ERROR_TRIM_BYTES);
+    }
+
+    // ERROR 级别推给前端弹红条。歌词拉取失败属于高频噪声，前端不弹（这里照常落盘）。
+    if emit && level == "ERROR" && !s.starts_with("[lyrics]") {
+        if let Some(app) = LOG_EVENT_HANDLE.get() {
+            let _ = app.emit(
+                "petra:log-error",
+                serde_json::json!({ "text": s, "at": time }),
+            );
+        }
     }
 
     // 环形缓冲也收 DEBUG：详细日志开着时，这些操作细节正是事后定位问题的上下文。
@@ -1077,6 +1096,22 @@ fn debug_panic_test() -> Result<(), String> {
     }
 }
 
+
+/// 测试用：写一条 ERROR 级别日志（会触发前端红色提示条）。
+/// 仅 debug 构建可用；发布版直接返回错误，不写日志。
+#[tauri::command]
+fn debug_log_error(msg: String) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        log_error(&msg);
+        Ok(())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = msg;
+        Err("仅调试构建可用".into())
+    }
+}
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -5182,7 +5217,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
-            quit_app, restart_app, debug_mark, debug_panic_test, app_heartbeat, read_file_bytes, save_psd,
+            quit_app, restart_app, debug_mark, debug_panic_test, debug_log_error, app_heartbeat, read_file_bytes, save_psd,
             export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
@@ -5214,6 +5249,8 @@ pub fn run() {
                 }
                 dir
             });
+            // ERROR 日志要推给前端弹提示，这里登记 AppHandle
+            let _ = LOG_EVENT_HANDLE.set(app.handle().clone());
             // 先归档上次日志再取偏移：顺序不能反，否则偏移会指向已经被归档走的旧文件
             archive_logs(log_dir);
             // 详细日志开关：debug 构建或 PETRA_VERBOSE_LOG=1 时记录高频埋点
@@ -5251,7 +5288,7 @@ pub fn run() {
                     };
                     let line = format!("[panic] {payload} @ {location}");
                     // hook 里再 panic 会直接 abort，兜一层
-                    let _ = std::panic::catch_unwind(|| log_error(&line));
+                    let _ = std::panic::catch_unwind(|| log_write_ex("ERROR", false, &line, false));
                     previous(info);
                 }));
             }

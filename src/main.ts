@@ -113,6 +113,7 @@ import { hasDrawnToday, getTodayDraw, dailyDraw } from "./features/card/DailyCar
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
+import { initErrorPopup, showErrorPopup } from "./ui/ErrorPopup";
 import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
 import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
@@ -1352,6 +1353,9 @@ async function boot() {
         dueAt: lastGreetAt + greetIntervalMsNow(),
         timerArmed: greetTimer !== null,
       }),
+      // 验证模型顶部的错误提示条（红/黄），不用真把 API 弄坏
+      popupError: (text: string) => showErrorPopup("error", text),
+      popupHttpError: (text: string) => showErrorPopup("http", text),
     };
   }
   // 小助手对话期间桌宠静止，关闭后恢复漫游
@@ -1529,6 +1533,18 @@ async function boot() {
   );
   startInteractionRegionSync();
   void setupAssistantHotkeyListener();
+
+  // 模型顶部的错误提示条：Rust 的 ERROR 日志通过事件推过来，显示为红色提示。
+  // 去重 / 限流 / 不可见不弹 都在 ErrorPopup 里处理。
+  initErrorPopup({
+    getModelRect,
+    getVisibleRect: getWindowVisibleRect,
+    log: (msg) => void invoke("debug_mark", { msg }).catch(() => {}),
+  });
+  void listen<{ text?: string }>("petra:log-error", (event) => {
+    const text = event.payload?.text;
+    if (text) showErrorPopup("error", text);
+  });
 
   // 渲染帧率：平时 30fps 省电，拖拽时抬到 60fps 让画布跟得上窗口
   const IDLE_MAX_FPS = 30;
@@ -5670,7 +5686,6 @@ function toggleAudio(on: boolean) {
 registerRiichiGame();
 
 void boot();
-
 
 
 
