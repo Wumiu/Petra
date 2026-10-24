@@ -48,6 +48,21 @@ function asrLog(msg: string): void {
   void invoke("debug_mark", { msg: `[asr] ${msg}` }).catch(() => {});
 }
 
+/**
+ * 把两次增量识别的结果拼起来：切点处有 200ms 重叠，文本也会重叠几个字，
+ * 这里找出「旧文本的后缀 == 新文本的前缀」的最长匹配并去掉，避免出现「你好你好好」。
+ */
+function mergePartial(prev: string, next: string): string {
+  if (!prev) return next;
+  if (!next) return prev;
+  const max = Math.min(prev.length, next.length, 12);
+  for (let n = max; n > 0; n--) {
+    if (prev.slice(-n) === next.slice(0, n)) return prev + next.slice(n);
+  }
+  // 没有任何重叠：直接拼（中文不需要空格）
+  return prev + next;
+}
+
 // ---------- 配置 ----------
 /**
  * 收尾时长统一放在 asrLogic 的 DEFAULT_LISTEN_TIMING 里（默认：说完停 **5 秒** 收尾，
@@ -161,6 +176,14 @@ export class SpeechRecognizer {
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private vadTimer: number | null = null;
+  /** 边录边认：持续累积的 PCM（单声道，采样率 = audioCtx.sampleRate） */
+  private pcmAll: Float32Array[] = [];
+  private pcmRate = 48000;
+  /** 已经送去识别到第几个采样（增量识别用） */
+  private pcmSent = 0;
+  private pcmTimer: number | null = null;
+  /** 边说边出的文字（增量拼出来的，收尾时会用整段重认覆盖） */
+  private partialText = "";
   private silenceSince = 0;
   /** 录音是否处于活动状态：VAD 循环靠它判断，不能查 mediaRecorder 的状态
    *  （getUserMedia 是异步的，刚起步那几帧 mediaRecorder 还没赋值） */
@@ -462,7 +485,32 @@ export class SpeechRecognizer {
       const Ctx = window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.audioCtx = new Ctx();
+      this.pcmRate = this.audioCtx.sampleRate;
+      this.pcmAll = [];
+      this.pcmSent = 0;
+      this.partialText = "";
       const source = this.audioCtx.createMediaStreamSource(stream);
+      // 边录边出字：用 ScriptProcessor 拿到原始 PCM，定时把「新增的那一段」送去识别。
+      // 不是媒体录音（webm）——webm 中途拿不到可解码的完整文件，只有 PCM 能随时切片。
+      if (this.backend === "siliconflow") {
+        try {
+          const proc = this.audioCtx.createScriptProcessor(4096, 1, 1);
+          proc.onaudioprocess = (ev) => {
+            if (!this.active) return;
+            this.pcmAll.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+          };
+          source.connect(proc);
+          // 必须连到 destination 才会触发回调，但直接连会把自己的声音放出来（啸叫）。
+          // 中间垫一个 0 增益，既满足"有下游"又不发声。
+          const mute = this.audioCtx.createGain();
+          mute.gain.value = 0;
+          proc.connect(mute);
+          mute.connect(this.audioCtx.destination);
+          this.pcmTimer = window.setInterval(() => void this.transcribeDelta(), 900);
+        } catch (e) {
+          asrLog(`PCM 采集不可用，退回整段识别：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 512;
       source.connect(this.analyser);
@@ -511,7 +559,77 @@ export class SpeechRecognizer {
     // onstop 是唯一收口：它负责 cleanupAudio + onStateChange(false) + 决定发不发
   }
 
+  /** 把累积 PCM 转成 16k 单声道 WAV（增量与整段共用） */
+  private pcmToWav(chunks: Float32Array[], rate: number): Uint8Array {
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const pcm = new Float32Array(total);
+    let o = 0;
+    for (const c of chunks) { pcm.set(c, o); o += c.length; }
+    const target = 16000;
+    const ratio = rate / target;
+    const outLen = Math.max(1, Math.floor(pcm.length / ratio));
+    const wav = new Uint8Array(44 + outLen * 2);
+    const dv = new DataView(wav.buffer);
+    const ws = (off: number, str: string) => { for (let i = 0; i < str.length; i++) wav[off + i] = str.charCodeAt(i); };
+    ws(0, "RIFF"); dv.setUint32(4, 36 + outLen * 2, true); ws(8, "WAVE");
+    ws(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, target, true); dv.setUint32(28, target * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    ws(36, "data"); dv.setUint32(40, outLen * 2, true);
+    for (let i = 0; i < outLen; i++) {
+      const v = Math.max(-1, Math.min(1, pcm[Math.floor(i * ratio)]));
+      dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return wav;
+  }
+
+  /** 把「自上次之后新录到的那一小段」送去识别，追加到输入框（带 200ms 重叠防吞字） */
+  private async transcribeDelta(): Promise<void> {
+    if (!this.active || this.pcmTimer === null) return;
+    let now = 0;
+    for (const c of this.pcmAll) now += c.length;
+    const overlap = Math.floor(this.pcmRate * 0.2);
+    const from = Math.max(0, this.pcmSent - overlap);
+    if (now - from < this.pcmRate * 0.5) return; // 新音频不到半秒，先攒着
+    // 切出 [from, now) 这一段
+    const slice: Float32Array[] = [];
+    let pos = 0;
+    let remainStart = from;
+    let remainLen = now - from;
+    for (const c of this.pcmAll) {
+      const cEnd = pos + c.length;
+      if (cEnd > remainStart && remainLen > 0) {
+        const s = Math.max(0, remainStart - pos);
+        const take = Math.min(c.length - s, remainLen);
+        slice.push(c.subarray(s, s + take));
+        remainLen -= take;
+        remainStart = 0;
+      }
+      pos = cEnd;
+      if (remainLen <= 0) break;
+    }
+    this.pcmSent = now;
+    try {
+      const wav = this.pcmToWav(slice, this.pcmRate);
+      let bin = "";
+      for (let i = 0; i < wav.length; i += 0x8000) bin += String.fromCharCode(...wav.subarray(i, i + 0x8000));
+      const text = (await invoke<string>("asr_transcribe", { audio: btoa(bin) })).trim();
+      if (!this.active || !text) return;
+      this.partialText = mergePartial(this.partialText, text);
+      this.handlers.onPartial?.(this.partialText);
+    } catch {
+      /* 增量失败不打扰用户，收尾还有整段识别兜底 */
+    }
+  }
+
+  private stopPcm(): void {
+    if (this.pcmTimer !== null) { clearInterval(this.pcmTimer); this.pcmTimer = null; }
+    this.pcmAll = [];
+    this.pcmSent = 0;
+  }
+
   private stopVad(): void {
+    this.stopPcm();
     if (this.vadTimer) { clearTimeout(this.vadTimer); this.vadTimer = null; }
   }
 

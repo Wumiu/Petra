@@ -526,6 +526,7 @@ function wireRecognizer(): SpeechRecognizer {
     onFinal: (text) => {
       const t = text.trim();
       resetTimer();
+      input.placeholder = "问点什么…";
       void invoke("debug_mark", { msg: `[asr] onFinal len=${t.length} voicePaused=${voicePausedByKey} busy=${busy} barHidden=${!document.querySelector(".as-inputbar")}` }).catch(() => {});
       if (!t) return;
       // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
@@ -547,7 +548,13 @@ function wireRecognizer(): SpeechRecognizer {
       if (!document.querySelector(".as-inputbar")) {
         void openAssistant();
       }
-      setInputValue("");
+      // **识别出的文字先留在输入框里**：语音是说完就自动发送，输入框立刻清空的话
+      // 用户根本看不到"识别成了什么"（这正是「对话框不显示识别的文字」的原因）。
+      // 3 秒后如果用户没动过，再清掉。
+      setInputValue(t);
+      window.setTimeout(() => {
+        if (input.value.trim() === t.trim()) setInputValue("");
+      }, 3000);
       // 把你刚说的话以气泡形式留在屏幕上：语音是"说完就自动发送"，输入框立刻被清空，
       // 不 echo 的话用户根本没机会看清这次识别成了什么（原来的体验就是"还没看到就发出去了"）
       addBubble("user", t);
@@ -754,7 +761,9 @@ function addBubble(kind: "ai" | "sys" | "confirm" | "user", text: string): HTMLE
   b.appendChild(body);
   // 对话类气泡给一个「×」；确认类气泡（自带允许/拒绝）不走这里，也就没有叉
   if (kind !== "confirm") attachBubbleClose(b);
-  trimBubbles(); // 先挤掉上一条，再挂新的（顺序不能反：trim 会清掉所有普通气泡）
+  // 先挤掉上一条，再挂新的（顺序不能反：trim 会清掉普通气泡）。
+  // 新加的是 user 气泡时连旧的 user 一起清，避免越积越多。
+  trimBubbles(kind !== "user");
   bubbles!.appendChild(b);
   positionBubbles(); // 气泡数量变化会改高度，重新算一次位置
   return b;
@@ -805,9 +814,19 @@ function scheduleFade(el: HTMLElement, ms: number) {
  * **确认气泡不能挤掉**（`.as-confirm` 在等用户点「允许/拒绝」）：
  * 它被删掉后那个 Promise 永远不 resolve，工具调用会一直卡着。
  */
-function trimBubbles() {
-  for (const kid of Array.from(bubbles!.children)) {
-    if (!(kid as HTMLElement).classList.contains("as-confirm")) kid.remove();
+/**
+ * 气泡只留一条（确认气泡除外）——但**「你刚说的那句」要留着**。
+ *
+ * 以前这里把所有非确认气泡都删掉：语音说完 → 先 echo 一条 user 气泡 → 紧接着回复
+ * 的 ai 气泡进来，trim 把 user 那条删了，用户根本看不到"识别成了什么"。
+ * 现在：挂 ai/sys 气泡时保留最近一条 user 气泡；挂新的 user 气泡时才清旧 user。
+ */
+function trimBubbles(keepLastUser: boolean) {
+  const kids = Array.from(bubbles!.children) as HTMLElement[];
+  const lastUser = keepLastUser ? [...kids].reverse().find((k) => k.classList.contains("as-user")) : null;
+  for (const kid of kids) {
+    if (kid.classList.contains("as-confirm") || kid === lastUser) continue;
+    kid.remove();
   }
   positionBubbles();
 }
@@ -920,6 +939,7 @@ function cancelPendingConfirms() {
 
 /** 清空左上角气泡区（关闭小助手模式时用） */
 export function clearBubbles() {
+  void invoke("debug_mark", { msg: `[bubble] clearBubbles from ${new Error().stack?.split("\n")[2]?.trim() ?? "?"}` }).catch(() => {});
   cancelPendingConfirms();
   if (bubbles) bubbles.innerHTML = "";
 }
