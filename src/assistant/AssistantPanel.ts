@@ -765,6 +765,13 @@ function addBubble(kind: "ai" | "sys" | "confirm" | "user", text: string): HTMLE
   // 新加的是 user 气泡时连旧的 user 一起清，避免越积越多。
   trimBubbles(kind !== "user");
   bubbles!.appendChild(b);
+  // 回复气泡上来时，把保留下来的「你说的那句」安排淡出：
+  // 保留是为了让用户看清识别成了什么，但不能一直挂着（用户报过"这个气泡不会自动消失"）。
+  // 给 12 秒够读完，随后和回复一起自己收走。
+  if (kind === "ai") {
+    const keep = bubbles!.querySelector<HTMLElement>(".as-user");
+    if (keep) scheduleFade(keep, 12000);
+  }
   positionBubbles(); // 气泡数量变化会改高度，重新算一次位置
   return b;
 }
