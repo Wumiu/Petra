@@ -484,7 +484,15 @@ export class SpeechRecognizer {
     try {
       const Ctx = window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new Ctx();
+      // 直接用 16k 采集：识别接口本来就吃 16k，省掉一次降采样；
+      // 之前是 48k 采完再用"每隔 N 个点取一个"粗暴抽到 16k，会产生混叠，识别明显变差。
+      let ctx: AudioContext;
+      try {
+        ctx = new Ctx({ sampleRate: 16000 });
+      } catch {
+        ctx = new Ctx();
+      }
+      this.audioCtx = ctx;
       this.pcmRate = this.audioCtx.sampleRate;
       this.pcmAll = [];
       this.pcmSent = 0;
@@ -506,7 +514,7 @@ export class SpeechRecognizer {
           mute.gain.value = 0;
           proc.connect(mute);
           mute.connect(this.audioCtx.destination);
-          this.pcmTimer = window.setInterval(() => void this.transcribeDelta(), 900);
+          this.pcmTimer = window.setInterval(() => void this.transcribeDelta(), 1500);
         } catch (e) {
           asrLog(`PCM 采集不可用，退回整段识别：${e instanceof Error ? e.message : String(e)}`);
         }
@@ -583,40 +591,27 @@ export class SpeechRecognizer {
     return wav;
   }
 
-  /** 把「自上次之后新录到的那一小段」送去识别，追加到输入框（带 200ms 重叠防吞字） */
+  /**
+   * 边说边出字：每次都把**整段音频**送去识别，然后用结果**覆盖**输入框。
+   *
+   * 以前是把切出来的小段（1 秒左右）单独识别再拼接——小段没有上下文，最不准，
+   * 而且切点处容易吞字/重复。整段重认虽然多花一点额度，但用的是完整上下文，
+   * 结果和最终整段识别一致，不会出现"边打边乱、最后又跳变"。
+   */
   private async transcribeDelta(): Promise<void> {
     if (!this.active || this.pcmTimer === null) return;
-    let now = 0;
-    for (const c of this.pcmAll) now += c.length;
-    const overlap = Math.floor(this.pcmRate * 0.2);
-    const from = Math.max(0, this.pcmSent - overlap);
-    if (now - from < this.pcmRate * 0.5) return; // 新音频不到半秒，先攒着
-    // 切出 [from, now) 这一段
-    const slice: Float32Array[] = [];
-    let pos = 0;
-    let remainStart = from;
-    let remainLen = now - from;
-    for (const c of this.pcmAll) {
-      const cEnd = pos + c.length;
-      if (cEnd > remainStart && remainLen > 0) {
-        const s = Math.max(0, remainStart - pos);
-        const take = Math.min(c.length - s, remainLen);
-        slice.push(c.subarray(s, s + take));
-        remainLen -= take;
-        remainStart = 0;
-      }
-      pos = cEnd;
-      if (remainLen <= 0) break;
-    }
-    this.pcmSent = now;
+    const total = this.pcmAll.reduce((n, c) => n + c.length, 0);
+    if (total < this.pcmRate * 0.8) return; // 不到 0.8 秒先攒着
+    if (total === this.pcmSent) return;      // 没有新音频
+    this.pcmSent = total;
     try {
-      const wav = this.pcmToWav(slice, this.pcmRate);
+      const wav = this.pcmToWav(this.pcmAll, this.pcmRate);
       let bin = "";
       for (let i = 0; i < wav.length; i += 0x8000) bin += String.fromCharCode(...wav.subarray(i, i + 0x8000));
       const text = (await invoke<string>("asr_transcribe", { audio: btoa(bin) })).trim();
       if (!this.active || !text) return;
-      this.partialText = mergePartial(this.partialText, text);
-      this.handlers.onPartial?.(this.partialText);
+      this.partialText = text;
+      this.handlers.onPartial?.(text);
     } catch {
       /* 增量失败不打扰用户，收尾还有整段识别兜底 */
     }
