@@ -229,30 +229,105 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// 日志文件上限：超过就在启动时轮转成 pet.log.1（只留一份备份）。
-/// 之前只增不减，实测一个月就 500KB+，且 74% 是交互噪声。
-const LOG_MAX_BYTES: u64 = 1_000_000;
 /// 反馈邮件/导出里附带的日志上限（超长只保留开头 + 结尾）
 const LOG_ATTACH_MAX_CHARS: usize = 120_000;
+/// 单次运行 lasted.txt 的硬上限：长时间不关程序时，超了就截掉最早的内容
+const LASTED_TRIM_BYTES: u64 = 20_000_000;
+/// error.txt 上限：错误日志带上下文，容易涨；超了只留后半段
+const ERROR_TRIM_BYTES: u64 = 2_000_000;
+/// 归档最多保留多少份
+const LOG_ARCHIVE_KEEP: usize = 15;
+
+/// 最近若干行日志（给 error.txt 做"错误发生前的上下文"）
+static RECENT_LINES: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// 上一行日志的日期，用于跨天时插一条"日期变更"分隔
+static LAST_DATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// 本地时间戳：日志是给人看的，用可读时间而不是 unix 秒。
 fn stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// 追加写文件（失败不 panic：日志不能把主流程带崩）
+fn append_file(path: &std::path::Path, text: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
+/// 文件超过上限时只保留后半段（截断时加一行提示）
+fn trim_file(path: &std::path::Path, max: u64) {
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    if meta.len() <= max {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let keep = (max / 2) as usize;
+    if text.len() <= keep {
+        return;
+    }
+    let mut cut = text.len() - keep;
+    // 从字符边界开始，避免切坏 UTF-8
+    while cut < text.len() && !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let tail = format!("[{}] [INFO] （日志过长，已截断更早的内容）\n{}", stamp(), &text[cut..]);
+    let _ = std::fs::write(path, tail);
+}
+
 /// 写一行日志：`[时间] [级别] 内容`。verbose 行只在「详细日志」开启时落盘。
+///
+/// 落盘规则：
+///   - 所有内容进 `lasted.txt`（本次启动的完整运行记录）；
+///   - WARN / ERROR 另外写进 `error.txt`，并附上最近 80 行上下文，
+///     方便定位"错误发生之前发生了什么"。
 fn log_write(level: &str, verbose: bool, s: &str) {
     if verbose && !VERBOSE_LOG.load(Ordering::Relaxed) {
         return;
     }
     println!("[pet-debug][{level}] {s}");
-    if let Some(dir) = LOG_DIR.get() {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("pet.log"))
-        {
-            let _ = writeln!(f, "[{}] [{level}] {s}", stamp());
+    let Some(dir) = LOG_DIR.get() else { return };
+
+    let time = stamp();
+    let line = format!("[{time}] [{level}] {s}");
+    let date = time.get(..10).unwrap_or("").to_string();
+
+    // 跨天仍在运行时补一条日期分隔，读日志时不会把两天混在一起
+    let mut marker = String::new();
+    if let Ok(mut last) = LAST_DATE.lock() {
+        if !last.is_empty() && *last != date {
+            marker = format!("===== 日期变更 {date} =====\n");
+        }
+        *last = date;
+    }
+
+    let lasted = dir.join("lasted.txt");
+    append_file(&lasted, &format!("{marker}{line}\n"));
+    trim_file(&lasted, LASTED_TRIM_BYTES);
+
+    if level == "WARN" || level == "ERROR" {
+        let mut block = format!("===== {time} {level} =====\n");
+        if let Ok(ring) = RECENT_LINES.lock() {
+            for l in ring.iter() {
+                block.push_str(l);
+                block.push('\n');
+            }
+        }
+        block.push_str(&line);
+        block.push_str("\n\n");
+        let err_path = dir.join("error.txt");
+        append_file(&err_path, &block);
+        trim_file(&err_path, ERROR_TRIM_BYTES);
+    }
+
+    // 只有 INFO/WARN/ERROR 进上下文缓冲，DEBUG 噪声不占位置
+    if level != "DEBUG" {
+        if let Ok(mut ring) = RECENT_LINES.lock() {
+            ring.push_back(line);
+            while ring.len() > 80 {
+                ring.pop_front();
+            }
         }
     }
 }
@@ -277,16 +352,95 @@ fn log_error(s: &str) {
     log_write("ERROR", false, s);
 }
 
-/// 启动时轮转：pet.log 超过上限就改名成 pet.log.1（覆盖上一份备份）
-fn rotate_log(dir: &std::path::Path) {
-    let path = dir.join("pet.log");
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size <= LOG_MAX_BYTES {
+/// 归档名里的时间片段：优先用 lasted.txt 第一行的时间（= 上次启动时刻）。
+fn archive_stamp(dir: &std::path::Path) -> String {
+    if let Ok(text) = std::fs::read_to_string(dir.join("lasted.txt")) {
+        if let Some(line) = text.lines().next() {
+            // [2026-10-24 16:58:07] → 2026-10-24_16-58
+            if line.len() >= 18 && line.starts_with('[') {
+                let t = &line[1..17];
+                return t.replace(' ', "_").replace(':', "-");
+            }
+        }
+    }
+    let s = stamp();
+    format!("{}_{}", &s[..10], s[11..16].replace(':', "-"))
+}
+
+/// 把上次运行的 lasted.txt / error.txt 以日期命名压成 zip，并只保留最近 15 份。
+fn archive_logs(dir: &std::path::Path) {
+    // 老版本用的是 pet.log：第一次升级时接过来，别把历史直接丢了
+    let lasted_path = dir.join("lasted.txt");
+    let legacy = dir.join("pet.log");
+    if !lasted_path.exists() && legacy.exists() {
+        let _ = std::fs::rename(&legacy, &lasted_path);
+    }
+    let error_path = dir.join("error.txt");
+
+    let non_empty = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
+    if !non_empty(&lasted_path) && !non_empty(&error_path) {
+        let _ = std::fs::remove_file(&error_path);
         return;
     }
-    let backup = dir.join("pet.log.1");
-    let _ = std::fs::remove_file(&backup);
-    let _ = std::fs::rename(&path, &backup);
+
+    let name = archive_stamp(dir);
+    let zip_path = dir.join(format!("lasted-{name}.zip"));
+    let zip_ok = (|| -> std::io::Result<()> {
+        let file = std::fs::File::create(&zip_path)?;
+        let mut zw = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (entry, path) in [("lasted.txt", &lasted_path), ("error.txt", &error_path)] {
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            if bytes.is_empty() {
+                continue;
+            }
+            zw.start_file(format!("{}_{}.txt", entry.trim_end_matches(".txt"), name), opts)
+                .map_err(std::io::Error::other)?;
+            zw.write_all(&bytes)?;
+        }
+        zw.finish().map_err(std::io::Error::other)?;
+        Ok(())
+    })();
+
+    if zip_ok.is_ok() {
+        let _ = std::fs::remove_file(&lasted_path);
+        let _ = std::fs::remove_file(&error_path);
+        log_line(&format!(
+            "上次运行的日志已归档：{}",
+            zip_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    } else {
+        // 压缩失败也不能让日志无限堆：直接改名保留文本
+        let _ = std::fs::rename(&lasted_path, dir.join(format!("lasted-{name}.txt")));
+        let _ = std::fs::rename(&error_path, dir.join(format!("error-{name}.txt")));
+    }
+
+    prune_archives(dir);
+}
+
+/// 归档只保留最近 15 份（按修改时间倒序）
+fn prune_archives(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut zips: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let name = path.file_name()?.to_string_lossy().to_string();
+            if !name.starts_with("lasted-") || !(name.ends_with(".zip") || name.ends_with(".txt")) {
+                return None;
+            }
+            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            Some((path, mtime))
+        })
+        .collect();
+    if zips.len() <= LOG_ARCHIVE_KEEP {
+        return;
+    }
+    zips.sort_by(|a, b| b.1.cmp(&a.1));
+    for (path, _) in zips.into_iter().skip(LOG_ARCHIVE_KEEP) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// 「详细日志」开关：默认 debug 构建开、release 关；
@@ -439,24 +593,52 @@ mod log_tests {
     }
 
     #[test]
-    fn rotate_log_only_when_too_big() {
-        let dir = std::env::temp_dir().join(format!("petra-log-test-{}", std::process::id()));
+    fn trim_file_keeps_tail_only() {
+        let dir = std::env::temp_dir().join(format!("petra-trim-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lasted.txt");
+        let mut text = String::new();
+        for i in 0..5000 {
+            text.push_str(&format!("[2026-10-24 10:00:00] [INFO] 第 {i} 行\n"));
+        }
+        std::fs::write(&path, &text).unwrap();
+        trim_file(&path, 4096);
+        let kept = std::fs::read_to_string(&path).unwrap();
+        assert!(kept.len() <= 4096, "截断后应不超过上限，实际 {}", kept.len());
+        assert!(kept.contains("第 4999 行"), "保留最新内容");
+        assert!(kept.contains("已截断"), "有截断提示");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // 小文件不轮转
-        std::fs::write(dir.join("pet.log"), b"small").unwrap();
-        rotate_log(&dir);
-        assert!(dir.join("pet.log").exists());
-        assert!(!dir.join("pet.log.1").exists());
+    #[test]
+    fn prune_keeps_only_fifteen() {
+        let dir = std::env::temp_dir().join(format!("petra-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..20 {
+            let path = dir.join(format!("lasted-2026-10-{i:02}_10-00.zip"));
+            std::fs::write(&path, b"x").unwrap();
+            // 拉开修改时间，避免同一毫秒内排序不稳定
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        prune_archives(&dir);
+        let left = std::fs::read_dir(&dir).unwrap().count();
+        assert_eq!(left, LOG_ARCHIVE_KEEP, "应只保留 15 份，实际 {left}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // 超过上限则轮转，旧备份被覆盖
-        std::fs::write(dir.join("pet.log"), vec![b'a'; (LOG_MAX_BYTES + 1) as usize]).unwrap();
-        std::fs::write(dir.join("pet.log.1"), b"old").unwrap();
-        rotate_log(&dir);
-        assert!(!dir.join("pet.log").exists(), "pet.log 被改名");
-        assert_eq!(std::fs::metadata(dir.join("pet.log.1")).unwrap().len(), LOG_MAX_BYTES + 1);
-
+    #[test]
+    fn archive_stamp_uses_first_log_time() {
+        let dir = std::env::temp_dir().join(format!("petra-stamp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lasted.txt"),
+            "[2026-10-24 16:58:07] [INFO] === pet started ===\n",
+        )
+        .unwrap();
+        assert_eq!(archive_stamp(&dir), "2026-10-24_16-58");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -2094,10 +2276,11 @@ fn collect_session_log() -> String {
     let Some(dir) = LOG_DIR.get() else {
         return "（无日志）\n".into();
     };
-    let path = dir.join("pet.log");
+    let path = dir.join("lasted.txt");
     let Ok(bytes) = std::fs::read(&path) else {
         return "（无日志）\n".into();
     };
+    // 日志被 trim_file 截断过时 offset 可能比文件还大，这时 min 会退化成从头读
     let offset = LOG_START_OFFSET.get().copied().unwrap_or(0) as usize;
     let start = offset.min(bytes.len());
     let text = String::from_utf8_lossy(&bytes[start..]).to_string();
@@ -4859,13 +5042,13 @@ pub fn run() {
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             });
-            // 先轮转再取偏移：顺序不能反，否则偏移会指向已经被改名走的旧文件
-            rotate_log(log_dir);
+            // 先归档上次日志再取偏移：顺序不能反，否则偏移会指向已经被归档走的旧文件
+            archive_logs(log_dir);
             // 详细日志开关：debug 构建或 PETRA_VERBOSE_LOG=1 时记录高频埋点
             let verbose = verbose_log_enabled();
             VERBOSE_LOG.store(verbose, Ordering::Relaxed);
             // 记录本次启动日志起始偏移（反馈只附本次启动后的日志）
-            let offset = std::fs::metadata(log_dir.join("pet.log"))
+            let offset = std::fs::metadata(log_dir.join("lasted.txt"))
                 .map(|m| m.len())
                 .unwrap_or(0);
             LOG_START_OFFSET.get_or_init(|| offset);

@@ -195,7 +195,9 @@ pub fn start_media_poller(app: AppHandle) {
                             let identity = format!("{}|{}|{}", np.title, np.artist, np.app_id);
                             if identity != last_identity {
                                 last_identity = identity;
-                                crate::log_warn(&format!(
+                                // 正常切换歌曲不是"警告"：之前用 log_warn，导致每次换歌都往
+                                // error.txt 里塞一整段上下文。这里是常规运行记录。
+                                crate::log_line(&format!(
                                     "[media] 选中会话 rank={} app={} title={:?}",
                                     rank, np.app_id, np.title
                                 ));
