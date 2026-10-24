@@ -76,6 +76,14 @@ window.addEventListener(
   },
   true,
 );
+// 心跳：Rust 侧看门狗据此判断界面是否还活着。
+// WebView 渲染进程崩溃或主线程被长任务堵死时，JS 一个错误都发不出来，
+// 只有"心跳停了"能留下线索（见 lib.rs 的 spawn_heartbeat_watchdog）。
+void invoke("app_heartbeat").catch(() => {});
+window.setInterval(() => {
+  void invoke("app_heartbeat").catch(() => {});
+}, 5000);
+
 // console.error / console.warn 也进日志：库和第三方代码往往只打控制台不抛异常
 for (const level of ["error", "warn"] as const) {
   const original = console[level].bind(console);

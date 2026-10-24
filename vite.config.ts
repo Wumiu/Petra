@@ -26,10 +26,13 @@ export default defineConfig({
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
+  // 压缩时保留函数名/类名：即使不查 sourcemap，堆栈也能认出是哪个函数出错
+  esbuild: { keepNames: true },
   build: {
     target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG,
-    sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // 打包版也带 sourcemap：日志里的压缩堆栈才能还原到源码行（排查线上问题用）
+    sourcemap: true,
     commonjsOptions: {
       include: [/node_modules/, /vendor[\\/]anime2dr/],
     },

@@ -90,7 +90,7 @@ mod panel;
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -217,6 +217,18 @@ static LOG_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 /// 默认 debug 构建开、release 关；用户可在右键菜单「诊断日志」里切换，选择存到 logs/verbose。
 static VERBOSE_LOG: AtomicBool = AtomicBool::new(false);
 
+/// 前端心跳时间戳（毫秒）。前端每 5 秒 invoke 一次 app_heartbeat；
+/// 看门狗发现长时间不跳 => 界面卡死/白屏（WebView 渲染进程崩了、主线程被同步任务堵死等），
+/// 这类情况 JS 层根本发不出错误，只能靠外部观察。
+static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// 日志文件上限：超过就在启动时轮转成 pet.log.1（只留一份备份）。
 /// 之前只增不减，实测一个月就 500KB+，且 74% 是交互噪声。
 const LOG_MAX_BYTES: u64 = 1_000_000;
@@ -282,6 +294,116 @@ fn rotate_log(dir: &std::path::Path) {
 fn verbose_log_enabled() -> bool {
     cfg!(debug_assertions) || std::env::var("PETRA_VERBOSE_LOG").map(|v| v == "1").unwrap_or(false)
 }
+
+// ---------- 盲区观测：运行状态 / 心跳 / 内存 ----------
+
+fn run_state_path() -> Option<std::path::PathBuf> {
+    LOG_DIR.get().map(|d| d.join("run-state.json"))
+}
+
+/// 记录"应用正在运行"。正常退出时会改写成 false；
+/// 下次启动若发现上次仍是 true，说明上次没走正常退出（崩溃 / 被强杀 / 断电）。
+fn save_run_state(running: bool) {
+    let Some(path) = run_state_path() else { return };
+    let _ = std::fs::write(path, format!("{{\"running\":{running},\"at\":{}}}", now_ms()));
+}
+
+fn log_previous_run_state() {
+    let Some(path) = run_state_path() else { return };
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        if text.contains("\"running\":true") {
+            log_warn("[boot] 上次运行没有正常退出（崩溃 / 被强制结束 / 断电），本次启动前请留意末尾日志");
+        }
+    }
+    save_run_state(true);
+}
+
+/// 前端心跳（每 5 秒一次）。看门狗据此判断界面是否还活着。
+#[tauri::command]
+fn app_heartbeat() {
+    LAST_BEAT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 看门狗：前端超过 25 秒没心跳就记一条（只记一次，恢复时再记一条）。
+/// WebView 渲染进程崩溃 / 主线程卡死时 JS 发不出任何错误，这是唯一能留下线索的地方。
+fn spawn_heartbeat_watchdog() {
+    std::thread::spawn(|| {
+        let mut warned = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let last = LAST_BEAT_MS.load(Ordering::Relaxed);
+            if last == 0 {
+                continue; // 前端还没起来
+            }
+            let idle = now_ms().saturating_sub(last);
+            if idle > 25_000 {
+                if !warned {
+                    warned = true;
+                    log_warn(&format!(
+                        "[watchdog] 前端 {:.0} 秒没有心跳（界面可能卡死或白屏）",
+                        idle as f64 / 1000.0
+                    ));
+                }
+            } else if warned {
+                warned = false;
+                log_line("[watchdog] 前端心跳恢复");
+            }
+        }
+    });
+}
+
+/// 当前进程内存（工作集 MB，私有字节 MB）。
+#[cfg(windows)]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    use windows::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    // EX 版本才带 PrivateUsage；函数签名收的是 COUNTERS 指针，按 EX 的大小传即可
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let ok = unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        )
+    };
+    ok.ok()
+        .map(|_| (counters.WorkingSetSize as u64 / 1_048_576, counters.PrivateUsage as u64 / 1_048_576))
+}
+
+/// Linux：/proc/self/statm 里前两个字段是总页数、常驻页数。
+#[cfg(target_os = "linux")]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let mut it = text.split_whitespace();
+    let _total: u64 = it.next()?.parse().ok()?;
+    let resident: u64 = it.next()?.parse().ok()?;
+    let mb = resident * 4096 / 1_048_576;
+    Some((mb, mb))
+}
+
+/// macOS：暂不采集（需要 mach task_info，收益不如前两个平台明显）。
+#[cfg(target_os = "macos")]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    None
+}
+
+/// 每 5 分钟记一次内存；超过 1.5GB 用 WARN，方便事后判断"是不是内存涨爆的"。
+fn spawn_memory_sampler() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(300));
+        let Some((working, private)) = current_memory_mb() else { continue };
+        if working >= 1500 {
+            log_warn(&format!(
+                "[mem] 工作集 {working} MB / 私有 {private} MB（偏高，留意内存泄漏）"
+            ));
+        } else {
+            log_line(&format!("[mem] 工作集 {working} MB / 私有 {private} MB"));
+        }
+    });
+}
+
 
 #[cfg(test)]
 mod log_tests {
@@ -4658,7 +4780,7 @@ pub fn run() {
     // updater 插件在 dev / release 都注册，使 tauri dev 下也能真实测试 check() 网络链路。
     // 开发版禁止实际安装由前端 import.meta.env.DEV 保护（见 UpdateManager.performUpdate）。
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    builder
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二次启动：把主窗口拉到前台
             if let Some(w) = app.get_webview_window("main") {
@@ -4704,7 +4826,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
-            quit_app, restart_app, debug_mark, debug_panic_test, read_file_bytes, save_psd,
+            quit_app, restart_app, debug_mark, debug_panic_test, app_heartbeat, read_file_bytes, save_psd,
             export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
@@ -4779,6 +4901,14 @@ pub fn run() {
                 }));
             }
 
+            // 盲区观测：上次是否正常退出 + 前端心跳看门狗 + 内存采样
+            log_previous_run_state();
+            spawn_heartbeat_watchdog();
+            spawn_memory_sampler();
+            if let Some((working, private)) = current_memory_mb() {
+                log_line(&format!("[mem] 启动时工作集 {working} MB / 私有 {private} MB"));
+            }
+
             // 开发自测：PETRA_PANEL_AUTOSTART=1 时开机就把控制面板服务拉起来，并把带 token
             // 的地址写进日志 —— 这样不用点菜单也能用 curl 验接口（也方便反复调试面板）。
             // 只在 debug 构建里存在，打包版没有这条路径。
@@ -4828,8 +4958,16 @@ pub fn run() {
             std::thread::spawn(move || audio::start_loopback_capture(handle, enabled));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_handle, event| {
+        // 正常退出标记：下次启动据此判断上次是正常关闭还是崩溃/被强杀
+        if let tauri::RunEvent::Exit = event {
+            log_line("=== pet exit normal ===");
+            save_run_state(false);
+        }
+    });
 }
 
 #[cfg(test)]
