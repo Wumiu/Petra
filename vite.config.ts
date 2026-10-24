@@ -31,8 +31,10 @@ export default defineConfig({
   build: {
     target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG,
-    // 打包版也带 sourcemap：日志里的压缩堆栈才能还原到源码行（排查线上问题用）
-    sourcemap: true,
+    // 默认不生成 sourcemap：.map 里带 sourcesContent（源码全文），
+    // 会随 dist 一起打进二进制（约 5MB）。需要还原线上堆栈时：
+    //   PETRA_SOURCEMAP=1 npm run build
+    sourcemap: process.env.PETRA_SOURCEMAP === "1",
     commonjsOptions: {
       include: [/node_modules/, /vendor[\\/]anime2dr/],
     },

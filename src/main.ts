@@ -3,7 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition, PhysicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-// ---------- 前端日志：把"看不见的"错误也写进 pet.log ----------
+// ---------- 前端日志：把"看不见的"错误也写进 lasted.log ----------
 // 只弹提示不记日志的话，用户遇到问题时日志里一行都没有，事后完全无法排查。
 // 这里统一收三类：未捕获异常、资源加载失败、console.error/warn。
 const FRONTEND_ERROR_CLASS = "fe-error-banner";
@@ -25,7 +25,7 @@ function feFormat(value: unknown): string {
   }
 }
 
-/** 写一行前端日志到 pet.log（带限流 + 连续重复合并） */
+/** 写一行前端日志到 lasted.log（带限流 + 连续重复合并） */
 function logFrontend(tag: string, text: string): void {
   const now = Date.now();
   if (now - feLogWindowStart > 60_000) {
@@ -50,7 +50,7 @@ function showFrontendError(label: string, detail: string, background: string): v
   div.textContent = `${label}: ${detail}`;
   const close = document.createElement("button");
   close.textContent = "✕";
-  close.title = "关闭（完整信息已写入日志 pet.log）";
+  close.title = "关闭（完整信息已写入日志 lasted.log）";
   close.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:0;color:#fff;font-size:14px;cursor:pointer;padding:2px 4px;";
   close.addEventListener("click", () => div.remove());
   div.appendChild(close);
@@ -880,7 +880,7 @@ function showRigWarnings(warnings: string[], modelKey: string): void {
   const known = new Set(seen[modelKey] ?? []);
   const texts = warnings.map(translateRigWarning);
   const fresh = texts.filter((t) => !known.has(t));
-  // 每次都记进 pet.log（去重只影响"弹不弹"，日志里永远是全量，方便排查模型问题）
+  // 每次都记进 lasted.log（去重只影响"弹不弹"，日志里永远是全量，方便排查模型问题）
   void invoke("debug_mark", { msg: `[psd] ${modelKey} 绑定提示：${texts.join("；")}` }).catch(() => {});
   // 先记账再弹：即使 toast 抛错也不会导致下次重复
   seen[modelKey] = Array.from(new Set([...(seen[modelKey] ?? []), ...texts])).slice(-40);
@@ -3394,7 +3394,7 @@ async function applyPanelPatch(patch: Record<string, unknown>): Promise<void> {
   }
   if (changed.has("weatherCity")) cachedWeather = null;
   if (changed.has("weatherBubble") && !settings.weatherBubble) hideInfoPanel();
-  // 留一条日志：面板改了什么一眼能在 pet.log 里查到（用户报「面板改了没反应」时靠它定位）
+  // 留一条日志：面板改了什么一眼能在 lasted.log 里查到（用户报「面板改了没反应」时靠它定位）
   void invoke("debug_mark", { msg: `[panel] 应用补丁：${[...changed].join(", ")}` }).catch(() => {});
   saveSettingsRaw(settings); // 只落盘；末尾统一回推一次，别在这里触发防抖循环
   if (changed.has("modelScale")) await applyModelScale(settings.modelScale);

@@ -231,14 +231,14 @@ fn now_ms() -> u64 {
 
 /// 反馈邮件/导出里附带的日志上限（超长只保留开头 + 结尾）
 const LOG_ATTACH_MAX_CHARS: usize = 120_000;
-/// 单次运行 lasted.txt 的硬上限：长时间不关程序时，超了就截掉最早的内容
+/// 单次运行 lasted.log 的硬上限：长时间不关程序时，超了就截掉最早的内容
 const LASTED_TRIM_BYTES: u64 = 20_000_000;
-/// error.txt 上限：错误日志带上下文，容易涨；超了只留后半段
+/// error.log 上限：错误日志带上下文，容易涨；超了只留后半段
 const ERROR_TRIM_BYTES: u64 = 2_000_000;
 /// 归档最多保留多少份
 const LOG_ARCHIVE_KEEP: usize = 15;
 
-/// 最近若干行日志（给 error.txt 做"错误发生前的上下文"）
+/// 最近若干行日志（给 error.log 做"错误发生前的上下文"）
 static RECENT_LINES: std::sync::Mutex<std::collections::VecDeque<String>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
 /// 上一行日志的日期，用于跨天时插一条"日期变更"分隔
@@ -279,8 +279,8 @@ fn trim_file(path: &std::path::Path, max: u64) {
 /// 写一行日志：`[时间] [级别] 内容`。verbose 行只在「详细日志」开启时落盘。
 ///
 /// 落盘规则：
-///   - 所有内容进 `lasted.txt`（本次启动的完整运行记录）；
-///   - WARN / ERROR 另外写进 `error.txt`，并附上最近 80 行上下文，
+///   - 所有内容进 `lasted.log`（本次启动的完整运行记录）；
+///   - WARN / ERROR 另外写进 `error.log`，并附上最近 80 行上下文，
 ///     方便定位"错误发生之前发生了什么"。
 fn log_write(level: &str, verbose: bool, s: &str) {
     if verbose && !VERBOSE_LOG.load(Ordering::Relaxed) {
@@ -302,7 +302,7 @@ fn log_write(level: &str, verbose: bool, s: &str) {
         *last = date;
     }
 
-    let lasted = dir.join("lasted.txt");
+    let lasted = dir.join("lasted.log");
     append_file(&lasted, &format!("{marker}{line}\n"));
     trim_file(&lasted, LASTED_TRIM_BYTES);
 
@@ -316,7 +316,7 @@ fn log_write(level: &str, verbose: bool, s: &str) {
         }
         block.push_str(&line);
         block.push_str("\n\n");
-        let err_path = dir.join("error.txt");
+        let err_path = dir.join("error.log");
         append_file(&err_path, &block);
         trim_file(&err_path, ERROR_TRIM_BYTES);
     }
@@ -351,9 +351,9 @@ fn log_error(s: &str) {
     log_write("ERROR", false, s);
 }
 
-/// 归档名里的时间片段：优先用 lasted.txt 第一行的时间（= 上次启动时刻）。
+/// 归档名里的时间片段：优先用 lasted.log 第一行的时间（= 上次启动时刻）。
 fn archive_stamp(dir: &std::path::Path) -> String {
-    if let Ok(text) = std::fs::read_to_string(dir.join("lasted.txt")) {
+    if let Ok(text) = std::fs::read_to_string(dir.join("lasted.log")) {
         if let Some(line) = text.lines().next() {
             // [2026-10-24 16:58:07] → 2026-10-24_16-58-07
             // 精确到秒：只到分钟的话，同一分钟内重启两次会撞名；
@@ -369,15 +369,25 @@ fn archive_stamp(dir: &std::path::Path) -> String {
     s.get(..19).unwrap_or(&s).replace(' ', "_").replace(':', "-")
 }
 
-/// 把上次运行的 lasted.txt / error.txt 以日期命名压成 zip，并只保留最近 15 份。
+/// 把上次运行的 lasted.log / error.log 以日期命名压成 zip，并只保留最近 15 份。
 fn archive_logs(dir: &std::path::Path) {
-    // 老版本用的是 pet.log：第一次升级时接过来，别把历史直接丢了
-    let lasted_path = dir.join("lasted.txt");
-    let legacy = dir.join("pet.log");
-    if !lasted_path.exists() && legacy.exists() {
-        let _ = std::fs::rename(&legacy, &lasted_path);
+    // 迁移历史文件：更早叫 pet.log，上一版叫 lasted.txt，都接过来别丢
+    let lasted_path = dir.join("lasted.log");
+    if !lasted_path.exists() {
+        for legacy in [dir.join("pet.log"), dir.join("lasted.txt")] {
+            if legacy.exists() {
+                let _ = std::fs::rename(&legacy, &lasted_path);
+                break;
+            }
+        }
     }
-    let error_path = dir.join("error.txt");
+    let error_path = dir.join("error.log");
+    if !error_path.exists() && dir.join("error.txt").exists() {
+        let _ = std::fs::rename(dir.join("error.txt"), &error_path);
+    }
+    // lasted.log 已存在但还留着上一版的 lasted.txt（升级后第一次重启就是这种状态）：
+    // 把旧内容接在 lasted.log 末尾再删掉，否则它会永远躺在日志目录里占地方。
+    absorb_legacy_txt(dir, &lasted_path);
 
     let non_empty = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
     if !non_empty(&lasted_path) && !non_empty(&error_path) {
@@ -394,12 +404,12 @@ fn archive_logs(dir: &std::path::Path) {
         let mut zw = zip::ZipWriter::new(file);
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        for (entry, path) in [("lasted.txt", &lasted_path), ("error.txt", &error_path)] {
+        for (entry, path) in [("lasted.log", &lasted_path), ("error.log", &error_path)] {
             let Ok(bytes) = std::fs::read(path) else { continue };
             if bytes.is_empty() {
                 continue;
             }
-            zw.start_file(format!("{}_{}.txt", entry.trim_end_matches(".txt"), name), opts)
+            zw.start_file(format!("{}_{}.log", entry.trim_end_matches(".log"), name), opts)
                 .map_err(std::io::Error::other)?;
             zw.write_all(&bytes)?;
         }
@@ -417,15 +427,30 @@ fn archive_logs(dir: &std::path::Path) {
     } else {
         // 压缩失败也不能让日志无限堆：半截 zip 删掉，正文直接改名保留
         let _ = std::fs::remove_file(&zip_path);
-        let _ = std::fs::rename(&lasted_path, unique_archive_path(dir, &format!("lasted-{name}"), "txt"));
+        let _ = std::fs::rename(&lasted_path, unique_archive_path(dir, &format!("lasted-{name}"), "log"));
         if std::fs::metadata(&error_path).map(|m| m.len() > 0).unwrap_or(false) {
-            let _ = std::fs::rename(&error_path, unique_archive_path(dir, &format!("error-{name}"), "txt"));
+            let _ = std::fs::rename(&error_path, unique_archive_path(dir, &format!("error-{name}"), "log"));
         } else {
             let _ = std::fs::remove_file(&error_path);
         }
     }
 
     prune_archives(dir);
+}
+
+/// 把上一版遗留的 lasted.txt 并进 lasted.log（只会在升级后的第一次启动触发一次）。
+fn absorb_legacy_txt(dir: &std::path::Path, lasted: &std::path::Path) {
+    let legacy = dir.join("lasted.txt");
+    let Ok(old) = std::fs::read_to_string(&legacy) else { return };
+    if old.trim().is_empty() {
+        let _ = std::fs::remove_file(&legacy);
+        return;
+    }
+    append_file(
+        lasted,
+        &format!("===== 以下为上一版 lasted.txt 迁移内容 =====\n{old}"),
+    );
+    let _ = std::fs::remove_file(&legacy);
 }
 
 /// 归档文件名去重：`lasted-<时间>.zip` 已存在就试 `-2`、`-3`…
@@ -447,7 +472,7 @@ fn prune_archives(dir: &std::path::Path) {
         .filter_map(|e| {
             let path = e.path();
             let name = path.file_name()?.to_string_lossy().to_string();
-            if !name.starts_with("lasted-") || !(name.ends_with(".zip") || name.ends_with(".txt")) {
+            if !name.starts_with("lasted-") || !(name.ends_with(".zip") || name.ends_with(".log")) {
                 return None;
             }
             let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
@@ -627,7 +652,7 @@ mod log_tests {
         let dir = std::env::temp_dir().join(format!("petra-trim-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("lasted.txt");
+        let path = dir.join("lasted.log");
         let mut text = String::new();
         for i in 0..5000 {
             text.push_str(&format!("[2026-10-24 10:00:00] [INFO] 第 {i} 行\n"));
@@ -680,7 +705,7 @@ mod log_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
-            dir.join("lasted.txt"),
+            dir.join("lasted.log"),
             "[2026-10-24 16:58:07] [INFO] === pet started ===\n",
         )
         .unwrap();
@@ -950,10 +975,16 @@ fn debug_mark(msg: String) {
 /// `[panic] ... @ 文件:行:列` —— 发布版会直接返回错误，不会崩。
 #[tauri::command]
 fn debug_panic_test() -> Result<(), String> {
-    if !cfg!(debug_assertions) {
-        return Err("仅调试构建可用".into());
+    // 用 cfg 而不是运行时判断：发布版里连 panic 字符串都不会编进二进制。
+    // 命令本身保留（否则 generate_handler! 的列表要分叉），发布版只返回错误。
+    #[cfg(debug_assertions)]
+    {
+        panic!("这是一条用于验证日志的测试 panic（debug_panic_test）");
     }
-    panic!("这是一条用于验证日志的测试 panic（debug_panic_test）");
+    #[cfg(not(debug_assertions))]
+    {
+        Err("仅调试构建可用".into())
+    }
 }
 
 
@@ -2322,7 +2353,7 @@ fn collect_session_log() -> String {
     let Some(dir) = LOG_DIR.get() else {
         return "（无日志）\n".into();
     };
-    let path = dir.join("lasted.txt");
+    let path = dir.join("lasted.log");
     let Ok(bytes) = std::fs::read(&path) else {
         return "（无日志）\n".into();
     };
@@ -5100,7 +5131,7 @@ pub fn run() {
             let verbose = verbose_log_enabled();
             VERBOSE_LOG.store(verbose, Ordering::Relaxed);
             // 记录本次启动日志起始偏移（反馈只附本次启动后的日志）
-            let offset = std::fs::metadata(log_dir.join("lasted.txt"))
+            let offset = std::fs::metadata(log_dir.join("lasted.log"))
                 .map(|m| m.len())
                 .unwrap_or(0);
             LOG_START_OFFSET.get_or_init(|| offset);
