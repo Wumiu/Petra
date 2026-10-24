@@ -321,13 +321,12 @@ fn log_write(level: &str, verbose: bool, s: &str) {
         trim_file(&err_path, ERROR_TRIM_BYTES);
     }
 
-    // 只有 INFO/WARN/ERROR 进上下文缓冲，DEBUG 噪声不占位置
-    if level != "DEBUG" {
-        if let Ok(mut ring) = RECENT_LINES.lock() {
-            ring.push_back(line);
-            while ring.len() > 80 {
-                ring.pop_front();
-            }
+    // 环形缓冲也收 DEBUG：详细日志开着时，这些操作细节正是事后定位问题的上下文。
+    // （verbose 关闭时 DEBUG 根本走不到这里，不占内存）
+    if let Ok(mut ring) = RECENT_LINES.lock() {
+        ring.push_back(line);
+        while ring.len() > 80 {
+            ring.pop_front();
         }
     }
 }
@@ -356,15 +355,18 @@ fn log_error(s: &str) {
 fn archive_stamp(dir: &std::path::Path) -> String {
     if let Ok(text) = std::fs::read_to_string(dir.join("lasted.txt")) {
         if let Some(line) = text.lines().next() {
-            // [2026-10-24 16:58:07] → 2026-10-24_16-58
-            if line.len() >= 18 && line.starts_with('[') {
-                let t = &line[1..17];
-                return t.replace(' ', "_").replace(':', "-");
+            // [2026-10-24 16:58:07] → 2026-10-24_16-58-07
+            // 精确到秒：只到分钟的话，同一分钟内重启两次会撞名；
+            // 用 get 而不是切片，避免畸形首行正好切在多字节字符中间。
+            if line.starts_with('[') {
+                if let Some(t) = line.get(1..20) {
+                    return t.replace(' ', "_").replace(':', "-");
+                }
             }
         }
     }
     let s = stamp();
-    format!("{}_{}", &s[..10], s[11..16].replace(':', "-"))
+    s.get(..19).unwrap_or(&s).replace(' ', "_").replace(':', "-")
 }
 
 /// 把上次运行的 lasted.txt / error.txt 以日期命名压成 zip，并只保留最近 15 份。
@@ -384,7 +386,9 @@ fn archive_logs(dir: &std::path::Path) {
     }
 
     let name = archive_stamp(dir);
-    let zip_path = dir.join(format!("lasted-{name}.zip"));
+    // 同一分钟内可能启动多次（崩溃后自动重启、用户连点重启）：
+    // 直接 File::create 会把上一份归档截断，所以同名的自动加 -2、-3
+    let zip_path = unique_archive_path(dir, &format!("lasted-{name}"), "zip");
     let zip_ok = (|| -> std::io::Result<()> {
         let file = std::fs::File::create(&zip_path)?;
         let mut zw = zip::ZipWriter::new(file);
@@ -411,12 +415,28 @@ fn archive_logs(dir: &std::path::Path) {
             zip_path.file_name().unwrap_or_default().to_string_lossy()
         ));
     } else {
-        // 压缩失败也不能让日志无限堆：直接改名保留文本
-        let _ = std::fs::rename(&lasted_path, dir.join(format!("lasted-{name}.txt")));
-        let _ = std::fs::rename(&error_path, dir.join(format!("error-{name}.txt")));
+        // 压缩失败也不能让日志无限堆：半截 zip 删掉，正文直接改名保留
+        let _ = std::fs::remove_file(&zip_path);
+        let _ = std::fs::rename(&lasted_path, unique_archive_path(dir, &format!("lasted-{name}"), "txt"));
+        if std::fs::metadata(&error_path).map(|m| m.len() > 0).unwrap_or(false) {
+            let _ = std::fs::rename(&error_path, unique_archive_path(dir, &format!("error-{name}"), "txt"));
+        } else {
+            let _ = std::fs::remove_file(&error_path);
+        }
     }
 
     prune_archives(dir);
+}
+
+/// 归档文件名去重：`lasted-<时间>.zip` 已存在就试 `-2`、`-3`…
+fn unique_archive_path(dir: &std::path::Path, stem: &str, ext: &str) -> std::path::PathBuf {
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem}-{n}.{ext}"));
+        n += 1;
+    }
+    path
 }
 
 /// 归档只保留最近 15 份（按修改时间倒序）
@@ -480,11 +500,21 @@ fn app_heartbeat() {
 
 /// 看门狗：前端超过 25 秒没心跳就记一条（只记一次，恢复时再记一条）。
 /// WebView 渲染进程崩溃 / 主线程卡死时 JS 发不出任何错误，这是唯一能留下线索的地方。
-fn spawn_heartbeat_watchdog() {
-    std::thread::spawn(|| {
+fn spawn_heartbeat_watchdog(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
         let mut warned = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
+            // 窗口隐藏/最小化时 WebView 会节流定时器，心跳变慢是正常现象，
+            // 不能当成"卡死"。这里只在窗口可见时判定。
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(true);
+            if !visible {
+                warned = false;
+                continue;
+            }
             let last = LAST_BEAT_MS.load(Ordering::Relaxed);
             if last == 0 {
                 continue; // 前端还没起来
@@ -612,6 +642,22 @@ mod log_tests {
     }
 
     #[test]
+    fn unique_archive_path_avoids_overwrite() {
+        let dir = std::env::temp_dir().join(format!("petra-unique-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(first.to_string_lossy().ends_with("lasted-2026-10-24_17-03-05.zip"));
+        std::fs::write(&first, b"x").unwrap();
+        let second = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(second.to_string_lossy().ends_with("lasted-2026-10-24_17-03-05-2.zip"), "同名要加序号，实际 {second:?}");
+        std::fs::write(&second, b"x").unwrap();
+        let third = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(third.to_string_lossy().ends_with("-3.zip"), "第三次应是 -3，实际 {third:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn prune_keeps_only_fifteen() {
         let dir = std::env::temp_dir().join(format!("petra-prune-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -638,7 +684,7 @@ mod log_tests {
             "[2026-10-24 16:58:07] [INFO] === pet started ===\n",
         )
         .unwrap();
-        assert_eq!(archive_stamp(&dir), "2026-10-24_16-58");
+        assert_eq!(archive_stamp(&dir), "2026-10-24_16-58-07");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -5092,7 +5138,7 @@ pub fn run() {
 
             // 盲区观测：上次是否正常退出 + 前端心跳看门狗 + 内存采样
             log_previous_run_state();
-            spawn_heartbeat_watchdog();
+            spawn_heartbeat_watchdog(app.handle().clone());
             spawn_memory_sampler();
             if let Some((working, private)) = current_memory_mb() {
                 log_line(&format!("[mem] 启动时工作集 {working} MB / 私有 {private} MB"));
