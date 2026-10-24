@@ -286,7 +286,7 @@ function ensureInput() {
       // 和语音路径保持一致：留在输入框里并提示，别让用户以为发出去了。
       if (busy) {
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "warn");
+        toast("上一句还没答完，这句先放进输入框了", "info");
         return;
       }
       setInputValue("");
@@ -301,7 +301,7 @@ function ensureInput() {
     if (!t) return;
     if (busy) {
       setInputValue(t);
-      toast("上一句还没答完，这句先放进输入框了", "warn");
+      toast("上一句还没答完，这句先放进输入框了", "info");
       return;
     }
     setInputValue("");
@@ -533,13 +533,13 @@ function wireRecognizer(): SpeechRecognizer {
         setInputValue(t);
         input.focus();
         keepInputBarOnScreen();
-        toast("已暂停识别，内容留在输入框，回车发送", "warn");
+        toast("已暂停识别，内容留在输入框，回车发送", "info");
         return;
       }
       if (busy) {
         // send() 忙的时候会直接 return；不留住的话用户刚说的话就凭空消失了
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "warn");
+        toast("上一句还没答完，这句先放进输入框了", "info");
         return;
       }
       setInputValue("");
@@ -553,7 +553,7 @@ function wireRecognizer(): SpeechRecognizer {
     onNoSpeech: () => {
       if (voicePausedByKey) {
         voicePausedByKey = false;
-        toast("已暂停语音识别", "warn");
+        toast("已暂停语音识别", "info");
         return;
       }
       toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
@@ -601,7 +601,7 @@ function onVoiceKeydown(e: KeyboardEvent): void {
   e.stopPropagation();
   if (e.key === "Escape") {
     r.cancel();
-    toast("已取消这次语音输入", "warn");
+    toast("已取消这次语音输入", "info");
     return;
   }
   voicePausedByKey = true; // 让 onFinal 知道：这次是"暂停"，别自动发送
@@ -628,7 +628,7 @@ async function toggleVoiceInput(): Promise<void> {
   if (r.needsApiKey()) {
     const ready = await invoke<boolean>("asr_key_ready").catch(() => false);
     if (!ready) {
-      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "warn");
+      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "info");
       return;
     }
   }

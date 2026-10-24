@@ -3,18 +3,35 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition, PhysicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-// 启动错误捕获：崩溃时直接显示在屏幕上
-window.addEventListener("error", (e) => {
+// 未捕获异常：显示在屏幕上，同时写进 pet.log。
+// 只显示不记日志的话，用户遇到崩溃时日志里一行都没有，事后完全无法排查。
+const FRONTEND_ERROR_CLASS = "fe-error-banner";
+function showFrontendError(label: string, detail: string, background: string): void {
+  void invoke("debug_mark", {
+    // 换行压成 |，免得日志被一条异常撕成十几行
+    msg: `[frontend] ${label}: ${detail.replace(/\s*\n\s*/g, " | ").slice(0, 1500)}`,
+  }).catch(() => {});
+  // 连环报错时最多留 3 条，避免把整个窗口刷满
+  if (document.querySelectorAll(`.${FRONTEND_ERROR_CLASS}`).length >= 3) return;
   const div = document.createElement("div");
-  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff0000;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
-  div.textContent = "启动错误: " + e.message + "\n" + (e.error?.stack || "");
+  div.className = FRONTEND_ERROR_CLASS;
+  div.style.cssText = `position:fixed;top:10px;left:10px;right:10px;background:${background};color:#fff;padding:10px 34px 10px 10px;font-size:12px;z-index:99999;white-space:pre-wrap;border-radius:6px;`;
+  div.textContent = `${label}: ${detail}`;
+  const close = document.createElement("button");
+  close.textContent = "✕";
+  close.title = "关闭（完整信息已写入日志 pet.log）";
+  close.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:0;color:#fff;font-size:14px;cursor:pointer;padding:2px 4px;";
+  close.addEventListener("click", () => div.remove());
+  div.appendChild(close);
   document.body?.appendChild(div);
+}
+
+window.addEventListener("error", (e) => {
+  showFrontendError("启动错误", `${e.message}\n${e.error?.stack || ""}`, "#ff0000");
 });
 window.addEventListener("unhandledrejection", (e) => {
-  const div = document.createElement("div");
-  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff6600;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
-  div.textContent = "Promise错误: " + (e.reason?.message || e.reason);
-  document.body?.appendChild(div);
+  const reason = e.reason as { message?: string; stack?: string } | undefined;
+  showFrontendError("Promise错误", reason?.stack || reason?.message || String(e.reason), "#ff6600");
 });
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
@@ -951,7 +968,7 @@ async function doReloadView() {
 // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）时模型会整块消失但 UI 还在，
 // 且没有任何自愈路径 —— 只能换模型或重启。这里自动重建一次。
 document.addEventListener("petra:webgl-lost", () => {
-  toast("显示上下文丢失了，正在重新加载模型…", "warn");
+  toast("显示上下文丢失了，正在重新加载模型…", "info");
   void reloadView().catch(() => toast("模型重新加载失败，可在菜单里换一个模型", "warn"));
 });
 
@@ -1100,7 +1117,7 @@ async function setupAssistantHotkeyListener() {
   await listen(ASSISTANT_HOTKEY_EVENT, async () => {
     const s = loadSettings();
     if (!s.assistant.enabled) {
-      toast("小助手模式没开，先右键开启再唤出", "warn");
+      toast("小助手模式没开，先右键开启再唤出", "info");
       return;
     }
     // 待机模式下：不弹对话框，改为在模型旁弹出"待机模式 开/关 + 睡着啦"小菜单
@@ -2143,7 +2160,7 @@ async function toggleModelPanel() {
 
   // 动作库仅 PSD 角色支持，标准 Live2D 模型提示
   if (currentModel.type === "live2d") {
-    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "warn");
+    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "info");
   }
 
   const render = (host: HTMLElement) => {
@@ -2821,7 +2838,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       onPick: () => {
         // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
         if (!settings.tts.enabled) {
-          toast("请先开启语音输出再测试", "warn");
+          toast("请先开启语音输出再测试", "info");
           return;
         }
         const lang = settings.assistant.outputLanguage ?? "";
@@ -3565,7 +3582,7 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
       case "feedback-send": {
         const msg = String(p.text ?? "").trim();
         if (!msg) {
-          toast("先写点什么再发", "warn");
+          toast("先写点什么再发", "info");
           return;
         }
         const res = await invoke<string>("send_feedback", { message: msg });
@@ -3597,11 +3614,11 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         const apiKey = await getApiKey();
         const persona = composePersona(settings.assistant);
         if (!persona.trim()) {
-          toast("人设还是空的，先填两句再试", "warn");
+          toast("人设还是空的，先填两句再试", "info");
           return;
         }
         if (!apiKey && settings.assistant.provider !== "ollama") {
-          toast("还没配 API Key，没法试演", "warn");
+          toast("还没配 API Key，没法试演", "info");
           return;
         }
         toast("正在用它的人设试演一句…");
@@ -3890,7 +3907,7 @@ function toggleModelAdjustPanel() {
 
   // 仅 PSD 模型支持
   if (!(view instanceof Rigged2DView)) {
-    toast("当前模型不支持调节", "warn");
+    toast("当前模型不支持调节", "info");
     return;
   }
   const rigView = view as Rigged2DView;
@@ -5011,15 +5028,15 @@ async function toggleAssistantSettings() {
 
     presetApply.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       void applyPreset(p);
     });
 
     presetRename.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       const name = presetName.value.trim();
-      if (!name) return toast("名称不能为空", "warn");
+      if (!name) return toast("名称不能为空", "info");
       p.name = name;
       saveSettings(settings);
       refreshPresets(p.id);
@@ -5028,7 +5045,7 @@ async function toggleAssistantSettings() {
 
     presetDelete.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       settings.assistant.presets = presetsOf().filter((x) => x.id !== p.id);
       if (settings.assistant.activePresetId === p.id) settings.assistant.activePresetId = "";
       saveSettings(settings);
@@ -5377,7 +5394,7 @@ function openFeedbackInput() {
     copy.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
+        toast("请先描述一下遇到的问题", "info");
         return;
       }
       void invoke<string>("feedback_text", { message: t })
@@ -5391,7 +5408,7 @@ function openFeedbackInput() {
     send.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
+        toast("请先描述一下遇到的问题", "info");
         return;
       }
       host.classList.add("hidden");
