@@ -764,9 +764,62 @@ function resetBoundsOnModelSwitch() {
   /* no-op：保留每个模型自己的边界松紧 */
 }
 
-async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
+/**
+ * PSD 自动绑定的提示：翻译 + 去重 + 降级为非红色样式。
+ *
+ * vendor 里的 rigger 用日文 push warnings，原来直接 `toast(w, "warn")`：
+ * 红条、"报错"观感、而且每次启动都会重新弹一遍（用户以为程序坏了）。
+ * 这些其实都是"缺图层 → 自动补齐"的正常兜底，所以：
+ *   1. 常见文案翻成中文；
+ *   2. 一律用 info 样式（真正致命的错误另有 toast）；
+ *   3. 按模型记住已提示过的文案，同一模型不再重复打扰。
+ */
+const RIG_WARN_STORAGE = "petra:rig-warned";
+
+function translateRigWarning(raw: string): string {
+  const rules: Array<[RegExp, string]> = [
+    [/不足する閉じ目を自動配置/, "闭眼图层不足，已自动补齐（可用「眼睛」差分条调整）"],
+    [/汎用閉じ口を自動配置/, "没有 mouth_close 图层，已自动补一个通用闭口（可用「嘴」差分条调整）"],
+    [/mouth_open \/ mouth_close がありません/, "模型里没有 mouth_open / mouth_close 图层"],
+    [/face レイヤーがありません/, "没有命名成 face 的图层，已把画布中央当作脸"],
+    [/eye_?close.*自動/, "闭眼图层是自动补的，可能与原画略有差异"],
+  ];
+  for (const [re, text] of rules) if (re.test(raw)) return text;
+  // 未收录的文案保留原文，但去掉"警告"的红色观感（由调用方统一用 info）
+  return raw;
+}
+
+function showRigWarnings(warnings: string[], modelKey: string): void {
+  if (warnings.length === 0) return;
+  let seen: Record<string, string[]> = {};
+  try {
+    seen = (JSON.parse(localStorage.getItem(RIG_WARN_STORAGE) ?? "{}") as Record<string, string[]>) ?? {};
+  } catch {
+    seen = {};
+  }
+  const known = new Set(seen[modelKey] ?? []);
+  const texts = warnings.map(translateRigWarning);
+  const fresh = texts.filter((t) => !known.has(t));
+  // 每次都记进 pet.log（去重只影响"弹不弹"，日志里永远是全量，方便排查模型问题）
+  void invoke("debug_mark", { msg: `[psd] ${modelKey} 绑定提示：${texts.join("；")}` }).catch(() => {});
+  // 先记账再弹：即使 toast 抛错也不会导致下次重复
+  seen[modelKey] = Array.from(new Set([...(seen[modelKey] ?? []), ...texts])).slice(-40);
+  try {
+    localStorage.setItem(RIG_WARN_STORAGE, JSON.stringify(seen));
+  } catch {
+    /* localStorage 满了就算了，最多下次再提示一遍 */
+  }
+  if (fresh.length === 0) return;
+  if (fresh.length <= 2) {
+    for (const t of fresh) toast(t, "info");
+  } else {
+    toast(`${fresh[0]}（另有 ${fresh.length - 1} 条绑定提示）`, "info");
+  }
+}
+
+async function makePsdView(bytes: Uint8Array, modelKey = "default"): Promise<Rigged2DView> {
   const v = await Rigged2DView.create(bytes);
-  v.warnings.forEach((w) => toast(w, "warn"));
+  showRigWarnings(v.warnings, modelKey);
   return v;
 }
 
@@ -777,7 +830,7 @@ async function createView(): Promise<PetView> {
     try {
       const bytes = await invoke<number[]>("read_psd", { name: imported });
       currentModel = { type: "import", name: imported };
-      return await makePsdView(new Uint8Array(bytes));
+      return await makePsdView(new Uint8Array(bytes), imported);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[模型切换] 导入 PSD "${imported}" 加载失败：`, err);
@@ -798,7 +851,7 @@ async function createView(): Promise<PetView> {
         // 统一走 Rust 命令读取（dev/release 都通过 exe/resource 目录找文件）
         const bytes = await invoke<number[]>("read_builtin_psd", { name: file });
         currentModel = { type: "manifest", name: file };
-        return await makePsdView(new Uint8Array(bytes));
+        return await makePsdView(new Uint8Array(bytes), file);
       } catch (err) {
         console.error(`内置模型 ${file} 加载失败:`, err);
       }
