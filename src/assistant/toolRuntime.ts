@@ -152,9 +152,9 @@ function sortKeys(value: unknown): unknown {
 }
 
 export interface ToolLoopLimits {
-  /** 一次对话最多几轮"模型 → 工具 → 模型"往返 */
+  /** 一次对话最多几轮"模型 → 工具 → 模型"往返；Infinity = 不设上限 */
   maxRounds?: number;
-  /** 一次对话最多几次工具调用（含无效调用） */
+  /** 一次对话最多几次工具调用（含无效调用）；Infinity = 不设上限 */
   maxCalls?: number;
 }
 
@@ -170,8 +170,11 @@ export class ToolLoopBudget {
   private readonly seen = new Set<string>();
 
   constructor(limits: ToolLoopLimits = {}) {
-    this.maxRounds = limits.maxRounds ?? 6;
-    this.maxCalls = limits.maxCalls ?? 12;
+    // 默认不设上限（用户要求「取消工具调用上限」）：
+    // 循环本身靠"模型不再发起工具调用"自然结束；这里只保留「同参数重复调用」的提醒，
+    // 那个是提示不是闸门，不会拦掉正常的多步任务。
+    this.maxRounds = limits.maxRounds ?? Infinity;
+    this.maxCalls = limits.maxCalls ?? Infinity;
   }
 
   /** 进入新一轮；false 表示轮数已用完，应该收尾了 */

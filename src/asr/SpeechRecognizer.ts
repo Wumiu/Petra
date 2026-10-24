@@ -43,6 +43,26 @@ function preferCloudAsr(): boolean {
   }
 }
 
+/** 把 ASR 每一步写进应用日志（用户报「说话没反应」时靠它定位到底卡在哪一步） */
+function asrLog(msg: string): void {
+  void invoke("debug_mark", { msg: `[asr] ${msg}` }).catch(() => {});
+}
+
+/**
+ * 把两次增量识别的结果拼起来：切点处有 200ms 重叠，文本也会重叠几个字，
+ * 这里找出「旧文本的后缀 == 新文本的前缀」的最长匹配并去掉，避免出现「你好你好好」。
+ */
+function mergePartial(prev: string, next: string): string {
+  if (!prev) return next;
+  if (!next) return prev;
+  const max = Math.min(prev.length, next.length, 12);
+  for (let n = max; n > 0; n--) {
+    if (prev.slice(-n) === next.slice(0, n)) return prev + next.slice(n);
+  }
+  // 没有任何重叠：直接拼（中文不需要空格）
+  return prev + next;
+}
+
 // ---------- 配置 ----------
 /**
  * 收尾时长统一放在 asrLogic 的 DEFAULT_LISTEN_TIMING 里（默认：说完停 **5 秒** 收尾，
@@ -50,8 +70,23 @@ function preferCloudAsr(): boolean {
  * 也避免"网页原生识别"和"录音 VAD"两条路各写一套数。
  */
 const LISTEN_TIMING: ListenTiming = DEFAULT_LISTEN_TIMING;
-/** 录音后端 VAD：音量 RMS 低于此值算静音 */
-const SILENCE_THRESHOLD = 0.015;
+/**
+ * 云端录音（非流式）专用的收尾参数：
+ * 说到停顿 1.6 秒就收（默认 5 秒是给"边说边出字"的原生识别留的手感，
+ * 云端这边等 5 秒只会让用户以为没反应）；一个字没听到 6 秒放弃。
+ */
+const CLOUD_LISTEN_TIMING: ListenTiming = {
+  ...DEFAULT_LISTEN_TIMING,
+  silenceMs: 1600,
+  giveUpMs: 6000,
+};
+/**
+ * 录音后端 VAD：音量 RMS 低于此值算静音。
+ * 原来是 0.015，实测普通笔记本麦克风说话时 RMS 常常只有 0.01 上下（尤其是离得远、
+ * 系统增益低的时候），会被整段判成"一直没听到人声"，最后收尾只得到一句
+ * 「没听到内容」——用户看到的就是"说话没反应"。降到 0.006 后正常说话能触发。
+ */
+const SILENCE_THRESHOLD = 0.006;
 /** 最短录音时长，太短丢弃 */
 const MIN_RECORD_MS = 500;
 
@@ -100,6 +135,8 @@ export interface RecognizerHandlers {
   onFinal?: (text: string) => void;
   /** 录音开始（提示"正在听…"） */
   onRecordingStart?: () => void;
+  /** 录音结束、正在上传识别（提示"识别中…"，否则这几秒看起来像卡住） */
+  onTranscribing?: () => void;
   /**
    * 听了半天什么都没识别到（没声音、或引擎没给结果）。
    * 必须给用户一句交代 —— 以前这种情况是完全静默的，用户看到的就是"点了没反应"。
@@ -139,6 +176,14 @@ export class SpeechRecognizer {
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private vadTimer: number | null = null;
+  /** 边录边认：持续累积的 PCM（单声道，采样率 = audioCtx.sampleRate） */
+  private pcmAll: Float32Array[] = [];
+  private pcmRate = 48000;
+  /** 已经送去识别到第几个采样（增量识别用） */
+  private pcmSent = 0;
+  private pcmTimer: number | null = null;
+  /** 边说边出的文字（增量拼出来的，收尾时会用整段重认覆盖） */
+  private partialText = "";
   private silenceSince = 0;
   /** 录音是否处于活动状态：VAD 循环靠它判断，不能查 mediaRecorder 的状态
    *  （getUserMedia 是异步的，刚起步那几帧 mediaRecorder 还没赋值） */
@@ -384,6 +429,7 @@ export class SpeechRecognizer {
         gotResult: false,
       };
 
+      asrLog(`录音开始 mime=${mime}`);
       rec.ondataavailable = (e) => { if (e.data?.size) this.chunks.push(e.data); };
       rec.onstop = () => {
         const blob = new Blob(this.chunks, { type: mime });
@@ -394,11 +440,20 @@ export class SpeechRecognizer {
         this.cleanupAudio();
         this.handlers.onStateChange?.(false);
         if (discard) return;
-        // 太短/太小：多半是误触，直接忽略，不花识别费
-        if (isTooShort(elapsed, blob.size, MIN_RECORD_MS)) return;
+        asrLog(`录音结束 elapsed=${elapsed}ms bytes=${blob.size}`);
+        // 太短/太小：多半是误触——但也可能是麦克风没真的收到声音，别静默吞掉
+        if (isTooShort(elapsed, blob.size, MIN_RECORD_MS)) {
+          this.handlers.onNoSpeech?.();
+          return;
+        }
         // 带上本次会话的 token：识别请求在途的 1~3 秒里用户关掉面板/开了小游戏/重新按麦克风，
         // cancel() 会让 token 失配，回来时就把这条结果丢掉（以前会把它直接发出去）
-        void this.transcribe(blob, token);
+        this.handlers.onTranscribing?.();
+        // ⚠️ 必须用**当前** token，不能用 startSiliconFlow 里那个：
+        // finishSiliconFlow() 收尾时已经 startToken++ 作废了旧值，用旧 token 会让
+        // transcribe() 一进门就判定"已取消"、把结果整个丢掉 —— 表现就是"说话完全没反应"。
+        // 用当前值仍满足原意：请求在途时用户再取消/重开录音，token 会再次变化。
+        void this.transcribe(blob, this.startToken);
       };
       rec.start();
       this.mediaRecorder = rec;
@@ -412,6 +467,7 @@ export class SpeechRecognizer {
       this.handlers.onStateChange?.(false);
       // NotAllowedError / NotFoundError 都是"麦克风这一层"的问题，直接指到权限开关去
       const name = e instanceof DOMException ? e.name : "";
+      asrLog(`录音启动失败 name=${name} msg=${e instanceof Error ? e.message : String(e)}`);
       this.handlers.onError?.(
         name === "NotAllowedError" || name === "SecurityError"
           ? "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」"
@@ -428,12 +484,46 @@ export class SpeechRecognizer {
     try {
       const Ctx = window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new Ctx();
+      // 直接用 16k 采集：识别接口本来就吃 16k，省掉一次降采样；
+      // 之前是 48k 采完再用"每隔 N 个点取一个"粗暴抽到 16k，会产生混叠，识别明显变差。
+      let ctx: AudioContext;
+      try {
+        ctx = new Ctx({ sampleRate: 16000 });
+      } catch {
+        ctx = new Ctx();
+      }
+      this.audioCtx = ctx;
+      this.pcmRate = this.audioCtx.sampleRate;
+      this.pcmAll = [];
+      this.pcmSent = 0;
+      this.partialText = "";
       const source = this.audioCtx.createMediaStreamSource(stream);
+      // 边录边出字：用 ScriptProcessor 拿到原始 PCM，定时把「新增的那一段」送去识别。
+      // 不是媒体录音（webm）——webm 中途拿不到可解码的完整文件，只有 PCM 能随时切片。
+      if (this.backend === "siliconflow") {
+        try {
+          const proc = this.audioCtx.createScriptProcessor(4096, 1, 1);
+          proc.onaudioprocess = (ev) => {
+            if (!this.active) return;
+            this.pcmAll.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+          };
+          source.connect(proc);
+          // 必须连到 destination 才会触发回调，但直接连会把自己的声音放出来（啸叫）。
+          // 中间垫一个 0 增益，既满足"有下游"又不发声。
+          const mute = this.audioCtx.createGain();
+          mute.gain.value = 0;
+          proc.connect(mute);
+          mute.connect(this.audioCtx.destination);
+          this.pcmTimer = window.setInterval(() => void this.transcribeDelta(), 1500);
+        } catch (e) {
+          asrLog(`PCM 采集不可用，退回整段识别：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 512;
       source.connect(this.analyser);
       const buf = new Uint8Array(this.analyser.fftSize);
+      const timing = this.backend === "siliconflow" ? CLOUD_LISTEN_TIMING : LISTEN_TIMING;
       const tick = () => {
         // 认 this.active 而不是 mediaRecorder.state：VAD 是在 recorder 就绪前后
         // 开始跑的，早期几帧查 recorder 只会得到"没在录"，循环当场就退出了
@@ -449,12 +539,12 @@ export class SpeechRecognizer {
         } else if (!this.listen.heardSound) {
           // 一直没听到人声：给足时间（用户可能正在组织语言），到点收尾并提示，
           // 别像以前那样点一下 2.5 秒就悄悄停掉（那条路上用户同样什么都看不到）
-          if (now - this.listen.startedAt >= LISTEN_TIMING.giveUpMs) { this.stop(); return; }
+          if (now - this.listen.startedAt >= timing.giveUpMs) { this.stop(); return; }
         } else {
           if (this.silenceSince === 0) this.silenceSince = now;
-          else if (now - this.silenceSince >= LISTEN_TIMING.silenceMs) { this.stop(); return; }
+          else if (now - this.silenceSince >= timing.silenceMs) { this.stop(); return; }
         }
-        if (now - this.listen.startedAt >= LISTEN_TIMING.maxMs) { this.stop(); return; }
+        if (now - this.listen.startedAt >= timing.maxMs) { this.stop(); return; }
         this.vadTimer = window.setTimeout(tick, 100);
       };
       tick();
@@ -477,7 +567,64 @@ export class SpeechRecognizer {
     // onstop 是唯一收口：它负责 cleanupAudio + onStateChange(false) + 决定发不发
   }
 
+  /** 把累积 PCM 转成 16k 单声道 WAV（增量与整段共用） */
+  private pcmToWav(chunks: Float32Array[], rate: number): Uint8Array {
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const pcm = new Float32Array(total);
+    let o = 0;
+    for (const c of chunks) { pcm.set(c, o); o += c.length; }
+    const target = 16000;
+    const ratio = rate / target;
+    const outLen = Math.max(1, Math.floor(pcm.length / ratio));
+    const wav = new Uint8Array(44 + outLen * 2);
+    const dv = new DataView(wav.buffer);
+    const ws = (off: number, str: string) => { for (let i = 0; i < str.length; i++) wav[off + i] = str.charCodeAt(i); };
+    ws(0, "RIFF"); dv.setUint32(4, 36 + outLen * 2, true); ws(8, "WAVE");
+    ws(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, target, true); dv.setUint32(28, target * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    ws(36, "data"); dv.setUint32(40, outLen * 2, true);
+    for (let i = 0; i < outLen; i++) {
+      const v = Math.max(-1, Math.min(1, pcm[Math.floor(i * ratio)]));
+      dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+    }
+    return wav;
+  }
+
+  /**
+   * 边说边出字：每次都把**整段音频**送去识别，然后用结果**覆盖**输入框。
+   *
+   * 以前是把切出来的小段（1 秒左右）单独识别再拼接——小段没有上下文，最不准，
+   * 而且切点处容易吞字/重复。整段重认虽然多花一点额度，但用的是完整上下文，
+   * 结果和最终整段识别一致，不会出现"边打边乱、最后又跳变"。
+   */
+  private async transcribeDelta(): Promise<void> {
+    if (!this.active || this.pcmTimer === null) return;
+    const total = this.pcmAll.reduce((n, c) => n + c.length, 0);
+    if (total < this.pcmRate * 0.8) return; // 不到 0.8 秒先攒着
+    if (total === this.pcmSent) return;      // 没有新音频
+    this.pcmSent = total;
+    try {
+      const wav = this.pcmToWav(this.pcmAll, this.pcmRate);
+      let bin = "";
+      for (let i = 0; i < wav.length; i += 0x8000) bin += String.fromCharCode(...wav.subarray(i, i + 0x8000));
+      const text = (await invoke<string>("asr_transcribe", { audio: btoa(bin) })).trim();
+      if (!this.active || !text) return;
+      this.partialText = text;
+      this.handlers.onPartial?.(text);
+    } catch {
+      /* 增量失败不打扰用户，收尾还有整段识别兜底 */
+    }
+  }
+
+  private stopPcm(): void {
+    if (this.pcmTimer !== null) { clearInterval(this.pcmTimer); this.pcmTimer = null; }
+    this.pcmAll = [];
+    this.pcmSent = 0;
+  }
+
   private stopVad(): void {
+    this.stopPcm();
     if (this.vadTimer) { clearTimeout(this.vadTimer); this.vadTimer = null; }
   }
 
@@ -496,19 +643,63 @@ export class SpeechRecognizer {
   }
 
   /** 把录音交给 Rust 侧转写（密钥不进前端） */
+  /**
+   * 录音是 webm/opus，但硅基流动的识别接口对 webm 基本不认（实测：两个模型都返回
+   * 200 + 空文本，而同一段音频转成 wav 就能识别出来）。所以上传前先解码成 PCM，
+   * 重采样到 16k 单声道再封成 wav —— Rust 侧按 RIFF 头会自动用 audio.wav 的
+   * filename/mime，不用改接口。
+   */
+  private async toWav(blob: Blob): Promise<Uint8Array | null> {
+    try {
+      const Ctx = window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const rate = 16000;
+      const Offline = window.OfflineAudioContext ||
+        (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+      const off = new Offline(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+      const src = off.createBufferSource();
+      src.buffer = decoded;
+      src.connect(off.destination);
+      src.start();
+      const rendered = await off.startRendering();
+      await ctx.close();
+      const pcm = rendered.getChannelData(0);
+      const wav = new Uint8Array(44 + pcm.length * 2);
+      const dv = new DataView(wav.buffer);
+      const ws = (o: number, str: string) => { for (let i = 0; i < str.length; i++) wav[o + i] = str.charCodeAt(i); };
+      ws(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); ws(8, "WAVE");
+      ws(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      ws(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+      for (let i = 0; i < pcm.length; i++) {
+        const v = Math.max(-1, Math.min(1, pcm[i]));
+        dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+      }
+      return wav;
+    } catch (e) {
+      asrLog(`转 wav 失败，改发原始录音：${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
   private async transcribe(blob: Blob, token: number): Promise<void> {
     try {
-      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const wav = await this.toWav(blob);
+      const bytes = wav ?? new Uint8Array(await blob.arrayBuffer());
       let binary = "";
       const CHUNK = 0x8000; // 一次 apply 太多参数会爆栈，分块拼
       for (let i = 0; i < bytes.length; i += CHUNK) {
         binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
       }
       const audio = btoa(binary);
+      asrLog(`开始识别 bytes=${bytes.length}`);
       const text = await invoke<string>("asr_transcribe", { audio });
       // 在途期间被取消/新开了一轮录音：这条结果作废，不能弹也不能自动发送
       if (token !== this.startToken) return;
       const trimmed = (text || "").trim();
+      asrLog(`识别返回 ${trimmed.length} 字：「${trimmed.slice(0, 40)}」`);
       if (trimmed) this.handlers.onFinal?.(trimmed);
       else this.handlers.onNoSpeech?.(); // 服务返回空 = 没听清，不是错误
     } catch (e) {
