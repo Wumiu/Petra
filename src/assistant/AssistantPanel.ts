@@ -1257,6 +1257,17 @@ async function send(text: string) {
       scheduleFade(loading, readingHoldMs(getBubbleText(loading), 5000));
     }
   } catch (e) {
+    const msgText = e instanceof Error ? e.message : String(e);
+    // 写进 pet.log：用户反馈"说着说着就 API 错误"时，光看屏幕上的气泡没法定位，
+    // 这里把状态码/响应体（以及 4xx 时的历史尾部）留在日志里。
+    void invoke("debug_mark", { msg: `[assistant] 请求失败：${msgText}` }).catch(() => {});
+    if (/API 错误 4\d\d/.test(msgText)) {
+      const tail = history
+        .slice(-6)
+        .map((m) => `${m.role}${m.tool_calls ? `(${m.tool_calls.map((c) => c.id).join(",")})` : ""}${m.tool_call_id ? `#${m.tool_call_id}` : ""}`)
+        .join(" ");
+      void invoke("debug_mark", { msg: `[assistant] 历史尾部：${tail}` }).catch(() => {});
+    }
     setBubbleText(loading, friendlyApiError(e));
     loading.dataset.emotion = "worried";
     // 出错时桌宠也难过一下，但不消耗任何 token

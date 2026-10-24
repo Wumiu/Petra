@@ -20,6 +20,17 @@ export interface ChatMessage {
   }>;
 }
 
+/**
+ * 偶发错误的自动重试节奏（毫秒）。只覆盖"还没开始接收流"的失败：
+ * 429 限流、5xx/408 网关抖动、以及网络层直接失败。
+ * 400/401/402/403 这类重试也没用，直接报给用户。
+ */
+const RETRY_DELAYS_MS = [600, 1800];
+
+export function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
 
 /** 结构化记忆条目 */
 export interface MemoryEntry {
@@ -518,6 +529,46 @@ export function systemPrompt(persona: string, memory: MemoryStore, extraContext 
   return `${persona ? persona + "\n\n" : ""}${BASE_PROMPT}${mem}${extraContext ? "\n\n" + extraContext : ""}`;
 }
 
+/**
+ * 修复非法的工具调用序列。
+ *
+ * OpenAI 兼容端点的硬性要求：每条 `role:"tool"` 必须紧跟带 tool_calls 的 assistant，
+ * 且**每个 tool_call_id 都要有且只有一条结果**。实际运行中这套序列会被打断：
+ *   - 工具执行中途抛异常/被取消/预算用尽 → assistant 有 tool_calls 但结果不全；
+ *   - 历史被截断或「删除错误历史」删掉一半 → 出现孤立的 tool 消息。
+ * 只要带上一次坏序列，之后**每一轮**请求都会 400，用户只能反复重发。
+ * 这里在发送前统一修：序列完整就保留，不完整就整组丢掉（模型不该看到半截调用）。
+ */
+export function sanitizeToolHistory(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+    if (m.role === "tool") {
+      // 没有配对的 assistant（它的 tool_calls 已被删除）→ 丢掉
+      i++;
+      continue;
+    }
+    if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      const ids = new Set(m.tool_calls.map((c) => c.id));
+      const results: ChatMessage[] = [];
+      let j = i + 1;
+      while (j < messages.length && messages[j].role === "tool") {
+        results.push(messages[j]);
+        j++;
+      }
+      const answered = new Set(results.map((r) => r.tool_call_id).filter(Boolean));
+      const complete = results.length === ids.size && [...ids].every((id) => answered.has(id));
+      if (complete) out.push(m, ...results);
+      i = j;
+      continue;
+    }
+    out.push(m);
+    i++;
+  }
+  return out;
+}
+
 /** 上下文窗口管理：截断 history（最近 N 条 + 字符上限），记忆并入 system。
  *  截断时不切断 tool_calls 序列（不删除紧跟 tool 消息的 assistant 消息）。 */
 function buildMessages(
@@ -529,11 +580,12 @@ function buildMessages(
 ): ChatMessage[] {
   const MAX_MSGS = 120;
   const MAX_CHARS = 30000;
-  let msgs = history.slice(-MAX_MSGS);
+  // 先修序列再截断：坏序列留着会让整轮 400
+  let msgs = sanitizeToolHistory(history).slice(-MAX_MSGS);
   // 定长切片可能正好从一条 tool 结果开始：OpenAI/DeepSeek 兼容端点要求 role=tool
   // 必须紧跟带 tool_calls 的 assistant，否则整轮直接 400。历史是持久化且不限长的，
   // 用过工具/日记/文件的长会话迟早会踩到。
-  while (msgs.length > 0 && msgs[0].role === "tool") msgs = msgs.slice(1);
+  msgs = sanitizeToolHistory(msgs);
   let total = msgs.reduce((s, m) => s + (m.content?.length ?? 0), 0);
   while (msgs.length > 2 && total > MAX_CHARS) {
     // 若下一条是 tool 消息，说明当前是带 tool_calls 的 assistant，不能删
@@ -541,6 +593,8 @@ function buildMessages(
     total -= msgs[0].content?.length ?? 0;
     msgs = msgs.slice(1);
   }
+  // 字符裁剪同样可能裁出孤立 tool（比如裁掉 assistant 那一轮）
+  msgs = sanitizeToolHistory(msgs);
   // systemOverride：轻量调用（如麻将实时点评）用它替代完整系统提示，省掉 BASE_PROMPT 与记忆
   const system = systemOverride || systemPrompt(persona, memory, extraContext);
   return [{ role: "system", content: system }, ...msgs];
@@ -598,31 +652,56 @@ export async function chatStream(
   const inputTokens = estimateTokens(JSON.stringify(messages)) + (enableTools ? estimateToolsTokens() : 0) + 4;
   // 支持流式 usage 回传的提供商白名单（其余端点可能拒绝未知字段）
   const supportsStreamUsage = USAGE_STREAM_PROVIDERS.has(provider);
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: m,
-      messages: attachScreenImage(messages, requestOptions.screenImage),
-      // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
-      // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
-      ...(enableTools ? { tools: TOOLS } : {}),
-      ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
-      ...(requestOptions.maxOutputTokens ? { max_tokens: requestOptions.maxOutputTokens } : {}),
-      // MiniMax：让思考内容与正文分离（详见 isMiniMaxEndpoint 的说明）。
-      // 只对 MiniMax 端点发送，避免其他兼容端点拒绝未知字段。
-      ...(isMiniMaxEndpoint(base) ? { reasoning_split: true } : {}),
-      stream: true,
-    }),
-    signal: requestOptions.signal,
+  const requestBody = JSON.stringify({
+    model: m,
+    messages: attachScreenImage(messages, requestOptions.screenImage),
+    // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
+    // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
+    ...(enableTools ? { tools: TOOLS } : {}),
+    ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
+    ...(requestOptions.maxOutputTokens ? { max_tokens: requestOptions.maxOutputTokens } : {}),
+    // MiniMax：让思考内容与正文分离（详见 isMiniMaxEndpoint 的说明）。
+    // 只对 MiniMax 端点发送，避免其他兼容端点拒绝未知字段。
+    ...(isMiniMaxEndpoint(base) ? { reasoning_split: true } : {}),
+    stream: true,
   });
-  if (!res.ok || !res.body) {
-    const errText = await res.text().catch(() => "");
+  // 偶发失败自动重试：限流(429)、网关/服务端 5xx、408、以及网络层直接失败，
+  // 都是"过一会儿再发就好了"的类型 —— 以前只能弹错误让用户手动重发。
+  // 注意只在**还没开始接收流**时重试，避免把已经吐出来的文字重复一遍。
+  let res: Response | null = null;
+  let errText = "";
+  const netErrors: string[] = [];
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      res = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: requestBody,
+        signal: requestOptions.signal,
+      });
+    } catch (e) {
+      if (requestOptions.signal?.aborted) throw e;
+      netErrors.push(e instanceof Error ? e.message : String(e));
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+        continue;
+      }
+      throw new Error(`网络错误：${netErrors[netErrors.length - 1] || "请求失败"}（已重试 ${netErrors.length} 次）`);
+    }
+    if (res.ok && res.body) break;
+    errText = await res.text().catch(() => "");
+    if (isRetryableStatus(res.status) && attempt < RETRY_DELAYS_MS.length) {
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok || !res.body) {
     const hint = provider === "custom" ? " (自定义端点请确认URL是否正确，部分API需要/v1后缀)" : "";
-    throw new Error(`API 错误 ${res.status}${hint}: ${errText.slice(0, 200)}`);
+    throw new Error(`API 错误 ${res ? res.status : 0}${hint}: ${errText.slice(0, 200)}`);
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
