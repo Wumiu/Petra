@@ -277,7 +277,7 @@ export class RiichiSoundController {
   private fade(audio: HTMLAudioElement, target: number, durationMs: number, done?: () => void): void {
     this.cancelFade(audio);
     if (durationMs <= 0) {
-      audio.volume = target;
+      audio.volume = this.clampVolume(target, 0);
       done?.();
       return;
     }
@@ -285,8 +285,12 @@ export class RiichiSoundController {
     const from = audio.volume;
     const tick = (now: number) => {
       if (this.disposed) return;
-      const progress = Math.min(1, (now - start) / durationMs);
-      audio.volume = from + (target - from) * progress;
+      // 上下界都要夹：requestAnimationFrame 回调的 now 可能**早于**这里的 start
+      // （同一帧里先排队的回调），只 Math.min 的话 progress 会变成负数，
+      // 音量算出 -0.0003 这种值 → audio.volume 直接抛 IndexSizeError。
+      const progress = Math.max(0, Math.min(1, (now - start) / durationMs));
+      // 再兜一层：from / target 理论上已在 [0,1]，外部把配置改坏时也不该炸在赋值上
+      audio.volume = this.clampVolume(from + (target - from) * progress, target);
       if (progress >= 1) {
         this.fadeTimers.delete(audio);
         done?.();

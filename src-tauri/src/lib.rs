@@ -90,7 +90,7 @@ mod panel;
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -217,30 +217,235 @@ static LOG_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
 /// 默认 debug 构建开、release 关；用户可在右键菜单「诊断日志」里切换，选择存到 logs/verbose。
 static VERBOSE_LOG: AtomicBool = AtomicBool::new(false);
 
-/// 日志文件上限：超过就在启动时轮转成 pet.log.1（只留一份备份）。
-/// 之前只增不减，实测一个月就 500KB+，且 74% 是交互噪声。
-const LOG_MAX_BYTES: u64 = 1_000_000;
+/// 日志事件用的 AppHandle：ERROR 级别日志会向前端 emit 一条 `petra:log-error`，
+/// 由桌宠在模型上方弹红色提示（前端不可见时只写日志，不弹）。
+static LOG_EVENT_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// 前端心跳时间戳（毫秒）。前端每 5 秒 invoke 一次 app_heartbeat；
+/// 看门狗发现长时间不跳 => 界面卡死/白屏（WebView 渲染进程崩了、主线程被同步任务堵死等），
+/// 这类情况 JS 层根本发不出错误，只能靠外部观察。
+static LAST_BEAT_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// 反馈邮件/导出里附带的日志上限（超长只保留开头 + 结尾）
 const LOG_ATTACH_MAX_CHARS: usize = 120_000;
+/// 单次运行 lasted.log 的硬上限：长时间不关程序时，超了就截掉最早的内容
+const LASTED_TRIM_BYTES: u64 = 20_000_000;
+/// error.log 上限：错误日志带上下文，容易涨；超了只留后半段
+const ERROR_TRIM_BYTES: u64 = 2_000_000;
+/// 归档最多保留多少份
+const LOG_ARCHIVE_KEEP: usize = 15;
+
+/// 最近若干行日志（给 error.log 做"错误发生前的上下文"）
+static RECENT_LINES: std::sync::Mutex<std::collections::VecDeque<String>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// 上一行日志的日期，用于跨天时插一条"日期变更"分隔
+static LAST_DATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// 判断目录能否写（日志必须可写，否则等于没有日志）。
+fn ensure_dir_writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".petra-write-test");
+    match std::fs::write(&probe, b"ok") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 日志目录：优先「程序根目录/logs」，不可写时退回用户数据目录。
+///
+/// dev 下 exe 在 `src-tauri/target/debug`，直接用它会把日志写进 build 目录
+/// （cargo clean 就没了），所以向上找含 `src-tauri` 的仓库根当程序根目录。
+fn resolve_log_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    use tauri::Manager;
+
+    // 显式覆盖：排查/测试时用 PETRA_LOG_DIR 指定
+    if let Ok(dir) = std::env::var("PETRA_LOG_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        if ensure_dir_writable(&dir) {
+            return dir;
+        }
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    if let Some(exe_dir) = exe_dir {
+        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+        // 开发构建：<repo>/src-tauri/target/debug → <repo>
+        let mut probe = exe_dir.clone();
+        for _ in 0..4 {
+            if probe.join("src-tauri").is_dir() {
+                roots.push(probe.clone());
+                break;
+            }
+            match probe.parent() {
+                Some(p) => probe = p.to_path_buf(),
+                None => break,
+            }
+        }
+        roots.push(exe_dir.clone());
+        for root in roots {
+            let dir = root.join("logs");
+            if ensure_dir_writable(&dir) {
+                return dir;
+            }
+        }
+    }
+
+    // 兜底：用户数据目录（安装到 Program Files 这类不可写位置时）
+    let fallback = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("logs"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("pet-logs"));
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
+}
+
+/// 把旧位置（用户数据目录）的日志搬到新位置，只在第一次切换时做一次。
+fn migrate_old_logs(old_dir: &std::path::Path, new_dir: &std::path::Path) {
+    if old_dir == new_dir || new_dir.join("lasted.log").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(old_dir) else { return };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        if !src.is_file() {
+            continue;
+        }
+        let dst = new_dir.join(src.file_name().unwrap_or_default());
+        if dst.exists() {
+            continue;
+        }
+        if std::fs::rename(&src, &dst).is_err() {
+            if std::fs::copy(&src, &dst).is_ok() {
+                let _ = std::fs::remove_file(&src);
+            }
+        }
+    }
+}
 
 /// 本地时间戳：日志是给人看的，用可读时间而不是 unix 秒。
 fn stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// 追加写文件（失败不 panic：日志不能把主流程带崩）
+fn append_file(path: &std::path::Path, text: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
+/// 文件超过上限时只保留后半段（截断时加一行提示）
+fn trim_file(path: &std::path::Path, max: u64) {
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    if meta.len() <= max {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let keep = (max / 2) as usize;
+    if text.len() <= keep {
+        return;
+    }
+    let mut cut = text.len() - keep;
+    // 从字符边界开始，避免切坏 UTF-8
+    while cut < text.len() && !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let tail = format!("[{}] [INFO] （日志过长，已截断更早的内容）\n{}", stamp(), &text[cut..]);
+    let _ = std::fs::write(path, tail);
+}
+
 /// 写一行日志：`[时间] [级别] 内容`。verbose 行只在「详细日志」开启时落盘。
+///
+/// 落盘规则：
+///   - 所有内容进 `lasted.log`（本次启动的完整运行记录）；
+///   - WARN / ERROR 另外写进 `error.log`，并附上最近 80 行上下文，
+///     方便定位"错误发生之前发生了什么"。
 fn log_write(level: &str, verbose: bool, s: &str) {
+    log_write_ex(level, verbose, s, true);
+}
+
+/// emit=false 用于 panic hook：panic 过程中不要再跨线程发事件。
+fn log_write_ex(level: &str, verbose: bool, s: &str, emit: bool) {
     if verbose && !VERBOSE_LOG.load(Ordering::Relaxed) {
         return;
     }
     println!("[pet-debug][{level}] {s}");
-    if let Some(dir) = LOG_DIR.get() {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join("pet.log"))
-        {
-            let _ = writeln!(f, "[{}] [{level}] {s}", stamp());
+    let Some(dir) = LOG_DIR.get() else { return };
+
+    let time = stamp();
+    let line = format!("[{time}] [{level}] {s}");
+    let date = time.get(..10).unwrap_or("").to_string();
+
+    // 跨天仍在运行时补一条日期分隔，读日志时不会把两天混在一起
+    let mut marker = String::new();
+    if let Ok(mut last) = LAST_DATE.lock() {
+        if !last.is_empty() && *last != date {
+            marker = format!("===== 日期变更 {date} =====\n");
+        }
+        *last = date;
+    }
+
+    let lasted = dir.join("lasted.log");
+    append_file(&lasted, &format!("{marker}{line}\n"));
+    trim_file(&lasted, LASTED_TRIM_BYTES);
+
+    if level == "WARN" || level == "ERROR" {
+        let mut block = format!("===== {time} {level} =====\n");
+        if let Ok(ring) = RECENT_LINES.lock() {
+            for l in ring.iter() {
+                block.push_str(l);
+                block.push('\n');
+            }
+        }
+        block.push_str(&line);
+        block.push_str("\n\n");
+        let err_path = dir.join("error.log");
+        append_file(&err_path, &block);
+        trim_file(&err_path, ERROR_TRIM_BYTES);
+    }
+
+    // ERROR 级别推给前端弹红条。歌词拉取失败属于高频噪声，前端不弹（这里照常落盘）。
+    if emit && level == "ERROR" && !s.starts_with("[lyrics]") {
+        if let Some(app) = LOG_EVENT_HANDLE.get() {
+            let _ = app.emit(
+                "petra:log-error",
+                serde_json::json!({ "text": s, "at": time }),
+            );
+        }
+    }
+
+    // 关键 WARN（异常退出 / 前端无心跳）也推给前端，橙色提示。
+    if emit && level == "WARN" && warn_needs_popup(s) {
+        if let Some(app) = LOG_EVENT_HANDLE.get() {
+            let _ = app.emit(
+                "petra:log-warn",
+                serde_json::json!({ "text": s, "at": time }),
+            );
+        }
+    }
+
+    // 环形缓冲也收 DEBUG：详细日志开着时，这些操作细节正是事后定位问题的上下文。
+    // （verbose 关闭时 DEBUG 根本走不到这里，不占内存）
+    if let Ok(mut ring) = RECENT_LINES.lock() {
+        ring.push_back(line);
+        while ring.len() > 80 {
+            ring.pop_front();
         }
     }
 }
@@ -256,6 +461,15 @@ fn log_verbose(s: &str) {
 }
 
 /// 需要注意但不致命
+/// 哪些 WARN 值得打断用户（橙色提示）。
+///
+/// 平台降级（Wayland 定位、屏幕回环、SMTC）、内部容量（交互区域截断）、
+/// 回收站失败这类只写日志：它们要么每次启动都出现，要么用户操作时才出现，
+/// 全都弹窗会把真正重要的提示淹掉。
+fn warn_needs_popup(s: &str) -> bool {
+    s.starts_with("[boot] 上次运行没有正常退出") || s.starts_with("[watchdog]")
+}
+
 fn log_warn(s: &str) {
     log_write("WARN", false, s);
 }
@@ -265,16 +479,141 @@ fn log_error(s: &str) {
     log_write("ERROR", false, s);
 }
 
-/// 启动时轮转：pet.log 超过上限就改名成 pet.log.1（覆盖上一份备份）
-fn rotate_log(dir: &std::path::Path) {
-    let path = dir.join("pet.log");
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    if size <= LOG_MAX_BYTES {
+/// 归档名里的时间片段：优先用 lasted.log 第一行的时间（= 上次启动时刻）。
+fn archive_stamp(dir: &std::path::Path) -> String {
+    if let Ok(text) = std::fs::read_to_string(dir.join("lasted.log")) {
+        if let Some(line) = text.lines().next() {
+            // [2026-10-24 16:58:07] → 2026-10-24_16-58-07
+            // 精确到秒：只到分钟的话，同一分钟内重启两次会撞名；
+            // 用 get 而不是切片，避免畸形首行正好切在多字节字符中间。
+            if line.starts_with('[') {
+                if let Some(t) = line.get(1..20) {
+                    return t.replace(' ', "_").replace(':', "-");
+                }
+            }
+        }
+    }
+    let s = stamp();
+    s.get(..19).unwrap_or(&s).replace(' ', "_").replace(':', "-")
+}
+
+/// 把上次运行的 lasted.log / error.log 以日期命名压成 zip，并只保留最近 15 份。
+fn archive_logs(dir: &std::path::Path) {
+    // 迁移历史文件：更早叫 pet.log，上一版叫 lasted.txt，都接过来别丢
+    let lasted_path = dir.join("lasted.log");
+    if !lasted_path.exists() {
+        for legacy in [dir.join("pet.log"), dir.join("lasted.txt")] {
+            if legacy.exists() {
+                let _ = std::fs::rename(&legacy, &lasted_path);
+                break;
+            }
+        }
+    }
+    let error_path = dir.join("error.log");
+    if !error_path.exists() && dir.join("error.txt").exists() {
+        let _ = std::fs::rename(dir.join("error.txt"), &error_path);
+    }
+    // lasted.log 已存在但还留着上一版的 lasted.txt（升级后第一次重启就是这种状态）：
+    // 把旧内容接在 lasted.log 末尾再删掉，否则它会永远躺在日志目录里占地方。
+    absorb_legacy_txt(dir, &lasted_path);
+
+    let non_empty = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false);
+    if !non_empty(&lasted_path) && !non_empty(&error_path) {
+        let _ = std::fs::remove_file(&error_path);
         return;
     }
-    let backup = dir.join("pet.log.1");
-    let _ = std::fs::remove_file(&backup);
-    let _ = std::fs::rename(&path, &backup);
+
+    let name = archive_stamp(dir);
+    // 同一分钟内可能启动多次（崩溃后自动重启、用户连点重启）：
+    // 直接 File::create 会把上一份归档截断，所以同名的自动加 -2、-3
+    let zip_path = unique_archive_path(dir, &format!("lasted-{name}"), "zip");
+    let zip_ok = (|| -> std::io::Result<()> {
+        let file = std::fs::File::create(&zip_path)?;
+        let mut zw = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (entry, path) in [("lasted.log", &lasted_path), ("error.log", &error_path)] {
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            if bytes.is_empty() {
+                continue;
+            }
+            zw.start_file(format!("{}_{}.log", entry.trim_end_matches(".log"), name), opts)
+                .map_err(std::io::Error::other)?;
+            zw.write_all(&bytes)?;
+        }
+        zw.finish().map_err(std::io::Error::other)?;
+        Ok(())
+    })();
+
+    if zip_ok.is_ok() {
+        let _ = std::fs::remove_file(&lasted_path);
+        let _ = std::fs::remove_file(&error_path);
+        log_line(&format!(
+            "上次运行的日志已归档：{}",
+            zip_path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+    } else {
+        // 压缩失败也不能让日志无限堆：半截 zip 删掉，正文直接改名保留
+        let _ = std::fs::remove_file(&zip_path);
+        let _ = std::fs::rename(&lasted_path, unique_archive_path(dir, &format!("lasted-{name}"), "log"));
+        if std::fs::metadata(&error_path).map(|m| m.len() > 0).unwrap_or(false) {
+            let _ = std::fs::rename(&error_path, unique_archive_path(dir, &format!("error-{name}"), "log"));
+        } else {
+            let _ = std::fs::remove_file(&error_path);
+        }
+    }
+
+    prune_archives(dir);
+}
+
+/// 把上一版遗留的 lasted.txt 并进 lasted.log（只会在升级后的第一次启动触发一次）。
+fn absorb_legacy_txt(dir: &std::path::Path, lasted: &std::path::Path) {
+    let legacy = dir.join("lasted.txt");
+    let Ok(old) = std::fs::read_to_string(&legacy) else { return };
+    if old.trim().is_empty() {
+        let _ = std::fs::remove_file(&legacy);
+        return;
+    }
+    append_file(
+        lasted,
+        &format!("===== 以下为上一版 lasted.txt 迁移内容 =====\n{old}"),
+    );
+    let _ = std::fs::remove_file(&legacy);
+}
+
+/// 归档文件名去重：`lasted-<时间>.zip` 已存在就试 `-2`、`-3`…
+fn unique_archive_path(dir: &std::path::Path, stem: &str, ext: &str) -> std::path::PathBuf {
+    let mut path = dir.join(format!("{stem}.{ext}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{stem}-{n}.{ext}"));
+        n += 1;
+    }
+    path
+}
+
+/// 归档只保留最近 15 份（按修改时间倒序）
+fn prune_archives(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut zips: Vec<(std::path::PathBuf, std::time::SystemTime)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let name = path.file_name()?.to_string_lossy().to_string();
+            if !name.starts_with("lasted-") || !(name.ends_with(".zip") || name.ends_with(".log")) {
+                return None;
+            }
+            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            Some((path, mtime))
+        })
+        .collect();
+    if zips.len() <= LOG_ARCHIVE_KEEP {
+        return;
+    }
+    zips.sort_by(|a, b| b.1.cmp(&a.1));
+    for (path, _) in zips.into_iter().skip(LOG_ARCHIVE_KEEP) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// 「详细日志」开关：默认 debug 构建开、release 关；
@@ -282,6 +621,126 @@ fn rotate_log(dir: &std::path::Path) {
 fn verbose_log_enabled() -> bool {
     cfg!(debug_assertions) || std::env::var("PETRA_VERBOSE_LOG").map(|v| v == "1").unwrap_or(false)
 }
+
+// ---------- 盲区观测：运行状态 / 心跳 / 内存 ----------
+
+fn run_state_path() -> Option<std::path::PathBuf> {
+    LOG_DIR.get().map(|d| d.join("run-state.json"))
+}
+
+/// 记录"应用正在运行"。正常退出时会改写成 false；
+/// 下次启动若发现上次仍是 true，说明上次没走正常退出（崩溃 / 被强杀 / 断电）。
+fn save_run_state(running: bool) {
+    let Some(path) = run_state_path() else { return };
+    let _ = std::fs::write(path, format!("{{\"running\":{running},\"at\":{}}}", now_ms()));
+}
+
+fn log_previous_run_state() {
+    let Some(path) = run_state_path() else { return };
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        if text.contains("\"running\":true") {
+            log_warn("[boot] 上次运行没有正常退出（崩溃 / 被强制结束 / 断电），本次启动前请留意末尾日志");
+        }
+    }
+    save_run_state(true);
+}
+
+/// 前端心跳（每 5 秒一次）。看门狗据此判断界面是否还活着。
+#[tauri::command]
+fn app_heartbeat() {
+    LAST_BEAT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
+/// 看门狗：前端超过 25 秒没心跳就记一条（只记一次，恢复时再记一条）。
+/// WebView 渲染进程崩溃 / 主线程卡死时 JS 发不出任何错误，这是唯一能留下线索的地方。
+fn spawn_heartbeat_watchdog(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut warned = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            // 窗口隐藏/最小化时 WebView 会节流定时器，心跳变慢是正常现象，
+            // 不能当成"卡死"。这里只在窗口可见时判定。
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(true);
+            if !visible {
+                warned = false;
+                continue;
+            }
+            let last = LAST_BEAT_MS.load(Ordering::Relaxed);
+            if last == 0 {
+                continue; // 前端还没起来
+            }
+            let idle = now_ms().saturating_sub(last);
+            if idle > 25_000 {
+                if !warned {
+                    warned = true;
+                    log_warn(&format!(
+                        "[watchdog] 前端 {:.0} 秒没有心跳（界面可能卡死或白屏）",
+                        idle as f64 / 1000.0
+                    ));
+                }
+            } else if warned {
+                warned = false;
+                log_line("[watchdog] 前端心跳恢复");
+            }
+        }
+    });
+}
+
+/// 当前进程内存（工作集 MB，私有字节 MB）。
+#[cfg(windows)]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    use windows::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    // EX 版本才带 PrivateUsage；函数签名收的是 COUNTERS 指针，按 EX 的大小传即可
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let ok = unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            &mut counters as *mut _ as *mut PROCESS_MEMORY_COUNTERS,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        )
+    };
+    ok.ok()
+        .map(|_| (counters.WorkingSetSize as u64 / 1_048_576, counters.PrivateUsage as u64 / 1_048_576))
+}
+
+/// Linux：/proc/self/statm 里前两个字段是总页数、常驻页数。
+#[cfg(target_os = "linux")]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    let text = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let mut it = text.split_whitespace();
+    let _total: u64 = it.next()?.parse().ok()?;
+    let resident: u64 = it.next()?.parse().ok()?;
+    let mb = resident * 4096 / 1_048_576;
+    Some((mb, mb))
+}
+
+/// macOS：暂不采集（需要 mach task_info，收益不如前两个平台明显）。
+#[cfg(target_os = "macos")]
+fn current_memory_mb() -> Option<(u64, u64)> {
+    None
+}
+
+/// 每 5 分钟记一次内存；超过 1.5GB 用 WARN，方便事后判断"是不是内存涨爆的"。
+fn spawn_memory_sampler() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(300));
+        let Some((working, private)) = current_memory_mb() else { continue };
+        if working >= 1500 {
+            log_warn(&format!(
+                "[mem] 工作集 {working} MB / 私有 {private} MB（偏高，留意内存泄漏）"
+            ));
+        } else {
+            log_line(&format!("[mem] 工作集 {working} MB / 私有 {private} MB"));
+        }
+    });
+}
+
 
 #[cfg(test)]
 mod log_tests {
@@ -317,24 +776,68 @@ mod log_tests {
     }
 
     #[test]
-    fn rotate_log_only_when_too_big() {
-        let dir = std::env::temp_dir().join(format!("petra-log-test-{}", std::process::id()));
+    fn trim_file_keeps_tail_only() {
+        let dir = std::env::temp_dir().join(format!("petra-trim-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lasted.log");
+        let mut text = String::new();
+        for i in 0..5000 {
+            text.push_str(&format!("[2026-10-24 10:00:00] [INFO] 第 {i} 行\n"));
+        }
+        std::fs::write(&path, &text).unwrap();
+        trim_file(&path, 4096);
+        let kept = std::fs::read_to_string(&path).unwrap();
+        assert!(kept.len() <= 4096, "截断后应不超过上限，实际 {}", kept.len());
+        assert!(kept.contains("第 4999 行"), "保留最新内容");
+        assert!(kept.contains("已截断"), "有截断提示");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // 小文件不轮转
-        std::fs::write(dir.join("pet.log"), b"small").unwrap();
-        rotate_log(&dir);
-        assert!(dir.join("pet.log").exists());
-        assert!(!dir.join("pet.log.1").exists());
+    #[test]
+    fn unique_archive_path_avoids_overwrite() {
+        let dir = std::env::temp_dir().join(format!("petra-unique-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(first.to_string_lossy().ends_with("lasted-2026-10-24_17-03-05.zip"));
+        std::fs::write(&first, b"x").unwrap();
+        let second = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(second.to_string_lossy().ends_with("lasted-2026-10-24_17-03-05-2.zip"), "同名要加序号，实际 {second:?}");
+        std::fs::write(&second, b"x").unwrap();
+        let third = unique_archive_path(&dir, "lasted-2026-10-24_17-03-05", "zip");
+        assert!(third.to_string_lossy().ends_with("-3.zip"), "第三次应是 -3，实际 {third:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
-        // 超过上限则轮转，旧备份被覆盖
-        std::fs::write(dir.join("pet.log"), vec![b'a'; (LOG_MAX_BYTES + 1) as usize]).unwrap();
-        std::fs::write(dir.join("pet.log.1"), b"old").unwrap();
-        rotate_log(&dir);
-        assert!(!dir.join("pet.log").exists(), "pet.log 被改名");
-        assert_eq!(std::fs::metadata(dir.join("pet.log.1")).unwrap().len(), LOG_MAX_BYTES + 1);
+    #[test]
+    fn prune_keeps_only_fifteen() {
+        let dir = std::env::temp_dir().join(format!("petra-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..20 {
+            let path = dir.join(format!("lasted-2026-10-{i:02}_10-00.zip"));
+            std::fs::write(&path, b"x").unwrap();
+            // 拉开修改时间，避免同一毫秒内排序不稳定
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        prune_archives(&dir);
+        let left = std::fs::read_dir(&dir).unwrap().count();
+        assert_eq!(left, LOG_ARCHIVE_KEEP, "应只保留 15 份，实际 {left}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    #[test]
+    fn archive_stamp_uses_first_log_time() {
+        let dir = std::env::temp_dir().join(format!("petra-stamp-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lasted.log"),
+            "[2026-10-24 16:58:07] [INFO] === pet started ===\n",
+        )
+        .unwrap();
+        assert_eq!(archive_stamp(&dir), "2026-10-24_16-58-07");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -595,6 +1098,55 @@ fn debug_mark(msg: String) {
     log_line(&msg);
 }
 
+/// 验证「panic 也会写进日志」用：仅在 debug 构建里真的 panic。
+/// 前端可以通过 `invoke("debug_panic_test")` 触发一次，确认 pet.log 里出现
+/// `[panic] ... @ 文件:行:列` —— 发布版会直接返回错误，不会崩。
+#[tauri::command]
+fn debug_panic_test() -> Result<(), String> {
+    // 用 cfg 而不是运行时判断：发布版里连 panic 字符串都不会编进二进制。
+    // 命令本身保留（否则 generate_handler! 的列表要分叉），发布版只返回错误。
+    #[cfg(debug_assertions)]
+    {
+        panic!("这是一条用于验证日志的测试 panic（debug_panic_test）");
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        Err("仅调试构建可用".into())
+    }
+}
+
+
+/// 测试用：写一条 WARN 级别日志（白名单内的会触发橙色提示）。
+/// 仅 debug 构建可用；发布版直接返回错误，不写日志。
+#[tauri::command]
+fn debug_log_warn(msg: String) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        log_warn(&msg);
+        Ok(())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = msg;
+        Err("仅调试构建可用".into())
+    }
+}
+
+/// 测试用：写一条 ERROR 级别日志（会触发前端红色提示条）。
+/// 仅 debug 构建可用；发布版直接返回错误，不写日志。
+#[tauri::command]
+fn debug_log_error(msg: String) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        log_error(&msg);
+        Ok(())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = msg;
+        Err("仅调试构建可用".into())
+    }
+}
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -1961,10 +2513,11 @@ fn collect_session_log() -> String {
     let Some(dir) = LOG_DIR.get() else {
         return "（无日志）\n".into();
     };
-    let path = dir.join("pet.log");
+    let path = dir.join("lasted.log");
     let Ok(bytes) = std::fs::read(&path) else {
         return "（无日志）\n".into();
     };
+    // 日志被 trim_file 截断过时 offset 可能比文件还大，这时 min 会退化成从头读
     let offset = LOG_START_OFFSET.get().copied().unwrap_or(0) as usize;
     let start = offset.min(bytes.len());
     let text = String::from_utf8_lossy(&bytes[start..]).to_string();
@@ -2391,7 +2944,7 @@ fn send_notification(title: String, body: String) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 发送系统通知。macOS 用 osascript 的 display notification，走系统通知中心。
@@ -2415,7 +2968,7 @@ fn send_notification(title: String, body: String) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 发送系统通知（Linux）：notify-send → org.freedesktop.Notifications。
@@ -2438,7 +2991,7 @@ fn send_notification(title: String, body: String) {
     {
         log_verbose(&format!("send_notification: notify-send 不可用: {e}"));
     }
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 天气查询脚本。`@PROXY@=0` 时绕过系统代理直连。
@@ -3083,7 +3636,7 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             let retry = proxy.is_some() && (pass.body.is_empty() || pass.enc || pass.errs > 0);
             if retry {
                 crate::log_line(&format!(
-                    "[lyrics] 直连未取到（enc={} errs={}），改用系统代理重试：{t} - {a}",
+                    "[lyrics] 直连未取到（enc={} errs={}），改用系统代理重试",
                     pass.enc as u8, pass.errs
                 ));
                 let second = run_pass("0");
@@ -3102,7 +3655,13 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             } else {
                 pass.detail.clone()
             };
-            crate::log_error(&format!("[lyrics] 取歌词失败 {t} - {a}（{mode}）：{detail}"));
+            // 脚本的报错里可能带着请求 URL（含编码后的歌名），落盘前把歌名/歌手抹掉
+            let safe_detail = if t.is_empty() {
+                detail.clone()
+            } else {
+                detail.replace(t.as_str(), "***").replace(a.as_str(), "***")
+            };
+            crate::log_error(&format!("[lyrics] 取歌词失败（{mode}）：{safe_detail}"));
             return Err(format!("歌词接口无响应（{detail}）"));
         }
         // 成功也记一行：便于区分"接口没查到"与"接口坏了"
@@ -3116,7 +3675,7 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             "LRCLIB"
         };
         crate::log_line(&format!(
-            "[lyrics] {t} - {a} → {} 字节，{}，来源{}（{mode}，命中 {} 条）",
+            "[lyrics] 取歌词 → {} 字节，{}，来源{}（{mode}，命中 {} 条）",
             pass.body.len(),
             if pass.body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
             src,
@@ -4647,7 +5206,7 @@ pub fn run() {
     // updater 插件在 dev / release 都注册，使 tauri dev 下也能真实测试 check() 网络链路。
     // 开发版禁止实际安装由前端 import.meta.env.DEV 保护（见 UpdateManager.performUpdate）。
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
-    builder
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二次启动：把主窗口拉到前台
             if let Some(w) = app.get_webview_window("main") {
@@ -4693,7 +5252,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
-            quit_app, restart_app, debug_mark, read_file_bytes, save_psd,
+            quit_app, restart_app, debug_mark, debug_panic_test, debug_log_error, debug_log_warn, app_heartbeat, read_file_bytes, save_psd,
             export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
@@ -4718,21 +5277,22 @@ pub fn run() {
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {
-                let dir = app
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::env::temp_dir().join("pet-logs"))
-                    .join("logs");
-                let _ = std::fs::create_dir_all(&dir);
+                let dir = resolve_log_dir(app.handle());
+                // 旧版本把日志放在用户数据目录：第一次启动时搬到「程序根目录/logs」
+                if let Ok(legacy) = app.path().app_data_dir() {
+                    migrate_old_logs(&legacy.join("logs"), &dir);
+                }
                 dir
             });
-            // 先轮转再取偏移：顺序不能反，否则偏移会指向已经被改名走的旧文件
-            rotate_log(log_dir);
+            // ERROR 日志要推给前端弹提示，这里登记 AppHandle
+            let _ = LOG_EVENT_HANDLE.set(app.handle().clone());
+            // 先归档上次日志再取偏移：顺序不能反，否则偏移会指向已经被归档走的旧文件
+            archive_logs(log_dir);
             // 详细日志开关：debug 构建或 PETRA_VERBOSE_LOG=1 时记录高频埋点
             let verbose = verbose_log_enabled();
             VERBOSE_LOG.store(verbose, Ordering::Relaxed);
             // 记录本次启动日志起始偏移（反馈只附本次启动后的日志）
-            let offset = std::fs::metadata(log_dir.join("pet.log"))
+            let offset = std::fs::metadata(log_dir.join("lasted.log"))
                 .map(|m| m.len())
                 .unwrap_or(0);
             LOG_START_OFFSET.get_or_init(|| offset);
@@ -4743,6 +5303,38 @@ pub fn run() {
                 if verbose { "，详细日志开" } else { "" }
             ));
             log_environment();
+
+            // 崩溃也要落日志：后端线程 panic 时日志里原本一个字都没有，
+            // 只能靠"功能突然不工作"去猜。这里把 panic 内容和文件:行号写进 pet.log，
+            // 同时保留默认输出（stderr + RUST_BACKTRACE），不影响原有排查方式。
+            {
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let location = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_else(|| "未知位置".to_string());
+                    let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "非字符串 panic".to_string()
+                    };
+                    let line = format!("[panic] {payload} @ {location}");
+                    // hook 里再 panic 会直接 abort，兜一层
+                    let _ = std::panic::catch_unwind(|| log_write_ex("ERROR", false, &line, false));
+                    previous(info);
+                }));
+            }
+
+            // 盲区观测：上次是否正常退出 + 前端心跳看门狗 + 内存采样
+            log_previous_run_state();
+            spawn_heartbeat_watchdog(app.handle().clone());
+            spawn_memory_sampler();
+            if let Some((working, private)) = current_memory_mb() {
+                log_line(&format!("[mem] 启动时工作集 {working} MB / 私有 {private} MB"));
+            }
 
             // 开发自测：PETRA_PANEL_AUTOSTART=1 时开机就把控制面板服务拉起来，并把带 token
             // 的地址写进日志 —— 这样不用点菜单也能用 curl 验接口（也方便反复调试面板）。
@@ -4793,8 +5385,16 @@ pub fn run() {
             std::thread::spawn(move || audio::start_loopback_capture(handle, enabled));
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_handle, event| {
+        // 正常退出标记：下次启动据此判断上次是正常关闭还是崩溃/被强杀
+        if let tauri::RunEvent::Exit = event {
+            log_line("=== pet exit normal ===");
+            save_run_state(false);
+        }
+    });
 }
 
 #[cfg(test)]

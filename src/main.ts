@@ -3,19 +3,99 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition, PhysicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-// 启动错误捕获：崩溃时直接显示在屏幕上
-window.addEventListener("error", (e) => {
+// ---------- 前端日志：把"看不见的"错误也写进 lasted.log ----------
+// 只弹提示不记日志的话，用户遇到问题时日志里一行都没有，事后完全无法排查。
+// 这里统一收三类：未捕获异常、资源加载失败、console.error/warn。
+const FRONTEND_ERROR_CLASS = "fe-error-banner";
+
+/** 一分钟内最多写多少行前端日志（防止某个报错在循环里把日志刷爆） */
+const FE_LOG_MAX_PER_MIN = 40;
+let feLogWindowStart = Date.now();
+let feLogCount = 0;
+let feLogLast = "";
+
+function feFormat(value: unknown): string {
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+  if (typeof value === "string") return value;
+  try {
+    const s = JSON.stringify(value);
+    return s && s.length < 600 ? s : String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 写一行前端日志到 lasted.log（带限流 + 连续重复合并） */
+function logFrontend(tag: string, text: string): void {
+  const now = Date.now();
+  if (now - feLogWindowStart > 60_000) {
+    feLogWindowStart = now;
+    feLogCount = 0;
+  }
+  if (feLogCount++ > FE_LOG_MAX_PER_MIN) return;
+  // 换行压成 |，免得日志被一条异常撕成十几行
+  const line = text.replace(/\s*\n\s*/g, " | ").slice(0, 1500);
+  if (line === feLogLast) return; // 连续重复只记一次
+  feLogLast = line;
+  void invoke("debug_mark", { msg: `[frontend:${tag}] ${line}` }).catch(() => {});
+}
+
+function showFrontendError(label: string, detail: string, background: string): void {
+  logFrontend("exception", `${label}: ${detail}`);
+  // 连环报错时最多留 3 条，避免把整个窗口刷满
+  if (document.querySelectorAll(`.${FRONTEND_ERROR_CLASS}`).length >= 3) return;
   const div = document.createElement("div");
-  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff0000;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
-  div.textContent = "启动错误: " + e.message + "\n" + (e.error?.stack || "");
+  div.className = FRONTEND_ERROR_CLASS;
+  div.style.cssText = `position:fixed;top:10px;left:10px;right:10px;background:${background};color:#fff;padding:10px 34px 10px 10px;font-size:12px;z-index:99999;white-space:pre-wrap;border-radius:6px;`;
+  div.textContent = `${label}: ${detail}`;
+  const close = document.createElement("button");
+  close.textContent = "✕";
+  close.title = "关闭（完整信息已写入日志 lasted.log）";
+  close.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:0;color:#fff;font-size:14px;cursor:pointer;padding:2px 4px;";
+  close.addEventListener("click", () => div.remove());
+  div.appendChild(close);
   document.body?.appendChild(div);
+}
+
+window.addEventListener("error", (e) => {
+  showFrontendError("启动错误", `${e.message}\n${e.error?.stack || ""}`, "#ff0000");
 });
 window.addEventListener("unhandledrejection", (e) => {
-  const div = document.createElement("div");
-  div.style.cssText = "position:fixed;top:10px;left:10px;right:10px;background:#ff6600;color:#fff;padding:10px;font-size:12px;z-index:99999;white-space:pre-wrap;";
-  div.textContent = "Promise错误: " + (e.reason?.message || e.reason);
-  document.body?.appendChild(div);
+  const reason = e.reason as { message?: string; stack?: string } | undefined;
+  showFrontendError("Promise错误", reason?.stack || reason?.message || String(e.reason), "#ff6600");
 });
+// 资源加载失败（图片/音频/脚本 404）不会冒泡到 window，只能在捕获阶段拿到；
+// 这类错误以前完全无感（表现为"没声音/没图"），现在至少日志里有记录。
+window.addEventListener(
+  "error",
+  (e) => {
+    const el = e.target as (HTMLElement & { src?: string; href?: string }) | null;
+    if (!el || typeof el.tagName !== "string") return; // 普通 JS 异常已在上面处理
+    const url = el.src || el.href || "";
+    logFrontend("resource", `<${el.tagName.toLowerCase()}> 加载失败：${url || "(无地址)"}`);
+  },
+  true,
+);
+// 心跳：Rust 侧看门狗据此判断界面是否还活着。
+// WebView 渲染进程崩溃或主线程被长任务堵死时，JS 一个错误都发不出来，
+// 只有"心跳停了"能留下线索（见 lib.rs 的 spawn_heartbeat_watchdog）。
+void invoke("app_heartbeat").catch(() => {});
+window.setInterval(() => {
+  void invoke("app_heartbeat").catch(() => {});
+}, 5000);
+
+// console.error / console.warn 也进日志：库和第三方代码往往只打控制台不抛异常
+for (const level of ["error", "warn"] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    try {
+      logFrontend(`console.${level}`, args.map(feFormat).join(" "));
+    } catch {
+      /* 日志本身不能影响主流程 */
+    }
+    original(...args);
+  };
+}
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
@@ -33,6 +113,7 @@ import { hasDrawnToday, getTodayDraw, dailyDraw } from "./features/card/DailyCar
 import { toggleDailyCardPanel } from "./features/card/DailyCardPanel";
 
 import { toast } from "./ui/Toast";
+import { initErrorPopup, showErrorPopup } from "./ui/ErrorPopup";
 import { ttsPlayer } from "./tts/TTSPlayer";
 import { copyText } from "./ui/clipboard";
 import { setVisibleRect, clampIntoRect, fitSizeInRect } from "./ui/visible";
@@ -764,9 +845,62 @@ function resetBoundsOnModelSwitch() {
   /* no-op：保留每个模型自己的边界松紧 */
 }
 
-async function makePsdView(bytes: Uint8Array): Promise<Rigged2DView> {
+/**
+ * PSD 自动绑定的提示：翻译 + 去重 + 降级为非红色样式。
+ *
+ * vendor 里的 rigger 用日文 push warnings，原来直接 `toast(w, "warn")`：
+ * 红条、"报错"观感、而且每次启动都会重新弹一遍（用户以为程序坏了）。
+ * 这些其实都是"缺图层 → 自动补齐"的正常兜底，所以：
+ *   1. 常见文案翻成中文；
+ *   2. 一律用 info 样式（真正致命的错误另有 toast）；
+ *   3. 按模型记住已提示过的文案，同一模型不再重复打扰。
+ */
+const RIG_WARN_STORAGE = "petra:rig-warned";
+
+function translateRigWarning(raw: string): string {
+  const rules: Array<[RegExp, string]> = [
+    [/不足する閉じ目を自動配置/, "闭眼图层不足，已自动补齐（可用「眼睛」差分条调整）"],
+    [/汎用閉じ口を自動配置/, "没有 mouth_close 图层，已自动补一个通用闭口（可用「嘴」差分条调整）"],
+    [/mouth_open \/ mouth_close がありません/, "模型里没有 mouth_open / mouth_close 图层"],
+    [/face レイヤーがありません/, "没有命名成 face 的图层，已把画布中央当作脸"],
+    [/eye_?close.*自動/, "闭眼图层是自动补的，可能与原画略有差异"],
+  ];
+  for (const [re, text] of rules) if (re.test(raw)) return text;
+  // 未收录的文案保留原文，但去掉"警告"的红色观感（由调用方统一用 info）
+  return raw;
+}
+
+function showRigWarnings(warnings: string[], modelKey: string): void {
+  if (warnings.length === 0) return;
+  let seen: Record<string, string[]> = {};
+  try {
+    seen = (JSON.parse(localStorage.getItem(RIG_WARN_STORAGE) ?? "{}") as Record<string, string[]>) ?? {};
+  } catch {
+    seen = {};
+  }
+  const known = new Set(seen[modelKey] ?? []);
+  const texts = warnings.map(translateRigWarning);
+  const fresh = texts.filter((t) => !known.has(t));
+  // 每次都记进 lasted.log（去重只影响"弹不弹"，日志里永远是全量，方便排查模型问题）
+  void invoke("debug_mark", { msg: `[psd] ${modelKey} 绑定提示：${texts.join("；")}` }).catch(() => {});
+  // 先记账再弹：即使 toast 抛错也不会导致下次重复
+  seen[modelKey] = Array.from(new Set([...(seen[modelKey] ?? []), ...texts])).slice(-40);
+  try {
+    localStorage.setItem(RIG_WARN_STORAGE, JSON.stringify(seen));
+  } catch {
+    /* localStorage 满了就算了，最多下次再提示一遍 */
+  }
+  if (fresh.length === 0) return;
+  if (fresh.length <= 2) {
+    for (const t of fresh) toast(t, "info");
+  } else {
+    toast(`${fresh[0]}（另有 ${fresh.length - 1} 条绑定提示）`, "info");
+  }
+}
+
+async function makePsdView(bytes: Uint8Array, modelKey = "default"): Promise<Rigged2DView> {
   const v = await Rigged2DView.create(bytes);
-  v.warnings.forEach((w) => toast(w, "warn"));
+  showRigWarnings(v.warnings, modelKey);
   return v;
 }
 
@@ -777,7 +911,7 @@ async function createView(): Promise<PetView> {
     try {
       const bytes = await invoke<number[]>("read_psd", { name: imported });
       currentModel = { type: "import", name: imported };
-      return await makePsdView(new Uint8Array(bytes));
+      return await makePsdView(new Uint8Array(bytes), imported);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[模型切换] 导入 PSD "${imported}" 加载失败：`, err);
@@ -798,7 +932,7 @@ async function createView(): Promise<PetView> {
         // 统一走 Rust 命令读取（dev/release 都通过 exe/resource 目录找文件）
         const bytes = await invoke<number[]>("read_builtin_psd", { name: file });
         currentModel = { type: "manifest", name: file };
-        return await makePsdView(new Uint8Array(bytes));
+        return await makePsdView(new Uint8Array(bytes), file);
       } catch (err) {
         console.error(`内置模型 ${file} 加载失败:`, err);
       }
@@ -898,7 +1032,7 @@ async function doReloadView() {
 // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）时模型会整块消失但 UI 还在，
 // 且没有任何自愈路径 —— 只能换模型或重启。这里自动重建一次。
 document.addEventListener("petra:webgl-lost", () => {
-  toast("显示上下文丢失了，正在重新加载模型…", "warn");
+  toast("显示上下文丢失了，正在重新加载模型…", "info");
   void reloadView().catch(() => toast("模型重新加载失败，可在菜单里换一个模型", "warn"));
 });
 
@@ -1047,7 +1181,7 @@ async function setupAssistantHotkeyListener() {
   await listen(ASSISTANT_HOTKEY_EVENT, async () => {
     const s = loadSettings();
     if (!s.assistant.enabled) {
-      toast("小助手模式没开，先右键开启再唤出", "warn");
+      toast("小助手模式没开，先右键开启再唤出", "info");
       return;
     }
     // 待机模式下：不弹对话框，改为在模型旁弹出"待机模式 开/关 + 睡着啦"小菜单
@@ -1219,6 +1353,10 @@ async function boot() {
         dueAt: lastGreetAt + greetIntervalMsNow(),
         timerArmed: greetTimer !== null,
       }),
+      // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
+      popupError: (text: string) => showErrorPopup("error", text),
+      popupWarn: (text: string) => showErrorPopup("warn", text),
+      popupHttpError: (text: string) => showErrorPopup("http", text),
     };
   }
   // 小助手对话期间桌宠静止，关闭后恢复漫游
@@ -1396,6 +1534,23 @@ async function boot() {
   );
   startInteractionRegionSync();
   void setupAssistantHotkeyListener();
+
+  // 模型顶部的错误提示条：Rust 的 ERROR 日志通过事件推过来，显示为红色提示。
+  // 去重 / 限流 / 不可见不弹 都在 ErrorPopup 里处理。
+  initErrorPopup({
+    getModelRect,
+    getVisibleRect: getWindowVisibleRect,
+    log: (msg) => void invoke("debug_mark", { msg }).catch(() => {}),
+  });
+  void listen<{ text?: string }>("petra:log-error", (event) => {
+    const text = event.payload?.text;
+    if (text) showErrorPopup("error", text);
+  });
+  // 关键 WARN（上次异常退出 / 前端无心跳）用橙色；其余 WARN 只写日志
+  void listen<{ text?: string }>("petra:log-warn", (event) => {
+    const text = event.payload?.text;
+    if (text) showErrorPopup("warn", text);
+  });
 
   // 渲染帧率：平时 30fps 省电，拖拽时抬到 60fps 让画布跟得上窗口
   const IDLE_MAX_FPS = 30;
@@ -2090,7 +2245,7 @@ async function toggleModelPanel() {
 
   // 动作库仅 PSD 角色支持，标准 Live2D 模型提示
   if (currentModel.type === "live2d") {
-    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "warn");
+    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "info");
   }
 
   const render = (host: HTMLElement) => {
@@ -2768,7 +2923,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       onPick: () => {
         // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
         if (!settings.tts.enabled) {
-          toast("请先开启语音输出再测试", "warn");
+          toast("请先开启语音输出再测试", "info");
           return;
         }
         const lang = settings.assistant.outputLanguage ?? "";
@@ -2964,6 +3119,9 @@ function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   // 待机模式保持原样的迷你菜单（待机开关 + 提示），不受精简影响
   if (settings.idleMode) return all;
   const kept = all.filter((i) => COMPACT_MENU_KEEP.has(i.id));
+  // 重启 / 退出复用全量菜单里的定义（restart 在 dev 下会退化成刷新页面，逻辑不能分叉）
+  const restart = all.find((i) => i.id === "restart");
+  const quit = all.find((i) => i.id === "quit");
   return [
     ...kept,
     { id: "sep", separator: true },
@@ -2972,6 +3130,8 @@ function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
       label: "⚙️ 控制面板",
       onPick: () => void openControlPanel(),
     },
+    ...(restart ? [restart] : []),
+    ...(quit ? [quit] : []),
   ];
 }
 
@@ -3168,6 +3328,7 @@ function buildPanelMeta() {
       { id: "minigames", label: "小游戏" },
       { id: "hide", label: "隐藏桌宠" },
       { id: "restart", label: "重启" },
+      { id: "quit", label: "退出" },
     ],
   };
 }
@@ -3255,7 +3416,7 @@ async function applyPanelPatch(patch: Record<string, unknown>): Promise<void> {
   }
   if (changed.has("weatherCity")) cachedWeather = null;
   if (changed.has("weatherBubble") && !settings.weatherBubble) hideInfoPanel();
-  // 留一条日志：面板改了什么一眼能在 pet.log 里查到（用户报「面板改了没反应」时靠它定位）
+  // 留一条日志：面板改了什么一眼能在 lasted.log 里查到（用户报「面板改了没反应」时靠它定位）
   void invoke("debug_mark", { msg: `[panel] 应用补丁：${[...changed].join(", ")}` }).catch(() => {});
   saveSettingsRaw(settings); // 只落盘；末尾统一回推一次，别在这里触发防抖循环
   if (changed.has("modelScale")) await applyModelScale(settings.modelScale);
@@ -3512,7 +3673,7 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
       case "feedback-send": {
         const msg = String(p.text ?? "").trim();
         if (!msg) {
-          toast("先写点什么再发", "warn");
+          toast("先写点什么再发", "info");
           return;
         }
         const res = await invoke<string>("send_feedback", { message: msg });
@@ -3544,11 +3705,11 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         const apiKey = await getApiKey();
         const persona = composePersona(settings.assistant);
         if (!persona.trim()) {
-          toast("人设还是空的，先填两句再试", "warn");
+          toast("人设还是空的，先填两句再试", "info");
           return;
         }
         if (!apiKey && settings.assistant.provider !== "ollama") {
-          toast("还没配 API Key，没法试演", "warn");
+          toast("还没配 API Key，没法试演", "info");
           return;
         }
         toast("正在用它的人设试演一句…");
@@ -3837,7 +3998,7 @@ function toggleModelAdjustPanel() {
 
   // 仅 PSD 模型支持
   if (!(view instanceof Rigged2DView)) {
-    toast("当前模型不支持调节", "warn");
+    toast("当前模型不支持调节", "info");
     return;
   }
   const rigView = view as Rigged2DView;
@@ -4958,15 +5119,15 @@ async function toggleAssistantSettings() {
 
     presetApply.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       void applyPreset(p);
     });
 
     presetRename.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       const name = presetName.value.trim();
-      if (!name) return toast("名称不能为空", "warn");
+      if (!name) return toast("名称不能为空", "info");
       p.name = name;
       saveSettings(settings);
       refreshPresets(p.id);
@@ -4975,7 +5136,7 @@ async function toggleAssistantSettings() {
 
     presetDelete.addEventListener("click", () => {
       const p = selectedPreset();
-      if (!p) return toast("先选一个预设", "warn");
+      if (!p) return toast("先选一个预设", "info");
       settings.assistant.presets = presetsOf().filter((x) => x.id !== p.id);
       if (settings.assistant.activePresetId === p.id) settings.assistant.activePresetId = "";
       saveSettings(settings);
@@ -5324,7 +5485,7 @@ function openFeedbackInput() {
     copy.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
+        toast("请先描述一下遇到的问题", "info");
         return;
       }
       void invoke<string>("feedback_text", { message: t })
@@ -5338,7 +5499,7 @@ function openFeedbackInput() {
     send.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "warn");
+        toast("请先描述一下遇到的问题", "info");
         return;
       }
       host.classList.add("hidden");
@@ -5531,7 +5692,6 @@ function toggleAudio(on: boolean) {
 registerRiichiGame();
 
 void boot();
-
 
 
 

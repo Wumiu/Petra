@@ -20,6 +20,7 @@ import { ttsPlayer } from "../tts/TTSPlayer";
 import { getVisibleRect } from "../ui/visible";
 import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
+import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
 /** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
@@ -286,7 +287,7 @@ function ensureInput() {
       // 和语音路径保持一致：留在输入框里并提示，别让用户以为发出去了。
       if (busy) {
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "warn");
+        toast("上一句还没答完，这句先放进输入框了", "info");
         return;
       }
       setInputValue("");
@@ -301,7 +302,7 @@ function ensureInput() {
     if (!t) return;
     if (busy) {
       setInputValue(t);
-      toast("上一句还没答完，这句先放进输入框了", "warn");
+      toast("上一句还没答完，这句先放进输入框了", "info");
       return;
     }
     setInputValue("");
@@ -535,13 +536,13 @@ function wireRecognizer(): SpeechRecognizer {
         setInputValue(t);
         input.focus();
         keepInputBarOnScreen();
-        toast("已暂停识别，内容留在输入框，回车发送", "warn");
+        toast("已暂停识别，内容留在输入框，回车发送", "info");
         return;
       }
       if (busy) {
         // send() 忙的时候会直接 return；不留住的话用户刚说的话就凭空消失了
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "warn");
+        toast("上一句还没答完，这句先放进输入框了", "info");
         return;
       }
       // 面板可能在这几秒里被收起了：先把面板叫回来，否则识别结果无处显示
@@ -569,7 +570,7 @@ function wireRecognizer(): SpeechRecognizer {
       input.placeholder = "问点什么…";
       if (voicePausedByKey) {
         voicePausedByKey = false;
-        toast("已暂停语音识别", "warn");
+        toast("已暂停语音识别", "info");
         return;
       }
       toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
@@ -620,7 +621,7 @@ function onVoiceKeydown(e: KeyboardEvent): void {
   e.stopPropagation();
   if (e.key === "Escape") {
     r.cancel();
-    toast("已取消这次语音输入", "warn");
+    toast("已取消这次语音输入", "info");
     return;
   }
   voicePausedByKey = true; // 让 onFinal 知道：这次是"暂停"，别自动发送
@@ -649,7 +650,7 @@ async function toggleVoiceInput(): Promise<void> {
   if (r.needsApiKey()) {
     const ready = await invoke<boolean>("asr_key_ready").catch(() => false);
     if (!ready) {
-      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "warn");
+      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "info");
       return;
     }
   }
@@ -1298,7 +1299,24 @@ async function send(text: string) {
       scheduleFade(loading, readingHoldMs(getBubbleText(loading), 5000));
     }
   } catch (e) {
-    setBubbleText(loading, friendlyApiError(e));
+    const msgText = e instanceof Error ? e.message : String(e);
+    // 写进 lasted.log：用户反馈"说着说着就 API 错误"时，光看屏幕上的气泡没法定位，
+    // 这里把状态码/响应体（以及 4xx 时的历史尾部）留在日志里。
+    void invoke("debug_mark", { msg: `[assistant] 请求失败：${msgText}` }).catch(() => {});
+    if (/API 错误 4\d\d/.test(msgText)) {
+      const tail = history
+        .slice(-6)
+        .map((m) => `${m.role}${m.tool_calls ? `(${m.tool_calls.map((c) => c.id).join(",")})` : ""}${m.tool_call_id ? `#${m.tool_call_id}` : ""}`)
+        .join(" ");
+      void invoke("debug_mark", { msg: `[assistant] 历史尾部：${tail}` }).catch(() => {});
+    }
+    // 气泡里已有完整说明，这里再在模型上方弹一条黄色提示：
+    // 气泡可能被收起或被挡住，HTTP 失败要让用户明确知道"这次请求没成功"。
+    const friendly = friendlyApiError(e);
+    if (/(API 错误|网络错误|响应超时|请求超时|Failed to fetch|fetch failed)/i.test(msgText)) {
+      notifyHttpError(friendly);
+    }
+    setBubbleText(loading, friendly);
     loading.dataset.emotion = "worried";
     // 出错时桌宠也难过一下，但不消耗任何 token
     reactNow("worried");

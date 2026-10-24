@@ -173,5 +173,53 @@ check("人格设定仍在最前面", sys.startsWith("你是猫娘"));
 check("中文记忆块也排在语言指令之前", sys.indexOf("关于用户的记忆") < sys.indexOf("你必须全程用日语"));
 check("中文输出时不带语言指令也不炸", ac.systemPrompt("人格", [], "").includes("严格按照上面的人格设定"));
 
+
+  // ---- 工具调用序列修复（sanitizeToolHistory） ----
+  // 端点要求：role=tool 必须紧跟带 tool_calls 的 assistant，且每个 id 都要有结果。
+  // 序列被中途打断（工具抛错/取消/预算用尽/历史被删）后，坏序列会让每一轮都 400。
+  {
+    const A = { id: "call_1", type: "function", function: { name: "run_shell", arguments: "{}" } };
+    const one = ac.sanitizeToolHistory([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: null, tool_calls: [A] },
+      { role: "tool", tool_call_id: "call_1", content: "ok" },
+    ]);
+    check("完整工具序列保持原样", one.length === 3 && one[2].role === "tool");
+
+    const missing = ac.sanitizeToolHistory([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: null, tool_calls: [A] },
+      { role: "user", content: "还在吗" },
+    ]);
+    check("结果缺失时整组丢弃", missing.length === 2 && missing.every((m) => m.role !== "assistant"));
+
+    const orphan = ac.sanitizeToolHistory([
+      { role: "tool", tool_call_id: "call_9", content: "孤立的工具结果" },
+      { role: "user", content: "hi" },
+    ]);
+    check("孤立 tool 消息被丢弃", orphan.length === 1 && orphan[0].role === "user");
+
+    const dup = ac.sanitizeToolHistory([
+      { role: "assistant", content: null, tool_calls: [A] },
+      { role: "tool", tool_call_id: "call_1", content: "a" },
+      { role: "tool", tool_call_id: "call_1", content: "b" },
+    ]);
+    check("重复结果视为不完整整组丢弃", dup.length === 0);
+
+    const two = ac.sanitizeToolHistory([
+      { role: "assistant", content: null, tool_calls: [A, { id: "call_2", type: "function", function: { name: "x", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content: "a" },
+      { role: "tool", tool_call_id: "call_2", content: "b" },
+    ]);
+    check("两个调用都有结果时保留整组", two.length === 3);
+  }
+
+
+  // ---- 偶发错误的重试策略 ----
+  check("429 限流可重试", ac.isRetryableStatus(429) === true);
+  check("5xx 可重试", ac.isRetryableStatus(502) === true && ac.isRetryableStatus(503) === true);
+  check("408 可重试", ac.isRetryableStatus(408) === true);
+  check("400/401/402/404 不重试", ![400, 401, 402, 404].some((s) => ac.isRetryableStatus(s)));
+
 console.log("assistant-tools: pass=" + (fail === 0 ? "all" : "has failures") + " fail=" + fail);
 process.exit(fail ? 1 : 0);

@@ -26,10 +26,15 @@ export default defineConfig({
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
+  // 压缩时保留函数名/类名：即使不查 sourcemap，堆栈也能认出是哪个函数出错
+  esbuild: { keepNames: true },
   build: {
     target: process.env.TAURI_ENV_PLATFORM == "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_ENV_DEBUG,
-    sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // 默认不生成 sourcemap：.map 里带 sourcesContent（源码全文），
+    // 会随 dist 一起打进二进制（约 5MB）。需要还原线上堆栈时：
+    //   PETRA_SOURCEMAP=1 npm run build
+    sourcemap: process.env.PETRA_SOURCEMAP === "1",
     commonjsOptions: {
       include: [/node_modules/, /vendor[\\/]anime2dr/],
     },
