@@ -595,6 +595,17 @@ fn debug_mark(msg: String) {
     log_line(&msg);
 }
 
+/// 验证「panic 也会写进日志」用：仅在 debug 构建里真的 panic。
+/// 前端可以通过 `invoke("debug_panic_test")` 触发一次，确认 pet.log 里出现
+/// `[panic] ... @ 文件:行:列` —— 发布版会直接返回错误，不会崩。
+#[tauri::command]
+fn debug_panic_test() -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("仅调试构建可用".into());
+    }
+    panic!("这是一条用于验证日志的测试 panic（debug_panic_test）");
+}
+
 
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -4693,7 +4704,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
-            quit_app, restart_app, debug_mark, read_file_bytes, save_psd,
+            quit_app, restart_app, debug_mark, debug_panic_test, read_file_bytes, save_psd,
             export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
@@ -4743,6 +4754,30 @@ pub fn run() {
                 if verbose { "，详细日志开" } else { "" }
             ));
             log_environment();
+
+            // 崩溃也要落日志：后端线程 panic 时日志里原本一个字都没有，
+            // 只能靠"功能突然不工作"去猜。这里把 panic 内容和文件:行号写进 pet.log，
+            // 同时保留默认输出（stderr + RUST_BACKTRACE），不影响原有排查方式。
+            {
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let location = info
+                        .location()
+                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                        .unwrap_or_else(|| "未知位置".to_string());
+                    let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "非字符串 panic".to_string()
+                    };
+                    let line = format!("[panic] {payload} @ {location}");
+                    // hook 里再 panic 会直接 abort，兜一层
+                    let _ = std::panic::catch_unwind(|| log_error(&line));
+                    previous(info);
+                }));
+            }
 
             // 开发自测：PETRA_PANEL_AUTOSTART=1 时开机就把控制面板服务拉起来，并把带 token
             // 的地址写进日志 —— 这样不用点菜单也能用 curl 验接口（也方便反复调试面板）。

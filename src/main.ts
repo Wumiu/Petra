@@ -3,14 +3,45 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow, LogicalPosition, PhysicalPosition, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-// 未捕获异常：显示在屏幕上，同时写进 pet.log。
-// 只显示不记日志的话，用户遇到崩溃时日志里一行都没有，事后完全无法排查。
+// ---------- 前端日志：把"看不见的"错误也写进 pet.log ----------
+// 只弹提示不记日志的话，用户遇到问题时日志里一行都没有，事后完全无法排查。
+// 这里统一收三类：未捕获异常、资源加载失败、console.error/warn。
 const FRONTEND_ERROR_CLASS = "fe-error-banner";
+
+/** 一分钟内最多写多少行前端日志（防止某个报错在循环里把日志刷爆） */
+const FE_LOG_MAX_PER_MIN = 40;
+let feLogWindowStart = Date.now();
+let feLogCount = 0;
+let feLogLast = "";
+
+function feFormat(value: unknown): string {
+  if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack ?? ""}`;
+  if (typeof value === "string") return value;
+  try {
+    const s = JSON.stringify(value);
+    return s && s.length < 600 ? s : String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 写一行前端日志到 pet.log（带限流 + 连续重复合并） */
+function logFrontend(tag: string, text: string): void {
+  const now = Date.now();
+  if (now - feLogWindowStart > 60_000) {
+    feLogWindowStart = now;
+    feLogCount = 0;
+  }
+  if (feLogCount++ > FE_LOG_MAX_PER_MIN) return;
+  // 换行压成 |，免得日志被一条异常撕成十几行
+  const line = text.replace(/\s*\n\s*/g, " | ").slice(0, 1500);
+  if (line === feLogLast) return; // 连续重复只记一次
+  feLogLast = line;
+  void invoke("debug_mark", { msg: `[frontend:${tag}] ${line}` }).catch(() => {});
+}
+
 function showFrontendError(label: string, detail: string, background: string): void {
-  void invoke("debug_mark", {
-    // 换行压成 |，免得日志被一条异常撕成十几行
-    msg: `[frontend] ${label}: ${detail.replace(/\s*\n\s*/g, " | ").slice(0, 1500)}`,
-  }).catch(() => {});
+  logFrontend("exception", `${label}: ${detail}`);
   // 连环报错时最多留 3 条，避免把整个窗口刷满
   if (document.querySelectorAll(`.${FRONTEND_ERROR_CLASS}`).length >= 3) return;
   const div = document.createElement("div");
@@ -33,6 +64,30 @@ window.addEventListener("unhandledrejection", (e) => {
   const reason = e.reason as { message?: string; stack?: string } | undefined;
   showFrontendError("Promise错误", reason?.stack || reason?.message || String(e.reason), "#ff6600");
 });
+// 资源加载失败（图片/音频/脚本 404）不会冒泡到 window，只能在捕获阶段拿到；
+// 这类错误以前完全无感（表现为"没声音/没图"），现在至少日志里有记录。
+window.addEventListener(
+  "error",
+  (e) => {
+    const el = e.target as (HTMLElement & { src?: string; href?: string }) | null;
+    if (!el || typeof el.tagName !== "string") return; // 普通 JS 异常已在上面处理
+    const url = el.src || el.href || "";
+    logFrontend("resource", `<${el.tagName.toLowerCase()}> 加载失败：${url || "(无地址)"}`);
+  },
+  true,
+);
+// console.error / console.warn 也进日志：库和第三方代码往往只打控制台不抛异常
+for (const level of ["error", "warn"] as const) {
+  const original = console[level].bind(console);
+  console[level] = (...args: unknown[]) => {
+    try {
+      logFrontend(`console.${level}`, args.map(feFormat).join(" "));
+    } catch {
+      /* 日志本身不能影响主流程 */
+    }
+    original(...args);
+  };
+}
 
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { BehaviorEngine } from "./autonomous/BehaviorEngine";
