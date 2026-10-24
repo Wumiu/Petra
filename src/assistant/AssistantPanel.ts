@@ -526,6 +526,8 @@ function wireRecognizer(): SpeechRecognizer {
     onFinal: (text) => {
       const t = text.trim();
       resetTimer();
+      input.placeholder = "问点什么…";
+      void invoke("debug_mark", { msg: `[asr] onFinal len=${t.length} voicePaused=${voicePausedByKey} busy=${busy} barHidden=${!document.querySelector(".as-inputbar")}` }).catch(() => {});
       if (!t) return;
       // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
       if (voicePausedByKey) {
@@ -542,15 +544,29 @@ function wireRecognizer(): SpeechRecognizer {
         toast("上一句还没答完，这句先放进输入框了", "info");
         return;
       }
-      setInputValue("");
+      // 面板可能在这几秒里被收起了：先把面板叫回来，否则识别结果无处显示
+      if (!document.querySelector(".as-inputbar")) {
+        void openAssistant();
+      }
+      // **识别出的文字先留在输入框里**：语音是说完就自动发送，输入框立刻清空的话
+      // 用户根本看不到"识别成了什么"（这正是「对话框不显示识别的文字」的原因）。
+      // 3 秒后如果用户没动过，再清掉。
+      setInputValue(t);
+      window.setTimeout(() => {
+        if (input.value.trim() === t.trim()) setInputValue("");
+      }, 3000);
       // 把你刚说的话以气泡形式留在屏幕上：语音是"说完就自动发送"，输入框立刻被清空，
       // 不 echo 的话用户根本没机会看清这次识别成了什么（原来的体验就是"还没看到就发出去了"）
       addBubble("user", t);
       void send(t);
     },
-    onRecordingStart: () => { input.placeholder = "正在听…"; },
+    onRecordingStart: () => { input.placeholder = "正在听…（说完停一下自动结束）"; },
+    // 录音已结束、正在上传识别：这几秒必须给提示，否则用户以为卡死了
+    onTranscribing: () => { input.placeholder = "识别中…"; },
     // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
     onNoSpeech: () => {
+      void invoke("debug_mark", { msg: "[asr] onNoSpeech" }).catch(() => {});
+      input.placeholder = "问点什么…";
       if (voicePausedByKey) {
         voicePausedByKey = false;
         toast("已暂停语音识别", "info");
@@ -558,7 +574,10 @@ function wireRecognizer(): SpeechRecognizer {
       }
       toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
     },
-    onError: (msg) => { toast(msg, "warn"); },
+    onError: (msg) => {
+      input.placeholder = "问点什么…";
+      toast(msg, "warn");
+    },
     onStateChange: (recording) => {
       if (!micBtn) return;
       // 外观全部交给 CSS（图标↔律动条、光环、渐变都挂在 .as-mic-recording 上）：
@@ -566,7 +585,7 @@ function wireRecognizer(): SpeechRecognizer {
       micBtn.classList.toggle("as-mic-recording", recording);
       micBtn.setAttribute("aria-pressed", recording ? "true" : "false");
       micBtn.title = recording
-        ? "正在听…（说完 5 秒自动发送；按任意键暂停、内容留在输入框；再点一下取消）"
+        ? "正在听…（说完停顿约 1.6 秒自动结束；按任意键暂停、内容留在输入框；再点一下取消）"
         : "语音输入（说完 5 秒自动发送；按任意键暂停不发送）";
       input.placeholder = recording ? "正在听…（按任意键暂停）" : "问点什么…";
       if (recording) {
@@ -612,8 +631,10 @@ function onVoiceKeydown(e: KeyboardEvent): void {
 async function toggleVoiceInput(): Promise<void> {
   const r = wireRecognizer();
   resetTimer(); // 碰麦克风也算"人在互动"，别让空闲超时把面板收走
+  void invoke("debug_mark", { msg: `[asr] 点麦克风 backend=${r.getBackendName()} recording=${r.isRecording()}` }).catch(() => {});
   if (r.isRecording()) {
     r.cancel();
+    toast("已取消这次语音输入", "warn");
     return;
   }
   // 应用内的麦克风权限开关（在「🎤 语音识别设置」里关掉后，这里直接拦住，
@@ -740,8 +761,17 @@ function addBubble(kind: "ai" | "sys" | "confirm" | "user", text: string): HTMLE
   b.appendChild(body);
   // 对话类气泡给一个「×」；确认类气泡（自带允许/拒绝）不走这里，也就没有叉
   if (kind !== "confirm") attachBubbleClose(b);
-  trimBubbles(); // 先挤掉上一条，再挂新的（顺序不能反：trim 会清掉所有普通气泡）
+  // 先挤掉上一条，再挂新的（顺序不能反：trim 会清掉普通气泡）。
+  // 新加的是 user 气泡时连旧的 user 一起清，避免越积越多。
+  trimBubbles(kind !== "user");
   bubbles!.appendChild(b);
+  // 回复气泡上来时，把保留下来的「你说的那句」安排淡出：
+  // 保留是为了让用户看清识别成了什么，但不能一直挂着（用户报过"这个气泡不会自动消失"）。
+  // 给 12 秒够读完，随后和回复一起自己收走。
+  if (kind === "ai") {
+    const keep = bubbles!.querySelector<HTMLElement>(".as-user");
+    if (keep) scheduleFade(keep, 12000);
+  }
   positionBubbles(); // 气泡数量变化会改高度，重新算一次位置
   return b;
 }
@@ -791,9 +821,19 @@ function scheduleFade(el: HTMLElement, ms: number) {
  * **确认气泡不能挤掉**（`.as-confirm` 在等用户点「允许/拒绝」）：
  * 它被删掉后那个 Promise 永远不 resolve，工具调用会一直卡着。
  */
-function trimBubbles() {
-  for (const kid of Array.from(bubbles!.children)) {
-    if (!(kid as HTMLElement).classList.contains("as-confirm")) kid.remove();
+/**
+ * 气泡只留一条（确认气泡除外）——但**「你刚说的那句」要留着**。
+ *
+ * 以前这里把所有非确认气泡都删掉：语音说完 → 先 echo 一条 user 气泡 → 紧接着回复
+ * 的 ai 气泡进来，trim 把 user 那条删了，用户根本看不到"识别成了什么"。
+ * 现在：挂 ai/sys 气泡时保留最近一条 user 气泡；挂新的 user 气泡时才清旧 user。
+ */
+function trimBubbles(keepLastUser: boolean) {
+  const kids = Array.from(bubbles!.children) as HTMLElement[];
+  const lastUser = keepLastUser ? [...kids].reverse().find((k) => k.classList.contains("as-user")) : null;
+  for (const kid of kids) {
+    if (kid.classList.contains("as-confirm") || kid === lastUser) continue;
+    kid.remove();
   }
   positionBubbles();
 }
@@ -906,6 +946,7 @@ function cancelPendingConfirms() {
 
 /** 清空左上角气泡区（关闭小助手模式时用） */
 export function clearBubbles() {
+  void invoke("debug_mark", { msg: `[bubble] clearBubbles from ${new Error().stack?.split("\n")[2]?.trim() ?? "?"}` }).catch(() => {});
   cancelPendingConfirms();
   if (bubbles) bubbles.innerHTML = "";
 }
@@ -1099,9 +1140,9 @@ async function send(text: string) {
   let streamed = false;
   try {
     // 循环处理：每轮 chatStream → 若有工具调用则执行并继续，否则结束。
-    // 轮数与调用次数双上限（见 ToolLoopBudget）：模型偶尔会在同一件事上反复试探，
-    // 没有预算就会一直循环烧 token；预算用尽会给用户一句明确交代。
-    const budget = new ToolLoopBudget({ maxRounds: 6, maxCalls: 12 });
+    // **不设轮数/次数上限**（用户要求取消工具调用上限）：靠"模型不再发起工具调用"自然结束。
+    // 仍保留同参数重复调用的提醒（ToolLoopBudget.noteCall），那是提示，不拦执行。
+    const budget = new ToolLoopBudget({ maxRounds: Infinity, maxCalls: Infinity });
     let finished = false;
     let streamEmo: EmotionTag = "neutral";
     while (budget.nextRound()) {
