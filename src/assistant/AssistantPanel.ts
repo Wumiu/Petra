@@ -548,7 +548,9 @@ function wireRecognizer(): SpeechRecognizer {
       addBubble("user", t);
       void send(t);
     },
-    onRecordingStart: () => { input.placeholder = "正在听…"; },
+    onRecordingStart: () => { input.placeholder = "正在听…（说完停一下自动结束）"; },
+    // 录音已结束、正在上传识别：这几秒必须给提示，否则用户以为卡死了
+    onTranscribing: () => { input.placeholder = "识别中…"; },
     // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
     onNoSpeech: () => {
       if (voicePausedByKey) {
@@ -566,7 +568,7 @@ function wireRecognizer(): SpeechRecognizer {
       micBtn.classList.toggle("as-mic-recording", recording);
       micBtn.setAttribute("aria-pressed", recording ? "true" : "false");
       micBtn.title = recording
-        ? "正在听…（说完 5 秒自动发送；按任意键暂停、内容留在输入框；再点一下取消）"
+        ? "正在听…（说完停顿约 1.6 秒自动结束；按任意键暂停、内容留在输入框；再点一下取消）"
         : "语音输入（说完 5 秒自动发送；按任意键暂停不发送）";
       input.placeholder = recording ? "正在听…（按任意键暂停）" : "问点什么…";
       if (recording) {
@@ -615,6 +617,7 @@ async function toggleVoiceInput(): Promise<void> {
   void invoke("debug_mark", { msg: `[asr] 点麦克风 backend=${r.getBackendName()} recording=${r.isRecording()}` }).catch(() => {});
   if (r.isRecording()) {
     r.cancel();
+    toast("已取消这次语音输入", "warn");
     return;
   }
   // 应用内的麦克风权限开关（在「🎤 语音识别设置」里关掉后，这里直接拦住，

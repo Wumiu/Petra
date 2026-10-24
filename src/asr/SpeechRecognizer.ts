@@ -56,6 +56,16 @@ function asrLog(msg: string): void {
  */
 const LISTEN_TIMING: ListenTiming = DEFAULT_LISTEN_TIMING;
 /**
+ * 云端录音（非流式）专用的收尾参数：
+ * 说到停顿 1.6 秒就收（默认 5 秒是给"边说边出字"的原生识别留的手感，
+ * 云端这边等 5 秒只会让用户以为没反应）；一个字没听到 6 秒放弃。
+ */
+const CLOUD_LISTEN_TIMING: ListenTiming = {
+  ...DEFAULT_LISTEN_TIMING,
+  silenceMs: 1600,
+  giveUpMs: 6000,
+};
+/**
  * 录音后端 VAD：音量 RMS 低于此值算静音。
  * 原来是 0.015，实测普通笔记本麦克风说话时 RMS 常常只有 0.01 上下（尤其是离得远、
  * 系统增益低的时候），会被整段判成"一直没听到人声"，最后收尾只得到一句
@@ -110,6 +120,8 @@ export interface RecognizerHandlers {
   onFinal?: (text: string) => void;
   /** 录音开始（提示"正在听…"） */
   onRecordingStart?: () => void;
+  /** 录音结束、正在上传识别（提示"识别中…"，否则这几秒看起来像卡住） */
+  onTranscribing?: () => void;
   /**
    * 听了半天什么都没识别到（没声音、或引擎没给结果）。
    * 必须给用户一句交代 —— 以前这种情况是完全静默的，用户看到的就是"点了没反应"。
@@ -413,6 +425,7 @@ export class SpeechRecognizer {
         }
         // 带上本次会话的 token：识别请求在途的 1~3 秒里用户关掉面板/开了小游戏/重新按麦克风，
         // cancel() 会让 token 失配，回来时就把这条结果丢掉（以前会把它直接发出去）
+        this.handlers.onTranscribing?.();
         void this.transcribe(blob, token);
       };
       rec.start();
@@ -450,6 +463,7 @@ export class SpeechRecognizer {
       this.analyser.fftSize = 512;
       source.connect(this.analyser);
       const buf = new Uint8Array(this.analyser.fftSize);
+      const timing = this.backend === "siliconflow" ? CLOUD_LISTEN_TIMING : LISTEN_TIMING;
       const tick = () => {
         // 认 this.active 而不是 mediaRecorder.state：VAD 是在 recorder 就绪前后
         // 开始跑的，早期几帧查 recorder 只会得到"没在录"，循环当场就退出了
@@ -465,12 +479,12 @@ export class SpeechRecognizer {
         } else if (!this.listen.heardSound) {
           // 一直没听到人声：给足时间（用户可能正在组织语言），到点收尾并提示，
           // 别像以前那样点一下 2.5 秒就悄悄停掉（那条路上用户同样什么都看不到）
-          if (now - this.listen.startedAt >= LISTEN_TIMING.giveUpMs) { this.stop(); return; }
+          if (now - this.listen.startedAt >= timing.giveUpMs) { this.stop(); return; }
         } else {
           if (this.silenceSince === 0) this.silenceSince = now;
-          else if (now - this.silenceSince >= LISTEN_TIMING.silenceMs) { this.stop(); return; }
+          else if (now - this.silenceSince >= timing.silenceMs) { this.stop(); return; }
         }
-        if (now - this.listen.startedAt >= LISTEN_TIMING.maxMs) { this.stop(); return; }
+        if (now - this.listen.startedAt >= timing.maxMs) { this.stop(); return; }
         this.vadTimer = window.setTimeout(tick, 100);
       };
       tick();
