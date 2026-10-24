@@ -426,7 +426,11 @@ export class SpeechRecognizer {
         // 带上本次会话的 token：识别请求在途的 1~3 秒里用户关掉面板/开了小游戏/重新按麦克风，
         // cancel() 会让 token 失配，回来时就把这条结果丢掉（以前会把它直接发出去）
         this.handlers.onTranscribing?.();
-        void this.transcribe(blob, token);
+        // ⚠️ 必须用**当前** token，不能用 startSiliconFlow 里那个：
+        // finishSiliconFlow() 收尾时已经 startToken++ 作废了旧值，用旧 token 会让
+        // transcribe() 一进门就判定"已取消"、把结果整个丢掉 —— 表现就是"说话完全没反应"。
+        // 用当前值仍满足原意：请求在途时用户再取消/重开录音，token 会再次变化。
+        void this.transcribe(blob, this.startToken);
       };
       rec.start();
       this.mediaRecorder = rec;
@@ -582,7 +586,7 @@ export class SpeechRecognizer {
       // 在途期间被取消/新开了一轮录音：这条结果作废，不能弹也不能自动发送
       if (token !== this.startToken) return;
       const trimmed = (text || "").trim();
-      asrLog(`识别返回 ${trimmed.length} 字`);
+      asrLog(`识别返回 ${trimmed.length} 字：「${trimmed.slice(0, 40)}」`);
       if (trimmed) this.handlers.onFinal?.(trimmed);
       else this.handlers.onNoSpeech?.(); // 服务返回空 = 没听清，不是错误
     } catch (e) {

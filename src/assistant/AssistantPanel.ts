@@ -526,6 +526,7 @@ function wireRecognizer(): SpeechRecognizer {
     onFinal: (text) => {
       const t = text.trim();
       resetTimer();
+      void invoke("debug_mark", { msg: `[asr] onFinal len=${t.length} voicePaused=${voicePausedByKey} busy=${busy} barHidden=${!document.querySelector(".as-inputbar")}` }).catch(() => {});
       if (!t) return;
       // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
       if (voicePausedByKey) {
@@ -542,6 +543,10 @@ function wireRecognizer(): SpeechRecognizer {
         toast("上一句还没答完，这句先放进输入框了", "warn");
         return;
       }
+      // 面板可能在这几秒里被收起了：先把面板叫回来，否则识别结果无处显示
+      if (!document.querySelector(".as-inputbar")) {
+        void openAssistant();
+      }
       setInputValue("");
       // 把你刚说的话以气泡形式留在屏幕上：语音是"说完就自动发送"，输入框立刻被清空，
       // 不 echo 的话用户根本没机会看清这次识别成了什么（原来的体验就是"还没看到就发出去了"）
@@ -553,6 +558,8 @@ function wireRecognizer(): SpeechRecognizer {
     onTranscribing: () => { input.placeholder = "识别中…"; },
     // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
     onNoSpeech: () => {
+      void invoke("debug_mark", { msg: "[asr] onNoSpeech" }).catch(() => {});
+      input.placeholder = "问点什么…";
       if (voicePausedByKey) {
         voicePausedByKey = false;
         toast("已暂停语音识别", "warn");
@@ -560,7 +567,10 @@ function wireRecognizer(): SpeechRecognizer {
       }
       toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
     },
-    onError: (msg) => { toast(msg, "warn"); },
+    onError: (msg) => {
+      input.placeholder = "问点什么…";
+      toast(msg, "warn");
+    },
     onStateChange: (recording) => {
       if (!micBtn) return;
       // 外观全部交给 CSS（图标↔律动条、光环、渐变都挂在 .as-mic-recording 上）：
