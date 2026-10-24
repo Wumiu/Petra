@@ -16,7 +16,14 @@
  * 窗口形状，因此 ✕ 点得到（桌宠窗口其余部分仍是点击穿透的）。
  */
 
-export type ErrorPopupKind = "error" | "http";
+export type ErrorPopupKind = "error" | "warn" | "http";
+
+/** 三种提示的颜色与文案：红=错误、橙=需要注意、黄=请求失败 */
+const POPUP_STYLE: Record<ErrorPopupKind, { bg: string; label: string; name: string }> = {
+  error: { bg: "#dc2f3d", label: "出错了", name: "红色" },
+  warn: { bg: "#c2410c", label: "需要注意", name: "橙色" },
+  http: { bg: "#c47a08", label: "请求失败", name: "黄色" },
+};
 
 interface Rect {
   left: number;
@@ -165,8 +172,9 @@ export function showErrorPopup(kind: ErrorPopupKind, text: string): boolean {
   const bodyEl = host.querySelector(".pet-error-popup-body") as HTMLElement | null;
   if (!labelEl || !bodyEl) return false;
 
-  host.style.background = kind === "error" ? "#dc2f3d" : "#c47a08";
-  labelEl.textContent = kind === "error" ? "出错了" : "请求失败";
+  const style = POPUP_STYLE[kind];
+  host.style.background = style.bg;
+  labelEl.textContent = style.label;
   bodyEl.textContent = message;
   host.style.display = "block";
   place(host);
@@ -181,7 +189,7 @@ export function showErrorPopup(kind: ErrorPopupKind, text: string): boolean {
 
   // 关键：确认"提示确实显示出来了"之后才写这条日志，
   // 这样事后能区分"错误没提示"和"提示了但用户没看到"。
-  options.log(`[popup] 已提示（${kind === "error" ? "红色" : "黄色"}，10 秒，可关闭）：${message}`);
+  options.log(`[popup] 已提示（${style.name}，10 秒，可关闭）：${message}`);
   return true;
 }
 

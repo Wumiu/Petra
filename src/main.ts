@@ -1353,8 +1353,9 @@ async function boot() {
         dueAt: lastGreetAt + greetIntervalMsNow(),
         timerArmed: greetTimer !== null,
       }),
-      // 验证模型顶部的错误提示条（红/黄），不用真把 API 弄坏
+      // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
+      popupWarn: (text: string) => showErrorPopup("warn", text),
       popupHttpError: (text: string) => showErrorPopup("http", text),
     };
   }
@@ -1544,6 +1545,11 @@ async function boot() {
   void listen<{ text?: string }>("petra:log-error", (event) => {
     const text = event.payload?.text;
     if (text) showErrorPopup("error", text);
+  });
+  // 关键 WARN（上次异常退出 / 前端无心跳）用橙色；其余 WARN 只写日志
+  void listen<{ text?: string }>("petra:log-warn", (event) => {
+    const text = event.payload?.text;
+    if (text) showErrorPopup("warn", text);
   });
 
   // 渲染帧率：平时 30fps 省电，拖拽时抬到 60fps 让画布跟得上窗口

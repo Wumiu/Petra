@@ -430,6 +430,16 @@ fn log_write_ex(level: &str, verbose: bool, s: &str, emit: bool) {
         }
     }
 
+    // 关键 WARN（异常退出 / 前端无心跳）也推给前端，橙色提示。
+    if emit && level == "WARN" && warn_needs_popup(s) {
+        if let Some(app) = LOG_EVENT_HANDLE.get() {
+            let _ = app.emit(
+                "petra:log-warn",
+                serde_json::json!({ "text": s, "at": time }),
+            );
+        }
+    }
+
     // 环形缓冲也收 DEBUG：详细日志开着时，这些操作细节正是事后定位问题的上下文。
     // （verbose 关闭时 DEBUG 根本走不到这里，不占内存）
     if let Ok(mut ring) = RECENT_LINES.lock() {
@@ -451,6 +461,15 @@ fn log_verbose(s: &str) {
 }
 
 /// 需要注意但不致命
+/// 哪些 WARN 值得打断用户（橙色提示）。
+///
+/// 平台降级（Wayland 定位、屏幕回环、SMTC）、内部容量（交互区域截断）、
+/// 回收站失败这类只写日志：它们要么每次启动都出现，要么用户操作时才出现，
+/// 全都弹窗会把真正重要的提示淹掉。
+fn warn_needs_popup(s: &str) -> bool {
+    s.starts_with("[boot] 上次运行没有正常退出") || s.starts_with("[watchdog]")
+}
+
 fn log_warn(s: &str) {
     log_write("WARN", false, s);
 }
@@ -1096,6 +1115,22 @@ fn debug_panic_test() -> Result<(), String> {
     }
 }
 
+
+/// 测试用：写一条 WARN 级别日志（白名单内的会触发橙色提示）。
+/// 仅 debug 构建可用；发布版直接返回错误，不写日志。
+#[tauri::command]
+fn debug_log_warn(msg: String) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        log_warn(&msg);
+        Ok(())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = msg;
+        Err("仅调试构建可用".into())
+    }
+}
 
 /// 测试用：写一条 ERROR 级别日志（会触发前端红色提示条）。
 /// 仅 debug 构建可用；发布版直接返回错误，不写日志。
@@ -5217,7 +5252,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             trash_files, work_area_at, cursor_pos, hide_pet, set_topmost, is_topmost, show_pet,
-            quit_app, restart_app, debug_mark, debug_panic_test, debug_log_error, app_heartbeat, read_file_bytes, save_psd,
+            quit_app, restart_app, debug_mark, debug_panic_test, debug_log_error, debug_log_warn, app_heartbeat, read_file_bytes, save_psd,
             export_text_to_desktop,
             read_psd, list_models, read_model_manifest, read_builtin_psd,
             model_resource_path, delete_imported_model, set_audio_enabled,
