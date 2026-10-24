@@ -3097,6 +3097,9 @@ function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   // 待机模式保持原样的迷你菜单（待机开关 + 提示），不受精简影响
   if (settings.idleMode) return all;
   const kept = all.filter((i) => COMPACT_MENU_KEEP.has(i.id));
+  // 重启 / 退出复用全量菜单里的定义（restart 在 dev 下会退化成刷新页面，逻辑不能分叉）
+  const restart = all.find((i) => i.id === "restart");
+  const quit = all.find((i) => i.id === "quit");
   return [
     ...kept,
     { id: "sep", separator: true },
@@ -3105,6 +3108,8 @@ function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
       label: "⚙️ 控制面板",
       onPick: () => void openControlPanel(),
     },
+    ...(restart ? [restart] : []),
+    ...(quit ? [quit] : []),
   ];
 }
 
@@ -3301,6 +3306,7 @@ function buildPanelMeta() {
       { id: "minigames", label: "小游戏" },
       { id: "hide", label: "隐藏桌宠" },
       { id: "restart", label: "重启" },
+      { id: "quit", label: "退出" },
     ],
   };
 }
