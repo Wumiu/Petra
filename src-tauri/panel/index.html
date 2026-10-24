@@ -212,6 +212,17 @@ input[type=range]{width:160px; accent-color:var(--brand)}
 @keyframes tin{from{opacity:0; transform:translateY(8px)}}
 
 .empty{color:var(--txt3); font-size:13px; padding:10px 0}
+/* 模型选择芯片 */
+.modelwrap{display:block}
+.modelpick{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px}
+.mchip{
+  font:inherit; font-size:12px; padding:5px 10px; border-radius:999px; cursor:pointer;
+  border:1px solid var(--line-strong); background:var(--card-strong); color:var(--txt2);
+  font-family:ui-monospace,Consolas,monospace;
+}
+.mchip:hover{border-color:color-mix(in srgb,var(--brand) 45%, transparent); color:var(--txt)}
+.mchip.on{color:var(--brand); border-color:color-mix(in srgb,var(--brand) 55%, transparent); background:var(--brand-soft); font-weight:600}
+
 /* API Key 区块（比普通行更像一块「凭证」） */
 .keyblock{
   margin-top:12px; padding:12px 14px; border-radius:12px;
@@ -938,6 +949,30 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       inp.type = "text"; inp.value = cur ?? ""; inp.placeholder = spec.placeholder || "";
       inp.oninput = () => commit(spec.path, inp.value.trim(), 600);
       ctl.appendChild(inp);
+      // 模型这一栏额外挂「已获取的模型」芯片：拉取完直接点，不用手打
+      if (spec.path === "assistant.model") {
+        const models = (state.meta.data || {}).assistantModels || [];
+        const wrap = el("div", "modelwrap");
+        wrap.appendChild(row);
+        if (models.length) {
+          wrap.appendChild(el("div", "rdesc", `已获取 ${models.length} 个模型，点一下填入：`));
+          const chips = el("div", "modelpick");
+          models.forEach((mm) => {
+            const on = (cur ?? "") === mm;
+            const chip = el("button", "mchip" + (on ? " on" : ""), mm);
+            chip.onclick = () => {
+              inp.value = mm;
+              commit(spec.path, mm, 0);
+              renderSection(); // 重画一次让高亮跟着走
+            };
+            chips.appendChild(chip);
+          });
+          wrap.appendChild(chips);
+        } else {
+          wrap.appendChild(el("div", "rdesc", "还没拉取过 —— 点上面的「自动获取模型列表」，拉回来就能直接点选。"));
+        }
+        return wrap;
+      }
     } else if (spec.type === "textarea") {
       const ta = document.createElement("textarea");
       ta.rows = spec.rows || 5;
