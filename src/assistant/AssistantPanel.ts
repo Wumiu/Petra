@@ -1133,9 +1133,9 @@ async function send(text: string) {
   let streamed = false;
   try {
     // 循环处理：每轮 chatStream → 若有工具调用则执行并继续，否则结束。
-    // 轮数与调用次数双上限（见 ToolLoopBudget）：模型偶尔会在同一件事上反复试探，
-    // 没有预算就会一直循环烧 token；预算用尽会给用户一句明确交代。
-    const budget = new ToolLoopBudget({ maxRounds: 6, maxCalls: 12 });
+    // **不设轮数/次数上限**（用户要求取消工具调用上限）：靠"模型不再发起工具调用"自然结束。
+    // 仍保留同参数重复调用的提醒（ToolLoopBudget.noteCall），那是提示，不拦执行。
+    const budget = new ToolLoopBudget({ maxRounds: Infinity, maxCalls: Infinity });
     let finished = false;
     let streamEmo: EmotionTag = "neutral";
     while (budget.nextRound()) {
