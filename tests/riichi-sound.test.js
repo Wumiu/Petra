@@ -7,11 +7,19 @@ class FakeAudio extends EventTarget {
     super();
     this.src = src;
     this.currentTime = 0;
-    this.volume = 1;
+    this._volume = 1;
     this.paused = true;
     this.loop = false;
     this.playCount = 0;
     FakeAudio.instances.push(this);
+  }
+  // 与 HTMLMediaElement 一致：音量超出 [0,1] 直接抛 IndexSizeError
+  get volume() { return this._volume; }
+  set volume(value) {
+    if (!(typeof value === "number" && value >= 0 && value <= 1)) {
+      throw new Error(`IndexSizeError: volume ${value} is outside [0,1]`);
+    }
+    this._volume = value;
   }
   load() {}
   pause() { this.paused = true; }
@@ -111,6 +119,20 @@ assert.equal(musicNameForEvent({ seq: 1, type: "draw-end" }), "result-draw");
   const bgm = byFile("bgm.ogg");
   controller.dispose();
   assert.equal(bgm.src, "", "dispose releases music and effect sources");
+
+  // 回归：requestAnimationFrame 回调的时间戳可能早于 fade 起点（同帧里先排队的回调），
+  // progress 会算出负数、音量变成 -0.0003 这种值，真实浏览器直接抛 IndexSizeError。
+  // 这里把 rAF 时间戳故意提前 60ms，音量必须仍落在 [0,1]（否则 FakeAudio 会抛）。
+  const realRaf = global.requestAnimationFrame;
+  global.requestAnimationFrame = (callback) => setTimeout(() => callback(performance.now() - 60), 1);
+  const fresh = new RiichiSoundController();
+  fresh.handleEvent({ seq: 1, type: "hand-start" });
+  await wait(150);
+  global.requestAnimationFrame = realRaf;
+  const freshBgm = FakeAudio.instances.filter((audio) => audio.src.endsWith("bgm.ogg")).pop();
+  assert.ok(freshBgm.volume >= 0 && freshBgm.volume <= 1, "fade clamps volume into [0,1]");
+  fresh.dispose();
+
   console.log("riichi sound and music tests passed");
 })().catch((error) => {
   console.error(error);
