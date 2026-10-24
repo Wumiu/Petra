@@ -244,6 +244,96 @@ static RECENT_LINES: std::sync::Mutex<std::collections::VecDeque<String>> =
 /// 上一行日志的日期，用于跨天时插一条"日期变更"分隔
 static LAST_DATE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// 判断目录能否写（日志必须可写，否则等于没有日志）。
+fn ensure_dir_writable(dir: &std::path::Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".petra-write-test");
+    match std::fs::write(&probe, b"ok") {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 日志目录：优先「程序根目录/logs」，不可写时退回用户数据目录。
+///
+/// dev 下 exe 在 `src-tauri/target/debug`，直接用它会把日志写进 build 目录
+/// （cargo clean 就没了），所以向上找含 `src-tauri` 的仓库根当程序根目录。
+fn resolve_log_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    use tauri::Manager;
+
+    // 显式覆盖：排查/测试时用 PETRA_LOG_DIR 指定
+    if let Ok(dir) = std::env::var("PETRA_LOG_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        if ensure_dir_writable(&dir) {
+            return dir;
+        }
+    }
+
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+    if let Some(exe_dir) = exe_dir {
+        let mut roots: Vec<std::path::PathBuf> = Vec::new();
+        // 开发构建：<repo>/src-tauri/target/debug → <repo>
+        let mut probe = exe_dir.clone();
+        for _ in 0..4 {
+            if probe.join("src-tauri").is_dir() {
+                roots.push(probe.clone());
+                break;
+            }
+            match probe.parent() {
+                Some(p) => probe = p.to_path_buf(),
+                None => break,
+            }
+        }
+        roots.push(exe_dir.clone());
+        for root in roots {
+            let dir = root.join("logs");
+            if ensure_dir_writable(&dir) {
+                return dir;
+            }
+        }
+    }
+
+    // 兜底：用户数据目录（安装到 Program Files 这类不可写位置时）
+    let fallback = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("logs"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("pet-logs"));
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
+}
+
+/// 把旧位置（用户数据目录）的日志搬到新位置，只在第一次切换时做一次。
+fn migrate_old_logs(old_dir: &std::path::Path, new_dir: &std::path::Path) {
+    if old_dir == new_dir || new_dir.join("lasted.log").exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(old_dir) else { return };
+    for entry in entries.flatten() {
+        let src = entry.path();
+        if !src.is_file() {
+            continue;
+        }
+        let dst = new_dir.join(src.file_name().unwrap_or_default());
+        if dst.exists() {
+            continue;
+        }
+        if std::fs::rename(&src, &dst).is_err() {
+            if std::fs::copy(&src, &dst).is_ok() {
+                let _ = std::fs::remove_file(&src);
+            }
+        }
+    }
+}
+
 /// 本地时间戳：日志是给人看的，用可读时间而不是 unix 秒。
 fn stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
@@ -5117,12 +5207,11 @@ pub fn run() {
         ])
         .setup(|app| {
             let log_dir = LOG_DIR.get_or_init(|| {
-                let dir = app
-                    .path()
-                    .app_data_dir()
-                    .unwrap_or_else(|_| std::env::temp_dir().join("pet-logs"))
-                    .join("logs");
-                let _ = std::fs::create_dir_all(&dir);
+                let dir = resolve_log_dir(app.handle());
+                // 旧版本把日志放在用户数据目录：第一次启动时搬到「程序根目录/logs」
+                if let Ok(legacy) = app.path().app_data_dir() {
+                    migrate_old_logs(&legacy.join("logs"), &dir);
+                }
                 dir
             });
             // 先归档上次日志再取偏移：顺序不能反，否则偏移会指向已经被归档走的旧文件

@@ -63,3 +63,6 @@ release/*
 .tauri/
 *.key
 Petra_0.2.6_aarch64.dmg
+
+# 程序根目录下的运行日志（lasted.log / error.log / 归档 zip）
+logs/
