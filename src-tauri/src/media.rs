@@ -197,9 +197,10 @@ pub fn start_media_poller(app: AppHandle) {
                                 last_identity = identity;
                                 // 正常切换歌曲不是"警告"：之前用 log_warn，导致每次换歌都往
                                 // error.txt 里塞一整段上下文。这里是常规运行记录。
+                                // 不记歌名/歌手：日志属于诊断信息，媒体内容属于隐私
                                 crate::log_line(&format!(
-                                    "[media] 选中会话 rank={} app={} title={:?}",
-                                    rank, np.app_id, np.title
+                                    "[media] 选中会话 rank={} app={}",
+                                    rank, np.app_id
                                 ));
                             }
                             let key = format!(

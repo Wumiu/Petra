@@ -2707,7 +2707,7 @@ fn send_notification(title: String, body: String) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 发送系统通知。macOS 用 osascript 的 display notification，走系统通知中心。
@@ -2731,7 +2731,7 @@ fn send_notification(title: String, body: String) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 发送系统通知（Linux）：notify-send → org.freedesktop.Notifications。
@@ -2754,7 +2754,7 @@ fn send_notification(title: String, body: String) {
     {
         log_verbose(&format!("send_notification: notify-send 不可用: {e}"));
     }
-    crate::log_line(&format!("send_notification: {title} | {body}"));
+    crate::log_line("send_notification: 已发送（标题与正文不入日志）");
 }
 
 /// 天气查询脚本。`@PROXY@=0` 时绕过系统代理直连。
@@ -3399,7 +3399,7 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             let retry = proxy.is_some() && (pass.body.is_empty() || pass.enc || pass.errs > 0);
             if retry {
                 crate::log_line(&format!(
-                    "[lyrics] 直连未取到（enc={} errs={}），改用系统代理重试：{t} - {a}",
+                    "[lyrics] 直连未取到（enc={} errs={}），改用系统代理重试",
                     pass.enc as u8, pass.errs
                 ));
                 let second = run_pass("0");
@@ -3418,7 +3418,13 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             } else {
                 pass.detail.clone()
             };
-            crate::log_error(&format!("[lyrics] 取歌词失败 {t} - {a}（{mode}）：{detail}"));
+            // 脚本的报错里可能带着请求 URL（含编码后的歌名），落盘前把歌名/歌手抹掉
+            let safe_detail = if t.is_empty() {
+                detail.clone()
+            } else {
+                detail.replace(t.as_str(), "***").replace(a.as_str(), "***")
+            };
+            crate::log_error(&format!("[lyrics] 取歌词失败（{mode}）：{safe_detail}"));
             return Err(format!("歌词接口无响应（{detail}）"));
         }
         // 成功也记一行：便于区分"接口没查到"与"接口坏了"
@@ -3432,7 +3438,7 @@ async fn fetch_lyrics(title: String, artist: String, album: Option<String>) -> R
             "LRCLIB"
         };
         crate::log_line(&format!(
-            "[lyrics] {t} - {a} → {} 字节，{}，来源{}（{mode}，命中 {} 条）",
+            "[lyrics] 取歌词 → {} 字节，{}，来源{}（{mode}，命中 {} 条）",
             pass.body.len(),
             if pass.body.contains("syncedLyrics") { "含同步歌词" } else { "无同步歌词" },
             src,
