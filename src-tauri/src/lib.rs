@@ -150,6 +150,9 @@ struct InteractionSnapshot {
     regions: Vec<InteractiveRegion>,
     initialized: bool,
     last_update: Option<std::time::Instant>,
+    /// 前端视口宽度（CSS px × devicePixelRatio）= 交互区域所在的坐标系宽度。
+    /// 用于把 Win32 的客户端光标坐标换算到同一空间（高 DPI / WebView 缩放时常不一致）。
+    viewport_px: Option<(f32, f32)>,
 }
 
 pub struct InteractionState {
@@ -956,6 +959,8 @@ fn should_accept_input(
     now: std::time::Instant,
     // 上一次的判定结果：光标取不到时沿用它，避免一次失败就整窗穿透
     fallback: bool,
+    // 客户端实际像素尺寸（Win32 口径），用于把光标坐标换算到区域坐标系
+    client_size: Option<(u32, u32)>,
 ) -> bool {
     // 前端尚未上报交互区域前（例如启动加载模型期间），窗口必须保持鼠标穿透，
     // 否则透明的 700x700 窗口会挡住屏幕中央，导致点击桌面和其他窗口无效。
@@ -977,13 +982,37 @@ fn should_accept_input(
         // 一次取不到就整窗穿透，会让菜单和按钮「点了没反应」
         return fallback;
     };
-    point_in_interactive_regions(x, y, &snapshot.regions)
+    if point_in_interactive_regions(x, y, &snapshot.regions) {
+        return true;
+    }
+    // 坐标系不匹配的兜底：前端上报的是「CSS px × devicePixelRatio」，而 Win32 的
+    // ScreenToClient 在高 DPI / WebView 缩放下可能给出另一套刻度（实测 200% 缩放下
+    // 差将近 2 倍）。用「前端视口 / 客户端实际尺寸」求出换算比再试一次，
+    // 否则表现就是「明明指着宠物却整窗穿透，点不动也拖不动」。
+    if let Some((vw, vh)) = snapshot.viewport_px {
+        if vw > 1.0 && vh > 1.0 {
+            if let Some((cw, ch)) = client_size {
+                if cw > 1 && ch > 1 {
+                    let kx = vw / cw as f32;
+                    let ky = vh / ch as f32;
+                    let sx = (x as f32 * kx).round() as i32;
+                    let sy = (y as f32 * ky).round() as i32;
+                    if point_in_interactive_regions(sx, sy, &snapshot.regions) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 #[tauri::command]
 fn sync_interaction_regions(
     state: State<'_, InteractionState>,
     regions: Vec<InteractiveRegion>,
+    viewport_width: Option<f32>,
+    viewport_height: Option<f32>,
 ) -> Result<(), String> {
     const MAX_REGIONS: usize = 128;
     // 逐条过滤非法区域，**不要整批失败**：以前只要有一条坏数据（数量超限、
@@ -1013,6 +1042,11 @@ fn sync_interaction_regions(
     let mut snapshot = state.snapshot.lock().unwrap();
     snapshot.regions = clean;
     snapshot.initialized = true;
+    if let (Some(w), Some(h)) = (viewport_width, viewport_height) {
+        if w > 1.0 && h > 1.0 {
+            snapshot.viewport_px = Some((w, h));
+        }
+    }
     snapshot.last_update = Some(std::time::Instant::now());
     Ok(())
 }
@@ -4918,6 +4952,7 @@ fn spawn_clickthrough_watcher(app: AppHandle) {
                                 regions: Vec::new(),
                                 initialized: false,
                                 last_update: None,
+                                viewport_px: None,
                             },
                             false,
                         )
@@ -4930,6 +4965,7 @@ fn spawn_clickthrough_watcher(app: AppHandle) {
                     cursor,
                     now,
                     last_accepts,
+                    screen::client_size(&win).map(|(w, h)| (w as u32, h as u32)),
                 );
                 last_accepts = accepts_input;
                 // Linux：穿透写入口按会话分叉 —— Wayland 直接把"可交互矩形"写进输入区域
@@ -5052,6 +5088,7 @@ mod interaction_tests {
             regions,
             initialized: true,
             last_update: Some(now),
+            viewport_px: None,
         }
     }
 
@@ -5089,8 +5126,9 @@ mod interaction_tests {
             regions: Vec::new(),
             initialized: false,
             last_update: None,
+            viewport_px: None,
         };
-        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false, None));
     }
 
     #[test]
@@ -5100,28 +5138,28 @@ mod interaction_tests {
             vec![region("pet", 100, 100, 100, 100)],
             now - INTERACTION_STATE_STALE_AFTER - std::time::Duration::from_millis(1),
         );
-        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false));
+        assert!(!should_accept_input(&snapshot, false, false, Some((0, 0)), now, false, None));
     }
 
     #[test]
     fn renderer_lock_fails_open() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(should_accept_input(&snapshot, true, false, Some((0, 0)), now, false));
+        assert!(should_accept_input(&snapshot, true, false, Some((0, 0)), now, false, None));
     }
 
     #[test]
     fn native_drag_fails_open() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(should_accept_input(&snapshot, false, true, Some((0, 0)), now, false));
+        assert!(should_accept_input(&snapshot, false, true, Some((0, 0)), now, false, None));
     }
 
     #[test]
     fn cursor_read_failure_is_click_through() {
         let now = std::time::Instant::now();
         let snapshot = fresh_snapshot(Vec::new(), now);
-        assert!(!should_accept_input(&snapshot, false, false, None, now, false));
+        assert!(!should_accept_input(&snapshot, false, false, None, now, false, None));
     }
 }
 
@@ -5255,6 +5293,7 @@ pub fn run() {
                 regions: Vec::new(),
                 initialized: false,
                 last_update: None,
+                viewport_px: None,
             }),
             renderer_locked: std::sync::atomic::AtomicBool::new(false),
         })
