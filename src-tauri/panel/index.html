@@ -392,6 +392,21 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       cards: [
         { title: "状态", desc: "这些值实时来自正在运行的桌宠。", type: "status" },
         { title: "常用动作", desc: "点一下立刻执行（跟右键菜单里的是同一套功能）。", type: "quick" },
+        {
+          title: "窗口与系统",
+          desc: "桌宠本体的事 —— 原来在右键菜单里（隐藏那一行的状态区就是置顶开关）。",
+          fields: [
+            { type: "actionSwitch", label: "置顶显示", action: "__sys:topmost", stateKey: "topmost", desc: "关掉后别的窗口会把它盖住；右键菜单里「隐藏」那行的状态区是同一个开关" },
+            { type: "actionSwitch", label: "开机自启", action: "__sys:autostart", stateKey: "autostart", desc: "登录系统后自动把它叫起来" },
+            { type: "actions", items: [
+              { id: "hide", label: "隐藏桌宠" },
+              { id: "update", label: "检查更新" },
+              { id: "website", label: "打开官网" },
+              { id: "restart", label: "重启" },
+              { id: "quit", label: "退出" },
+            ] },
+          ],
+        },
       ],
     },
     {
@@ -533,6 +548,11 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
             { type: "secret", key: "tts", label: "语音朗读 Key", desc: "不回显，只有你自己知道；要换就直接粘新的再保存" },
             { type: "actions", items: [{ id: "tts-test", label: "试听一句" }] },
+            { type: "note", text: () => {
+              const r = (state.meta.data || {}).ttsResult;
+              if (!r) return "上次合成：还没试过。点了「试听一句」这里会显示成功与否和原因。";
+              return "上次合成 " + r.at + "：" + (r.ok ? "成功 ✓" : "失败 —— " + r.text);
+            } },
           ],
         },
         {
@@ -550,7 +570,12 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [
             { path: "musicLyrics", label: "显示歌词气泡", type: "switch" },
             { path: "lyricsTranslate", label: "显示翻译", type: "switch", desc: "来源带译文时才显示" },
-            { type: "actions", items: [{ id: "lyrics-sync", label: "按歌微调时间轴（打开子菜单）" }] },
+            { type: "note", text: () => "本首同步：" + (((state.meta.data || {}).lyricOffset) || "正常") + "；只对当前这首歌生效，换歌重新算" },
+            { type: "actions", items: [
+              { id: "__lyric:earlier", label: "提前 0.3 秒" },
+              { id: "__lyric:later", label: "延后 0.3 秒" },
+              { id: "__lyric:reset", label: "复位" },
+            ] },
           ],
         },
       ],
@@ -572,7 +597,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "麻将", desc: "AI 实时互动会消耗 token（有节流与上限）。",
           fields: [
             { path: "gameTalk", label: "桌上实时互动", type: "switch" },
-            { type: "actions", items: [{ id: "minigames", label: "打开小游戏" }] },
+            { type: "games" },
           ],
         },
         { title: "动作试玩", desc: "", type: "actionplay" },
@@ -897,6 +922,21 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       };
       ctl.appendChild(b);
       return row;
+    }
+    // 小游戏：一个游戏一个按钮，直接开局；右边是关闭当前这局
+    if (spec.type === "games") {
+      const wrap = el("div", "btn-row");
+      const games = (state.meta.data || {}).games || [];
+      games.forEach((g) => {
+        const b = el("button", "btn btn-sm", (g.emoji || "🎮") + " " + g.name);
+        b.onclick = () => runAction("mg-" + g.id, g.name);
+        wrap.appendChild(b);
+      });
+      if (!games.length) wrap.appendChild(el("div", "empty", "当前版本没有可用的小游戏"));
+      const close = el("button", "btn btn-sm btn-ghost", "关闭游戏");
+      close.onclick = () => runAction("__data:minigame-close", "关闭游戏");
+      wrap.appendChild(close);
+      return wrap;
     }
     if (spec.type === "actions") {
       const wrap = el("div", "btn-row");
@@ -1308,8 +1348,12 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     card.appendChild(row);
     const r = state.meta.selfcheck;
     if (r) {
-      const ok = !r.missing || r.missing.length === 0;
-      card.appendChild(el("div", "rdesc", `${r.at} 检查过：菜单项 ${r.total} 条` + (ok ? "，全部可用 ✓" : `，缺失 ${r.missing.length} 条：${r.missing.join("、")}`)));
+      const miss = r.missing || [], unc = r.uncovered || [];
+      const ok = !miss.length && !unc.length;
+      card.appendChild(el("div", "rdesc", `${r.at} 检查过：菜单项 ${r.total} 条` +
+        (ok ? "，面板上都有位置、也都点得动 ✓"
+            : (miss.length ? `，点不动的 ${miss.length} 条：${miss.join("、")}` : "") +
+              (unc.length ? `，面板上没位置的 ${unc.length} 条：${unc.join("、")}` : ""))));
     }
     return card;
   }

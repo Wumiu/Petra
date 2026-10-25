@@ -25,8 +25,44 @@ class TTSPlayer {
    * DOM 去改 volume 的，结果按下去对正在播的那一段毫无作用，只能等下一句。
    */
   private current: HTMLAudioElement | null = null;
+  /** 合成成功/失败的回调（见 onResult） */
+  private resultCb: ((ok: boolean, detail: string) => void) | null = null;
+
+  /**
+   * 同时在跑的合成请求数上限。
+   *
+   * 以前每切出一句就立刻发一个合成请求（无上限）：一条 3 句的回复 = 3 个并发请求。
+   * 而豆包声音复刻的并发配额默认就是 **1**，多出来的那些直接被服务端拒掉，
+   * 报的就是 `quota exceeded for types: concurrency` —— 表现是"有时有声音、有时没有"。
+   * 所以这里串行化：同时只发一个，预取的"提前量"靠队列顺序保证，不影响播报连贯。
+   */
+  private inflight = 0;
+  private readonly maxInflight = 1;
+  private slotWaiters: (() => void)[] = [];
+
+  private async withSynthSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.inflight >= this.maxInflight) {
+      await new Promise<void>((resolve) => this.slotWaiters.push(resolve));
+    }
+    this.inflight++;
+    try {
+      return await fn();
+    } finally {
+      this.inflight--;
+      this.slotWaiters.shift()?.();
+    }
+  }
 
   onIdle(cb: () => void) { this.idleCallbacks.push(cb); }
+
+  /**
+   * 合成结果回调（成功/失败都会调）。
+   *
+   * 为什么要它：合成失败原来只 console.warn 一行，用户那边就是"开了语音输出但没声音"，
+   * 桌宠不吭声、面板也不显示任何东西 —— 根本没法判断是 Key 错了、额度没了还是通道不对。
+   * 现在把原因一路送到错误提示条和面板的「上次合成」里。
+   */
+  onResult(cb: (ok: boolean, detail: string) => void) { this.resultCb = cb; }
 
   /**
    * 现在有没有声音正在播。
@@ -127,15 +163,26 @@ class TTSPlayer {
 
   private async preload(item: { text: string; audio: HTMLAudioElement | null; ready: boolean; blobUrl: string | null }) {
     try {
-      const base64 = await invoke<string>("tts_synthesize", {
+      // 串行 + 失败重试一次：并发配额只有 1 的账号，排队等一会儿就能过；
+      // 真挂了（额度/音色不对）也只是多一次请求，日志里两条原因都留着。
+      const synthesize = () => invoke<string>("tts_synthesize", {
         apiKey: this.apiKey,
         speaker: this.speakerId,
         text: item.text,
         language: this.language || undefined,
       });
+      const base64 = await this.withSynthSlot(async () => {
+        try {
+          return await synthesize();
+        } catch (first) {
+          await new Promise((r) => setTimeout(r, 700));
+          return await synthesize().catch(() => { throw first; });
+        }
+      });
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      this.resultCb?.(true, `${item.text.slice(0, 30)}${item.text.length > 30 ? "…" : ""}`);
       const blob = new Blob([bytes], { type: "audio/mp3" });
       item.blobUrl = URL.createObjectURL(blob);
       item.audio = new Audio(item.blobUrl);
@@ -143,6 +190,7 @@ class TTSPlayer {
       if (!this.speaking) this.pump();
     } catch (e) {
       console.warn("[TTS] failed:", e);
+      this.resultCb?.(false, String(e));
       // 失败也要标记 ready 并推进队列：以前只置 ready 不 pump()，若失败的是**队首**
       // 那一句（长句最容易超时），整条队列会停在"ready 但 audio=null"的队首不动，
       // 后面已经合成好的句子永远不播，整段回复静音。

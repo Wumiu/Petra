@@ -311,6 +311,9 @@ export function loadSettings(): Settings {
       tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },
       asr: { ...DEFAULTS.asr, ...(parsed.asr ?? {}) },
     };
+    // 语音朗读 Key 只存 Rust 侧（DPAPI/Keychain），**绝不留 localStorage**：
+    // 老版本往 settings.tts.apiKey 里塞过明文，这里读档时直接抹掉，别让它跟着存档到处跑
+    if (s.tts) s.tts.apiKey = "";
     s.gameSound = s.gameSound !== false;
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
     s.gameMusic = s.gameMusic !== false;

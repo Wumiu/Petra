@@ -3940,6 +3940,63 @@ async fn tts_speaker_status(
     json.get("status").and_then(|v| v.as_i64())
 }
 
+/// 字符版（按字数计费）的合成接口 —— 和 v3 的"并发版"是两套东西。
+///
+/// 声音复刻买了「字符版」额度时，v3 `unidirectional` 会一直回
+/// `45000292 quota exceeded for types: concurrency`（它要的是并发路数），
+/// 必须改走 v1 `/api/v1/tts` + AppID + Access Token + cluster=volcano_icl，
+/// 也就是控制台「立即体验」后台用的那一套。成功时直接返回 base64 音频。
+#[tauri::command]
+async fn tts_synthesize_v1(
+    app_id: String,
+    access_token: String,
+    speaker: String,
+    text: String,
+    cluster: Option<String>,
+    encoding: Option<String>,
+) -> Result<String, String> {
+    if app_id.trim().is_empty() || access_token.trim().is_empty() {
+        return Err("字符版合成需要 AppID 和 Access Token（控制台 → 语音技术 → 我的应用）".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+    let cluster = cluster.filter(|c| !c.is_empty()).unwrap_or_else(|| "volcano_icl".to_string());
+    let encoding = encoding.filter(|c| !c.is_empty()).unwrap_or_else(|| "mp3".to_string());
+    let reqid = tts_request_id();
+    let body = serde_json::json!({
+        "app": { "appid": app_id, "token": access_token, "cluster": cluster },
+        "user": { "uid": "petra" },
+        "audio": { "voice_type": speaker, "encoding": encoding, "speed_ratio": 1.0 },
+        "request": { "reqid": reqid, "text": text, "operation": "query" }
+    });
+    let resp = client
+        .post("https://openspeech.bytedance.com/api/v1/tts")
+        .header("Authorization", format!("Bearer; {access_token}"))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+    let status = resp.status();
+    let text_body = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&text_body)
+        .map_err(|_| format!("HTTP {status}，返回不是 JSON：{}", text_body.chars().take(200).collect::<String>()))?;
+    let code = json.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+    if code != 3000 {
+        let msg = json.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        log_line(&format!("[tts] v1 合成失败 code={code} msg={msg}"));
+        return Err(format!("字符版合成失败 code={code} {msg}"));
+    }
+    let audio = json.get("data").and_then(|d| d.as_str()).unwrap_or("");
+    if audio.is_empty() {
+        return Err("字符版合成返回成功但没有音频".to_string());
+    }
+    log_line(&format!("[tts] v1 合成成功 {}字 → {} 字节 base64", text.chars().count(), audio.len()));
+    Ok(audio.to_string())
+}
+
 /// 把一段文字合成成 mp3（base64）。失败时返回**服务端原话**，别让用户只看到"没声音"。
 #[tauri::command]
 async fn tts_synthesize(
@@ -5433,7 +5490,7 @@ pub fn run() {
             save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,
             register_assistant_shortcut, unregister_assistant_shortcut,
-            tts_synthesize, set_tts_key, get_tts_key,
+            tts_synthesize, tts_synthesize_v1, set_tts_key, get_tts_key,
             asr_transcribe, set_asr_key, get_asr_key, asr_key_ready, asr_model_name, asr_key_info,
             get_mic_permission, set_mic_permission,
             capture_screen,

@@ -356,6 +356,23 @@ invoke<string>("get_tts_key").then(k => {
   ttsApiKey = k;
   ttsPlayer.setConfig(settings.tts.enabled, k, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
 }).catch(() => {});
+
+/**
+ * 语音合成出问题要**说出来**，不能只是没声音：
+ * 一条走桌宠头顶的提示条（"语音输出失败：…"），一条留在面板「语音 → 上次合成」里，
+ * 一条写进 lasted.log（搜 [tts]）。
+ */
+let panelTtsResult: { at: string; ok: boolean; text: string } | null = null;
+ttsPlayer.onResult((ok, detail) => {
+  const at = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  panelTtsResult = { at, ok, text: detail.slice(0, 300) };
+  if (!ok) {
+    // 服务端原话通常很长（含整段 JSONL），提示条上只留能看懂的前半段
+    const brief = detail.replace(/\s+/g, " ").slice(0, 120);
+    showErrorPopup("warn", `语音输出失败：${brief}`);
+  }
+  schedulePanelSync();
+});
 window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
   const saved = loadSettings();
   settings.gameSound = saved.gameSound;
@@ -2063,6 +2080,36 @@ function clearElement(el: HTMLElement) {
 let autostartCache = false;
 let topmostCache = false;
 
+/**
+ * 置顶 / 开机自启：右键菜单（「隐藏」那一行的状态区、「开机自启」那一行）与控制面板的开关
+ * 共用这一份实现。两边各写一遍的话迟早会出现「面板里关了、菜单里还显示开」。
+ */
+async function setTopmost(on: boolean): Promise<void> {
+  try {
+    await invoke("set_topmost", { on });
+    topmostCache = on;
+    toast(on ? "已置顶" : "已取消置顶");
+  } catch (e) {
+    console.warn("设置置顶失败", e);
+    toast("置顶切换失败", "warn");
+  }
+}
+
+async function setAutostart(enabled: boolean): Promise<void> {
+  try {
+    const ok = await invoke<boolean>("set_autostart", { enabled });
+    if (!ok) {
+      toast("开机自启设置失败", "warn");
+      return;
+    }
+    autostartCache = enabled;
+    toast(enabled ? "已开启开机自启" : "已关闭开机自启");
+  } catch (e) {
+    console.warn("设置开机自启失败", e);
+    toast("开机自启设置失败", "warn");
+  }
+}
+
 async function onMenuOpen() {
   // 右键打开菜单时暂停移动
   engine.suspend(60000);
@@ -2986,7 +3033,10 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
         },
       ],
     },
-    { id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() },
+    // 「每日抽卡」开关关掉后不再往菜单里放这个入口（面板「娱乐 → 抽卡」里仍可手动抽）
+    ...(settings.dailyCard.enabled === false
+      ? []
+      : [{ id: "daily-card", label: "🎴 今日抽卡", state: hasDrawnToday() ? "已抽" : "未抽", onPick: () => toggleDailyCardPanel() }]),
     {
       id: "minigames",
       label: "🎮 小游戏",
@@ -3062,26 +3112,14 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
         void invoke("hide_pet");
         toast("已隐藏（托盘/Alt+P唤出）");
       },
-      onStatePick: () => {
-        const next = !topmostCache;
-        void invoke("set_topmost", { on: next }).then(() => {
-          topmostCache = next;
-          toast(next ? "已置顶" : "已取消置顶");
-        });
-      },
+      // 状态区点一下 = 置顶 / 取消置顶（控制面板的「置顶显示」开关走同一个函数）
+      onStatePick: () => void setTopmost(!topmostCache),
     },
     {
       id: "autostart",
       label: "开机自启",
       state: autostartCache ? "开" : "关",
-      onPick: async () => {
-        const next = !autostartCache;
-        const ok = await invoke<boolean>("set_autostart", { enabled: next });
-        if (ok) {
-          autostartCache = next;
-          toast(next ? "已开启开机自启" : "已关闭开机自启");
-        }
-      },
+      onPick: () => void setAutostart(!autostartCache),
     },
     { id: "sep", separator: true },
     {
@@ -3251,7 +3289,28 @@ async function refreshPanelModels(): Promise<void> {
 }
 
 /** 面板「功能自检」的结果（动作页显示）：只检查每一项能不能在菜单里找到对应的 onPick */
-let panelSelfCheck: { at: string; total: number; missing: string[] } | null = null;
+let panelSelfCheck: { at: string; total: number; missing: string[]; uncovered: string[] } | null = null;
+
+/** 面板要显示的运行时开关：置顶 / 开机自启 / 本首歌词偏移（都不在 settings 里，靠 IPC 查） */
+let panelUiState = { topmost: false, autostart: false, lyricOffset: "正常" };
+/** 上次问 Rust 的时间：拖滑条会让 pushPanelState 连发，别每次都打一遍 IPC */
+let panelUiRefreshedAt = 0;
+
+async function refreshPanelUiState(): Promise<void> {
+  panelUiState.lyricOffset = fmtLyricOffset(getLyricOffsetMs());
+  panelUiState.topmost = topmostCache;
+  panelUiState.autostart = autostartCache;
+  if (Date.now() - panelUiRefreshedAt < 2000) return;
+  panelUiRefreshedAt = Date.now();
+  try {
+    topmostCache = await invoke<boolean>("is_topmost");
+    autostartCache = await invoke<boolean>("get_autostart");
+    panelUiState.topmost = topmostCache;
+    panelUiState.autostart = autostartCache;
+  } catch {
+    /* 查不到就沿用上次的值，不影响面板其它部分 */
+  }
+}
 
 /** 面板是否已经开过（没开过就别白推 IPC） */
 let panelEverOpened = false;
@@ -3263,6 +3322,7 @@ let appVersion = "";
 async function pushPanelState(): Promise<void> {
   await refreshPanelModels();
   await refreshPanelKeys();
+  await refreshPanelUiState();
   try {
     await invoke("panel_push_settings", {
       settings: JSON.stringify({ ...loadSettings(), boundsPadding: currentBoundsPadding() }),
@@ -3295,6 +3355,9 @@ function buildPanelMeta() {
     ui: {
       modelBounds: debugModelBoundsVisible,
       debugBorder: debugBorderVisible,
+      // 运行时开关（不在 settings 里）：面板靠这两个值画出「置顶 / 开机自启」的真实状态
+      topmost: panelUiState.topmost,
+      autostart: panelUiState.autostart,
     },
     presets: {
       list: settings.assistant.presets ?? [],
@@ -3319,13 +3382,18 @@ function buildPanelMeta() {
       personaTest: panelPersonaTest,
       asrModel: panelAsrModel,
       asrTest: panelAsrTest,
+      lyricOffset: panelUiState.lyricOffset,
+      ttsResult: panelTtsResult,
+      games: listMiniGames().map((g) => ({ id: g.id, name: g.name, emoji: g.emoji })),
     },
     quick: [
       { id: "show-pet", label: "把桌宠叫到前面" },
       { id: "model-bounds-toggle", label: "调整模型边界" },
       { id: "assistant", label: "打开小助手" },
-      { id: "daily-card", label: "今日抽卡" },
-      { id: "minigames", label: "小游戏" },
+      ...(settings.dailyCard.enabled === false ? [] : [{ id: "daily-card", label: "今日抽卡" }]),
+      // 「小游戏」在菜单里是个子菜单父行（没有 onPick），当按钮用点了不会有任何反应，
+      // 所以把每个游戏都展开成独立快捷项（id = mg-<游戏>，跟菜单里的叶子一致）
+      ...listMiniGames().map((g) => ({ id: "mg-" + g.id, label: g.emoji + " " + g.name })),
       { id: "hide", label: "隐藏桌宠" },
       { id: "restart", label: "重启" },
       { id: "quit", label: "退出" },
@@ -3501,7 +3569,67 @@ const PANEL_NATIVE_IDS = new Set([
   "tts-config", "asr-config", "chat-history",
   "feedback", "diary-open", "diary-track", "daily-card", "action-debug",
   "assistant-hotkey", "assistant-hotkey-clear", "assistant-settings",
+  // 2026-10-24 补：原来只在右键菜单里、面板里没落点的几项
+  "update", "website", "autostart", "hide", "mg-close",
+  "lyrics-sync-earlier", "lyrics-sync-later", "lyrics-sync-reset",
 ]);
+
+/**
+ * 每一项右键菜单功能在控制面板里的落点，给「功能自检」当清单用。
+ * 值是锚点：「path:xxx」= 面板上有这个设置项，「id:xxx」= 面板上有这个按钮，
+ * 「section:xxx」= 落在这一页（卡片型界面，没有单个控件）。
+ * 新加菜单项忘了在面板上安排位置时，自检会把它列进「未覆盖」。
+ */
+const PANEL_MENU_COVERAGE: Record<string, string> = {
+  models: "section:look",
+  size: "id:size",
+  bounds: "id:bounds",
+  border: "id:border",
+  "model-bounds-toggle": "id:model-bounds-toggle",
+  activity: "path:activity",
+  idle: "path:idleMode",
+  track: "path:mouseTrack",
+  "weather-bubble": "path:weatherBubble",
+  "audio-follow": "path:audioEnabled",
+  "lyrics-bubble": "path:musicLyrics",
+  "lyrics-translate": "path:lyricsTranslate",
+  "lyrics-sync-earlier": "id:__lyric:earlier",
+  "lyrics-sync-later": "id:__lyric:later",
+  "lyrics-sync-reset": "id:__lyric:reset",
+  "hourly-on": "path:hourlyChime",
+  "hourly-quiet-toggle": "path:hourlyChimeQuiet",
+  "action-debug": "section:fun",
+  assistant: "path:assistant.enabled",
+  "assistant-hotkey": "id:__data:hotkey-set",
+  "assistant-hotkey-clear": "id:__data:hotkey-set",
+  "assistant-settings": "section:assistant",
+  "chat-history": "section:assistant",
+  "tts-toggle": "path:tts.enabled",
+  "tts-config": "section:voice",
+  "tts-test": "id:tts-test",
+  "asr-config": "section:voice",
+  "diary-open": "section:fun",
+  "diary-auto": "path:diary.autoGenerate",
+  "diary-track": "path:diary.enabled",
+  "daily-card": "section:fun",
+  "mg-*": "section:fun",
+  "mg-talk": "path:gameTalk",
+  "mg-sound": "path:gameSound",
+  "mg-music": "path:gameMusic",
+  "mg-close": "id:__data:minigame-close",
+  feedback: "section:perm",
+  update: "id:update",
+  website: "id:website",
+  hide: "id:hide",
+  autostart: "id:__sys:autostart",
+  restart: "id:restart",
+  quit: "id:quit",
+};
+
+/** 查某个菜单项在面板上的落点（"mg-riichi" 这类动态 id 用 "mg-*" 兜） */
+function panelCoverageOf(id: string): string | undefined {
+  return PANEL_MENU_COVERAGE[id] ?? PANEL_MENU_COVERAGE[id.replace(/-.*$/, "-*")];
+}
 
 /** 设置键 → 面板上的中文名，只用于「桌宠这边弹一句它改了什么」 */
 const PANEL_FIELD_LABELS: Record<string, string> = {
@@ -3680,6 +3808,10 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(res);
         break;
       }
+      case "minigame-close":
+        closeMiniGame();
+        toast("已关闭小游戏");
+        break;
       case "action-play": {
         const aid = String(p.id ?? "");
         if (aid) {
@@ -3849,23 +3981,25 @@ function runPanelAction(id: string, payload?: unknown): void {
       }
     };
     walkIds(all);
-    const missing = flattenMenuActions()
-      .flatMap((g) => g.items)
-      .map((it) => it.id)
-      .filter((x) => !ids.has(x) && x !== "show-pet");
+    const listed = new Set(flattenMenuActions().flatMap((g) => g.items.map((it) => it.id)));
+    const missing = [...listed].filter((x) => !ids.has(x) && x !== "show-pet");
+    // 面板上有没有它的位置：动作清单里能点到（listed）或者有原生控件（PANEL_MENU_COVERAGE）
+    const uncovered = [...ids].filter((x) => !listed.has(x) && !panelCoverageOf(x));
     panelSelfCheck = {
       at: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
       total: ids.size,
       missing: [...new Set(missing)],
+      uncovered,
     };
     void invoke("debug_mark", {
-      msg: `[panel] 功能自检：菜单项 ${ids.size} 条，缺失 ${panelSelfCheck.missing.length} 条 ${missing.join(",")}`,
+      msg: `[panel] 功能自检：菜单项 ${ids.size} 条，缺失 ${missing.join(",") || "无"}，未覆盖 ${uncovered.join(",") || "无"}`,
     }).catch(() => {});
+    const bad = panelSelfCheck.missing.length + panelSelfCheck.uncovered.length;
     toast(
-      panelSelfCheck.missing.length
-        ? `自检完成：${panelSelfCheck.missing.length} 项对不上（${panelSelfCheck.missing.join("、")}）`
-        : `自检完成：${panelSelfCheck.total} 项功能全部可用`,
-      panelSelfCheck.missing.length ? "warn" : "info",
+      bad
+        ? `自检完成：${panelSelfCheck.missing.length} 项点不了、${panelSelfCheck.uncovered.length} 项面板上没位置`
+        : `自检完成：${panelSelfCheck.total} 项功能面板上都有位置`,
+      bad ? "warn" : "info",
     );
     void pushPanelState();
     return;
@@ -3874,6 +4008,29 @@ function runPanelAction(id: string, payload?: unknown): void {
   // 所以这里约定一组伪 id：__model:builtin:<文件> / __model:imported:<文件> / __model:delete:<文件>
   if (id.startsWith("__model:")) {
     void handlePanelModelAction(id);
+    return;
+  }
+  // 不在菜单里的运行时开关：置顶 / 开机自启（菜单里是「隐藏」那行的状态区和「开机自启」，
+  // 面板要的是能看出当前状态的开关，所以单独开一条入口，但落到同一个 setTopmost/setAutostart）
+  if (id === "__sys:topmost") {
+    void invoke("debug_mark", { msg: "[panel] 切换置顶" }).catch(() => {});
+    void setTopmost(!topmostCache).then(() => schedulePanelSync());
+    return;
+  }
+  if (id === "__sys:autostart") {
+    void invoke("debug_mark", { msg: "[panel] 切换开机自启" }).catch(() => {});
+    void setAutostart(!autostartCache).then(() => schedulePanelSync());
+    return;
+  }
+  // 歌词同步微调：菜单里是「歌词同步微调」子菜单的三项，面板上做成三个按钮
+  if (id.startsWith("__lyric:")) {
+    const kind = id.slice("__lyric:".length);
+    if (kind === "earlier") nudgeLyricOffset(LYRIC_OFFSET_STEP_MS);
+    else if (kind === "later") nudgeLyricOffset(-LYRIC_OFFSET_STEP_MS);
+    else if (kind === "reset") nudgeLyricOffset(0);
+    else return;
+    panelUiState.lyricOffset = fmtLyricOffset(getLyricOffsetMs());
+    schedulePanelSync();
     return;
   }
   void invoke("debug_mark", { msg: `[panel] 点功能：${id}` }).catch(() => {});
