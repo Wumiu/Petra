@@ -560,6 +560,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [
             { path: "tts.enabled", label: "开启朗读", type: "switch" },
             { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
+            { path: "tts.emotionLevel", label: "语气强度", type: "select", options: [["off","自然（不调节语气）"],["soft","轻微（默认，只在明显开心/难过时变）"],["full","明显（起伏大，容易听出在演）"]] },
             { type: "secret", key: "tts", label: "语音朗读 Key", desc: "不回显，只有你自己知道；要换就直接粘新的再保存" },
             { type: "actions", items: [{ id: "tts-test", label: "试听一句" }] },
           ],

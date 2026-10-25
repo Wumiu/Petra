@@ -50,6 +50,8 @@ class TTSPlayer {
 
   /** 语速：100 = 正常（服务端要整数，50~200） */
   private speechRate = 100;
+  /** 语气强度：off=自然/soft=轻微/full=明显（见 settings.tts.emotionLevel） */
+  private emotionLevel: "off" | "soft" | "full" = "soft";
   /**
    * 本轮回复的整体情绪。**语速按它统一**（整段一个节奏），
    * 逐句的 emotion 仍各自带，用来做语气起伏 —— 否则一句话一个语速会听着忽快忽慢。
@@ -59,22 +61,32 @@ class TTSPlayer {
   /** 情绪 → 语速（100 = 原速）。幅度刻意收小，别让人一听就觉得"快进/慢放"。 */
   private rateForEmotion(emo: EmotionTag | null): number {
     const base = this.speechRate || 100;
+    if (this.emotionLevel === "off") return base;
+    const k = this.emotionLevel === "full" ? 1 : 0.5;
     const delta: Record<string, number> = {
       happy: 8, excited: 8, surprised: 6,
       angry: 4, annoyed: 4,
       shy: -3, love: -3, worried: -5,
       sad: -8, tired: -10,
     };
-    const d = emo ? (delta[emo] ?? 0) : 0;
-    return Math.max(50, Math.min(200, base + d));
+    const d = emo ? (delta[emo] ?? 0) * k : 0;
+    return Math.max(50, Math.min(200, base + Math.round(d)));
   }
 
-  setConfig(enabled: boolean, apiKey: string, speakerId: string, language = "", speechRate = 100) {
+  setConfig(
+    enabled: boolean,
+    apiKey: string,
+    speakerId: string,
+    language = "",
+    speechRate = 100,
+    emotionLevel: "off" | "soft" | "full" = "soft",
+  ) {
     this.enabled = enabled;
     this.apiKey = apiKey;
     this.speakerId = speakerId;
     this.language = language;
     this.speechRate = speechRate;
+    this.emotionLevel = emotionLevel;
     if (!enabled) this.stop();
   }
 
@@ -157,12 +169,20 @@ class TTSPlayer {
       // 逐句 emotion 负责"这一句的语气"，整轮语速保持一致（先算一次就定下来）
       const emo = classifyAssistantEmotion(item.text);
       if (this.replyEmotion === null) this.replyEmotion = emo;
+      // 语气强度：off 完全不传；soft 只给最稳的 happy/sad（其它情绪容易"演过头"）
+      const EMOTION_SOFT = new Set(["happy", "sad"]);
+      const sendEmotion =
+        this.emotionLevel === "off"
+          ? null
+          : this.emotionLevel === "soft"
+            ? (EMOTION_SOFT.has(emo) ? emo : null)
+            : emo;
       const base64 = await invoke<string>("tts_synthesize", {
         apiKey: this.apiKey,
         speaker: this.speakerId,
         text: item.text,
         language: this.language || undefined,
-        emotion: emo === "neutral" ? undefined : emo,
+        emotion: sendEmotion && sendEmotion !== "neutral" ? sendEmotion : undefined,
         speechRate: this.rateForEmotion(this.replyEmotion),
       });
       const binary = atob(base64);
