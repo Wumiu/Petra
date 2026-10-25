@@ -171,16 +171,6 @@ export interface Settings {
     enabled: boolean;
     apiKey: string;
     speakerId: string;
-    /**
-     * 朗读用哪套模型（二选一）：
-     *  - "clone" 声音复刻：用你自己复刻的音色，就是你的声音，但语气语调偏平（只有少量情绪参数）
-     *  - "tts2"  豆包语音合成2.0：官方音色，支持「语音指令」控制语气/语调，但**不是你的声音**
-     */
-    mode: "clone" | "tts2";
-    /** tts2 模式下的 2.0 音色 ID（控制台 → 音色库） */
-    voice2: string;
-    /** tts2 模式下的语音指令，例如「用特别痛心的语气说话」 */
-    instruction: string;
   };
   /** 语音识别（输入）配置 */
   asr: {
@@ -269,9 +259,6 @@ const DEFAULTS: Settings = {
   hourlyQuietEnd: 8,
   tts: {
     enabled: false,
-    mode: "clone",
-    voice2: "zh_female_vv_uranus_bigtts",
-    instruction: "",
     apiKey: "",
     speakerId: "",
   },

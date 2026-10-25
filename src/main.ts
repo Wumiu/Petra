@@ -354,15 +354,7 @@ let settings: Settings = loadSettings();
 let ttsApiKey = "";
 invoke<string>("get_tts_key").then(k => {
   ttsApiKey = k;
-  ttsPlayer.setConfig(
-    settings.tts.enabled,
-    k,
-    settings.tts.speakerId,
-    settings.assistant.outputLanguage ?? "",
-    settings.tts.mode ?? "clone",
-    settings.tts.voice2 ?? "",
-    settings.tts.instruction ?? "",
-  );
+  ttsPlayer.setConfig(settings.tts.enabled, k, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
 }).catch(() => {});
 window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
   const saved = loadSettings();

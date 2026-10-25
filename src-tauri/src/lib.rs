@@ -3823,59 +3823,27 @@ async fn tts_synthesize(
     speaker: String,
     text: String,
     language: Option<String>,
-    // "clone"（默认）= 声音复刻音色走 seed-icl-2.0；
-    // "tts2" = 豆包语音合成2.0 官方音色走 seed-tts-2.0，可用「语音指令」控制语气语调
-    mode: Option<String>,
-    // tts2 模式下要用的 2.0 音色 ID（clone 模式忽略）
-    voice: Option<String>,
-    // tts2 模式下的语音指令，如「用特别痛心的语气说话」
-    instruction: Option<String>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
 
-    // 两套模型共用同一个 HTTP 端点，只靠 X-Api-Resource-Id 区分：
-    //   seed-icl-2.0 = 声音复刻（你自己的音色，语气偏平）
-    //   seed-tts-2.0 = 豆包语音合成 2.0（官方音色，支持 context_texts 语音指令）
-    let is_tts2 = mode.as_deref() == Some("tts2");
-    let resource = if is_tts2 { "seed-tts-2.0" } else { "seed-icl-2.0" };
-    // tts2 必须用「豆包语音合成2.0 官方音色」；克隆音色 ID（S_/ICL_ 开头）在 2.0 上会
-    // 直接报 InvalidModelType，所以这里兜一层：不是官方音色就退回内置默认音色。
-    const TTS2_DEFAULT_VOICE: &str = "zh_female_vv_uranus_bigtts";
-    let use_speaker = if is_tts2 {
-        let v = voice.unwrap_or_default();
-        let v = v.trim();
-        if v.is_empty() || v.starts_with("S_") || v.starts_with("ICL_") {
-            TTS2_DEFAULT_VOICE.to_string()
-        } else {
-            v.to_string()
-        }
-    } else {
-        speaker.clone()
-    };
     let mut req = serde_json::json!({
         "req_params": {
             "text": text,
-            "speaker": use_speaker,
+            "speaker": speaker,
             "audio_params": { "format": "mp3", "sample_rate": 24000 }
         }
     });
     if let Some(lang) = language.filter(|l| !l.is_empty()) {
         req["req_params"]["explicit_language"] = serde_json::Value::String(lang);
     }
-    // 语音指令：只有 2.0 官方音色支持（复刻音色传了也没用，甚至报错），所以只在 tts2 下带
-    if is_tts2 {
-        if let Some(ins) = instruction.filter(|s| !s.trim().is_empty()) {
-            req["req_params"]["context_texts"] = serde_json::json!([ins]);
-        }
-    }
 
     let resp = client
         .post("https://openspeech.bytedance.com/api/v3/tts/unidirectional")
         .header("X-Api-Key", &api_key)
-        .header("X-Api-Resource-Id", resource)
+        .header("X-Api-Resource-Id", "seed-icl-2.0")
         .header("X-Api-Request-Id", &format!("{:x}{:x}{:x}{:x}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
             std::process::id(),

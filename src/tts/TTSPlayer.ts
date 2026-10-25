@@ -47,34 +47,11 @@ class TTSPlayer {
     if (this.current) this.current.volume = muted ? 0 : 1;
   }
 
-  /** 朗读模型：clone=声音复刻 / tts2=豆包语音合成2.0（官方音色 + 语音指令） */
-  private mode: "clone" | "tts2" = "clone";
-  /** 本轮回复的"语气指令"：由模型自己按上下文/人设总结，<tone>…</tone> 解析而来 */
-  private autoTone = "";
-  private voice2 = "";
-  private instruction = "";
-
-  /** 模型给本轮回复总结的语气指令（每轮重置；空串表示没有） */
-  setAutoTone(tone: string) {
-    this.autoTone = (tone || "").trim();
-  }
-
-  setConfig(
-    enabled: boolean,
-    apiKey: string,
-    speakerId: string,
-    language = "",
-    mode: "clone" | "tts2" = "clone",
-    voice2 = "",
-    instruction = "",
-  ) {
+  setConfig(enabled: boolean, apiKey: string, speakerId: string, language = "") {
     this.enabled = enabled;
     this.apiKey = apiKey;
     this.speakerId = speakerId;
     this.language = language;
-    this.mode = mode;
-    this.voice2 = voice2;
-    this.instruction = instruction;
     if (!enabled) this.stop();
   }
 
@@ -155,10 +132,6 @@ class TTSPlayer {
         speaker: this.speakerId,
         text: item.text,
         language: this.language || undefined,
-        mode: this.mode,
-        voice: this.voice2 || undefined,
-        // 优先用模型自己总结的语气指令；手填的只作兜底（用户明确说不想自己填）
-        instruction: (this.autoTone || this.instruction) || undefined,
       });
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);

@@ -1083,15 +1083,7 @@ async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
-  ttsPlayer.setConfig(
-    s.tts.enabled,
-    ttsKey,
-    s.tts.speakerId,
-    s.assistant.outputLanguage ?? "",
-    s.tts.mode ?? "clone",
-    s.tts.voice2 ?? "",
-    s.tts.instruction ?? "",
-  );
+  ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
   // 新消息开始就掐掉上一段语音：否则旧回复还在朗读，新回复的语音排在旧队列后面，
   // 用户听到的内容和屏幕上的新回复完全对不上。
   if (s.tts.enabled) ttsPlayer.stop();
@@ -1152,9 +1144,6 @@ async function send(text: string) {
     // **不设轮数/次数上限**（用户要求取消工具调用上限）：靠"模型不再发起工具调用"自然结束。
     // 仍保留同参数重复调用的提醒（ToolLoopBudget.noteCall），那是提示，不拦执行。
     const budget = new ToolLoopBudget({ maxRounds: Infinity, maxCalls: Infinity });
-    // <tone> 解析缓冲：null = 本轮已判定过
-    let toneBuf: string | null = "";
-    ttsPlayer.setAutoTone("");
     let finished = false;
     let streamEmo: EmotionTag = "neutral";
     while (budget.nextRound()) {
@@ -1163,18 +1152,7 @@ async function send(text: string) {
       const ctxMemories = recallRelevantMemories({ timeOfDay: timeOfDayKey(), userText: text });
       const langInstruction = buildLanguageInstruction(s.assistant.outputLanguage ?? "", { pinChinese: true });
       const personaWithLang = s.assistant.persona;
-      // 语音输出开着时，让模型自己按"人设 + 刚才的对话"总结一句朗读语气指令，
-      // 放在回复最前面，形如 <tone>用轻快带笑意的语气说</tone>。前端剥掉它再显示/朗读。
-      const toneInstruction = ttsPlayer.configured
-        ? "\n\n[语音] 在回复的最前面先输出一行标签 <tone>…</tone>，里面用一句话描述这段话该怎么读" +
-          "（语气、情绪、节奏，最多 20 字，例如「用轻快带笑意的语气说」「压低声音、慢慢说」）。" +
-          "这行标签用户看不到、也不会被朗读；标签之后紧接正文，正文里不要再出现标签。"
-        : "";
-      const extraCtxWithLang =
-        buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? "") +
-        "\n\n" +
-        langInstruction +
-        toneInstruction;
+      const extraCtxWithLang = buildChatContext(s.assistant.nickname, s.assistant.outputLanguage ?? "") + "\n\n" + langInstruction;
 
       const res = await chatStream(
         s.assistant.provider,
@@ -1186,28 +1164,6 @@ async function send(text: string) {
         s.assistant.customBaseUrl,
         (delta) => {
           streamed = true;
-          // 开头可能是 <tone>语气指令</tone>：先攒着判定，判定完再把正文放出去
-          if (toneBuf !== null) {
-            toneBuf += delta;
-            const m = /^\s*<tone>([\s\S]*?)<\/tone>/.exec(toneBuf);
-            if (m) {
-              ttsPlayer.setAutoTone(m[1]);
-              const rest = toneBuf.slice(m[0].length);
-              toneBuf = null;
-              if (rest) {
-                colorHook.push(rest);
-                ttsPlayer.pushDelta(rest);
-              }
-              return;
-            }
-            if (!/^\s*<tone>/.test(toneBuf) || toneBuf.length > 120) {
-              const rest = toneBuf;
-              toneBuf = null;
-              colorHook.push(rest);
-              ttsPlayer.pushDelta(rest);
-            }
-            return;
-          }
           colorHook.push(delta);
           ttsPlayer.pushDelta(delta);
         },
@@ -1229,7 +1185,7 @@ async function send(text: string) {
       // 无工具调用：文字入历史
       const rawText = res.text;
       // 分离翻译：原文 + --- + 翻译
-      const split = splitTranslation(rawText.replace(/<tone>[\s\S]*?<\/tone>/g, "").replace(/<\/?tone>/g, ""));
+      const split = splitTranslation(rawText);
       const mainText = split.main;
       let transText = split.trans;
       // 历史里**原文放前面**、中文翻译跟在 `---` 后面。
