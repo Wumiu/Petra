@@ -3695,6 +3695,11 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
   const p = (payload ?? {}) as Record<string, unknown>;
   try {
     switch (kind) {
+      case "bounds-reset":
+        // 只清当前模型这一份记录，别的模型不受影响（边界就是按模型存的）
+        setCurrentBoundsPadding({ left: 0, right: 0, top: 0, bottom: 0 });
+        toast("当前模型的边界已归零");
+        break;
       case "usage-reset":
         resetUsageStats();
         toast("用量统计已清零");
