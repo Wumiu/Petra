@@ -342,6 +342,29 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   const getPath = (obj, path) => path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const esc = (s) => String(s);
 
+  /** 把还没发出去的补丁立刻发一遍（页面要关了/要刷新了，走 keepalive 保证发得出去） */
+  function flushPendingPatches() {
+    if (!pendingPatches.size) return;
+    const patch = {};
+    for (const [path, value] of pendingPatches) {
+      const parts = path.split(".");
+      let cur = patch;
+      parts.slice(0, -1).forEach((k) => { cur[k] = cur[k] || {}; cur = cur[k]; });
+      cur[parts[parts.length - 1]] = value;
+    }
+    pendingPatches.clear();
+    try {
+      fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-panel-token": TOKEN },
+        body: JSON.stringify({ patch }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  }
+  window.addEventListener("pagehide", flushPendingPatches);
+  window.addEventListener("beforeunload", flushPendingPatches);
+
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       ...opts,
@@ -405,10 +428,12 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "modelScale", label: "模型大小", type: "range", min: 0.2, max: 2, step: 0.05, unit: "×", desc: "按当前模型单独记录，切换模型会各自恢复" },
             { type: "actionSwitch", label: "显示绿框（角色边界）", action: "model-bounds-toggle", stateKey: "modelBounds", desc: "拖下面四个滑条时会自动打开，方便看出边在哪" },
             { type: "actionSwitch", label: "调试边框（红线）", action: "border", stateKey: "debugBorder", desc: "窗口边界，排查出屏用" },
+            { type: "note", text: "边界松紧**按模型分别保存**：换模型各调各的，重启也记得；拖到很负会把可点区域压小（已做 120×160 保底，不至于点不到）。" },
             { path: "boundsPadding.left", label: "边界 · 左", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true, desc: "正=往外放宽，负=往里收紧；拖动时绿框实时跟着动" },
             { path: "boundsPadding.right", label: "边界 · 右", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
             { path: "boundsPadding.top", label: "边界 · 上", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
             { path: "boundsPadding.bottom", label: "边界 · 下", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
+            { type: "actions", items: [{ id: "__data:bounds-reset", label: "这个模型：四边归零" }] },
             { type: "actions", items: [
               { id: "bounds", label: "在桌宠窗口里调（带滑条面板）" },
               { id: "size", label: "大小面板" },
@@ -513,6 +538,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           ],
         },
         {
+          title: "人设预设", desc: "把现在这套人设（含模型线路）存成预设；以后想换回来，点「应用」就整套还原 —— 这就是一键换人格。",
+          type: "presets",
+        },
+        {
           title: "自由补充", desc: "不想被分栏限制的，直接在这写；会拼在结构化内容后面。",
           fields: [
             { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多但会记住你说过的事，偶尔冒一句冷幽默，提醒你休息时从不啰嗦" },
@@ -541,6 +570,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
             { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置 Key 会直接显示在这里，可以复制或换成自己的" },
             { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风直接走 XingChen（下面的模型）；关：Windows 先试系统识别" },
+            { path: "asr.denoise", label: "降噪 + 自动增益", type: "switch", desc: "采集端就做降噪/自动增益/回声消除：风扇声、麦克风离得远时更清楚；极安静环境觉得齿音被削可以关掉" },
             { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号没开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
             { type: "asrProbe" },
           ],
@@ -594,7 +624,15 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "文件禁止目录", desc: "一行一个，支持 # 注释。这些目录它一律不准读写。",
           fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
         },
+
+      ],
+    },
+    {
+      id: "about", label: "关于", title: "关于 · 反馈",
+      desc: "有 bug、想要新功能，写在这里直接发给我；顺手可以看版本、去官网。",
+      cards: [
         { title: "反馈", desc: "", type: "feedback" },
+        { title: "关于 Petra", desc: "", type: "about-card" },
       ],
     },
     {
@@ -658,6 +696,8 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
    * 文本类会被连续输入打断，所以按类型给不同防抖：滑条 120ms、文本 600ms。
    */
   let commitTimers = {};
+  /** 还没发出去的补丁：路径 → 值。页面被关掉/刷新时用它补发一次，避免"改完一刷新就没了" */
+  const pendingPatches = new Map();
   function commit(path, value, delay) {
     // 本地副本先更新：之后重新渲染/读值都直接是新的
     const parts = path.split(".");
@@ -670,6 +710,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       const pre = document.getElementById("personaPre");
       if (pre) pre.value = composePersonaText() || "（还没填内容）";
     }
+    pendingPatches.set(path, value);
     clearTimeout(commitTimers[path]);
     commitTimers[path] = setTimeout(async () => {
       const patch = {};
@@ -678,6 +719,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       cur[parts[parts.length - 1]] = value;
       try {
         await api("/api/settings", { method: "POST", body: JSON.stringify({ patch }) });
+        pendingPatches.delete(path);
         flashSaved();
       } catch (e) {
         if (e instanceof TypeError) {
@@ -1183,6 +1225,24 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 关于卡：版本 / 官网 / 检查更新 */
+  function aboutCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "关于 Petra"));
+    const ver = state.meta.version || "—";
+    card.appendChild(el("p", "cd", `版本 ${ver} · 桌面宠物 + 小助手 + 语音`));
+    const row = el("div", "btn-row");
+    const bSite = el("button", "btn btn-sm", "打开官网");
+    bSite.onclick = () => runAction("__data:website", "打开官网");
+    const bUpd = el("button", "btn btn-sm", "检查更新");
+    bUpd.onclick = () => runAction("__data:check-update", "检查更新");
+    row.appendChild(bSite);
+    row.appendChild(bUpd);
+    card.appendChild(row);
+    card.appendChild(el("p", "cd", "官网：petra.xin"));
+    return card;
+  }
+
   /** 模型卡：当前模型 / 切换 / 导入 / 删除 —— 对齐原「模型设置」面板的能力 */
   function modelCard() {
     const card = el("div", "card wide");
@@ -1356,6 +1416,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "diary") return grid.appendChild(diaryCard());
       if (cardSpec.type === "actionplay") return grid.appendChild(actionPlayCard());
       if (cardSpec.type === "feedback") return grid.appendChild(feedbackCard());
+      if (cardSpec.type === "about-card") return grid.appendChild(aboutCard());
       if (cardSpec.type === "quick") return grid.appendChild(quickCard());
       if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());

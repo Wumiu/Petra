@@ -405,9 +405,29 @@ export class SpeechRecognizer {
     this.handlers.onStateChange?.(true);
     this.handlers.onRecordingStart?.();
     try {
+      // 采集端就开始处理：降噪、自动增益、回声消除。风扇/空调底噪、麦克风离得远
+      // 的时候差别很明显；极安静环境下如果觉得齿音被削，可在面板里关掉。
+      const denoise = (() => {
+        try {
+          return loadSettings().asr?.denoise !== false;
+        } catch {
+          return true;
+        }
+      })();
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000 },
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          noiseSuppression: denoise,
+          autoGainControl: denoise,
+          echoCancellation: denoise,
+        },
       });
+      const track = stream.getAudioTracks()[0];
+      const applied = track?.getSettings?.() ?? {};
+      asrLog(
+        `采集参数 denoise=${denoise} ns=${String(applied.noiseSuppression)} agc=${String(applied.autoGainControl)} aec=${String(applied.echoCancellation)}`,
+      );
       if (token !== this.startToken) {
         // 这一路已经被 cancel 掉了：把刚拿到的音轨还回去，别让麦克风空转
         stream.getTracks().forEach((t) => t.stop());
