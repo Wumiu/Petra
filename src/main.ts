@@ -3700,6 +3700,12 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         setCurrentBoundsPadding({ left: 0, right: 0, top: 0, bottom: 0 });
         toast("当前模型的边界已归零");
         break;
+      case "website":
+        await invoke("open_url", { url: "http://petra.xin/" });
+        break;
+      case "check-update":
+        void checkUpdate(true);
+        break;
       case "usage-reset":
         resetUsageStats();
         toast("用量统计已清零");

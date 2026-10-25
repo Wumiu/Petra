@@ -624,7 +624,15 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "文件禁止目录", desc: "一行一个，支持 # 注释。这些目录它一律不准读写。",
           fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
         },
+
+      ],
+    },
+    {
+      id: "about", label: "关于", title: "关于 · 反馈",
+      desc: "有 bug、想要新功能，写在这里直接发给我；顺手可以看版本、去官网。",
+      cards: [
         { title: "反馈", desc: "", type: "feedback" },
+        { title: "关于 Petra", desc: "", type: "about-card" },
       ],
     },
     {
@@ -1217,6 +1225,24 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 关于卡：版本 / 官网 / 检查更新 */
+  function aboutCard() {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "关于 Petra"));
+    const ver = state.meta.version || "—";
+    card.appendChild(el("p", "cd", `版本 ${ver} · 桌面宠物 + 小助手 + 语音`));
+    const row = el("div", "btn-row");
+    const bSite = el("button", "btn btn-sm", "打开官网");
+    bSite.onclick = () => runAction("__data:website", "打开官网");
+    const bUpd = el("button", "btn btn-sm", "检查更新");
+    bUpd.onclick = () => runAction("__data:check-update", "检查更新");
+    row.appendChild(bSite);
+    row.appendChild(bUpd);
+    card.appendChild(row);
+    card.appendChild(el("p", "cd", "官网：petra.xin"));
+    return card;
+  }
+
   /** 模型卡：当前模型 / 切换 / 导入 / 删除 —— 对齐原「模型设置」面板的能力 */
   function modelCard() {
     const card = el("div", "card wide");
@@ -1390,6 +1416,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "diary") return grid.appendChild(diaryCard());
       if (cardSpec.type === "actionplay") return grid.appendChild(actionPlayCard());
       if (cardSpec.type === "feedback") return grid.appendChild(feedbackCard());
+      if (cardSpec.type === "about-card") return grid.appendChild(aboutCard());
       if (cardSpec.type === "quick") return grid.appendChild(quickCard());
       if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
