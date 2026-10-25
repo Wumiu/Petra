@@ -570,6 +570,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
             { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置 Key 会直接显示在这里，可以复制或换成自己的" },
             { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风直接走 XingChen（下面的模型）；关：Windows 先试系统识别" },
+            { path: "asr.denoise", label: "降噪 + 自动增益", type: "switch", desc: "采集端就做降噪/自动增益/回声消除：风扇声、麦克风离得远时更清楚；极安静环境觉得齿音被削可以关掉" },
             { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号没开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
             { type: "asrProbe" },
           ],

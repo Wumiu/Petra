@@ -181,6 +181,12 @@ export interface Settings {
      */
     cloudFirst: boolean;
     /**
+     * 采集端降噪 + 自动增益 + 回声消除（默认开）。
+     * 用的是 getUserMedia 的约束：有风扇/空调底噪、麦克风离得远时明显更清楚；
+     * 极安静环境下若觉得齿音被削，可以关掉。
+     */
+    denoise: boolean;
+    /**
      * 麦克风权限开关（应用内，立即生效）。
      * 关掉后点 🎤 直接提示权限已关闭、不会去开麦克风；
      * 同时在「🎤 语音识别设置」里会一并同步到 Windows 的麦克风隐私设置。
@@ -258,6 +264,7 @@ const DEFAULTS: Settings = {
   },
   asr: {
     cloudFirst: true,
+    denoise: true,
     micAllowed: true,
   },
 };
