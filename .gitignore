@@ -66,3 +66,7 @@ Petra_0.2.6_aarch64.dmg
 
 # 程序根目录下的运行日志（lasted.log / error.log / 归档 zip）
 logs/
+
+# 调试/临时脚本，别进仓库（含抓包得到的密钥）
+tmp-*
+tmp-qa/
