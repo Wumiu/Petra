@@ -3794,7 +3794,29 @@ const TTS_ENDPOINT: &str = "https://openspeech.bytedance.com/api/v3/tts/unidirec
 /// 服务端**返回 HTTP 200 + code 20000000 "OK"，但一个音频字节都不给**
 /// （sentence.phonemes 为空、data 全为 null）——不是报错，所以代码里既播不出声、也看不到原因。
 /// 因此这里两条通道都试一遍，谁真的返回了音频就用谁。
-const TTS_RESOURCES: [&str; 2] = ["seed-icl-2.0", "volc.megatts.voiceclone"];
+/// 合成要按「音色属于哪个服务」选资源，不能混：
+///   - 声音复刻 **2.0** 的音色 → 走「语音合成2.0」`volc.seedtts.default`
+///   - 语音合成大模型（1.0 音色/官方音色）→ `volc.service_type.10029`
+///   - 声音复刻 1.0 老音色 → `volc.megatts.voiceclone`
+///
+/// ⚠️ `seed-icl-2.0` 是**复刻（训练）**通道，不是合成通道：拿它合成会回
+/// HTTP 200 + `{"code":0,...,"data":null,"sentence":{"phonemes":[]}}` + `20000000 OK`，
+/// 也就是"假成功、零音频"——之前 TTS 没声音就是被这一步误导的。
+const TTS_RESOURCES: [&str; 3] = [
+    "volc.seedtts.default",
+    "volc.service_type.10029",
+    "volc.megatts.voiceclone",
+];
+
+/// 资源 → 用户能看懂的服务名（报错时用）
+fn tts_resource_label(resource: &str) -> &'static str {
+    match resource {
+        "volc.seedtts.default" => "语音合成2.0",
+        "volc.service_type.10029" => "语音合成大模型",
+        "volc.megatts.voiceclone" => "声音复刻1.0",
+        _ => "语音合成",
+    }
+}
 
 /// 单次合成尝试的结果（"没有音频"也是一种结果，要能说清楚原因）
 struct TtsAttempt {
@@ -3868,10 +3890,16 @@ async fn tts_attempt(
             attempt.audio.push_str(d);
         }
         // 只在"真错误"上记 code：0 = 正常分片，20000000 = 全流程 OK（但它也常常配着空音频）
-        if let Some(c) = j.get("code").and_then(|c| c.as_i64()) {
+        // 有些错误是包在 header 里的：{"header":{"code":45000030,"message":"..."}}，
+        // 只读顶层 code 会漏掉，最后只剩一句"HTTP 403 但没有音频"。
+        let code_v = j.get("code").and_then(|c| c.as_i64())
+            .or_else(|| j.get("header").and_then(|h| h.get("code")).and_then(|c| c.as_i64()));
+        if let Some(c) = code_v {
             if c != 0 {
                 attempt.code = Some(c);
-                if let Some(m) = j.get("message").and_then(|m| m.as_str()) {
+                let msg = j.get("message").and_then(|m| m.as_str())
+                    .or_else(|| j.get("header").and_then(|h| h.get("message")).and_then(|m| m.as_str()));
+                if let Some(m) = msg {
                     if !m.trim().is_empty() {
                         attempt.message = m.trim().to_string();
                     }
@@ -3955,13 +3983,18 @@ async fn tts_synthesize(
             ));
             return Ok(attempt.audio);
         }
+        let label = tts_resource_label(resource);
         let reason = match attempt.code {
+            Some(45000030) => format!(
+                "{label}：服务未开通（控制台 → 语音技术 → 语音合成 → 开通后再试），原文：{}",
+                attempt.message
+            ),
             Some(code) if code == 20000000 => format!(
-                "{resource}：服务端回了 OK 但没有音频（音色本身校验通过；常见原因是该音色的额度/试用到期，或被停用）{}",
+                "{label}：服务端回了 OK 但没有音频（音色可能未激活/已过期，或被停用）{}",
                 if attempt.message.is_empty() || attempt.message == "OK" { String::new() } else { format!("，{}", attempt.message) }
             ),
-            Some(code) => format!("{resource}：code={code} {}", attempt.message),
-            None => format!("{resource}：{}", attempt.message),
+            Some(code) => format!("{label}：code={code} {}", attempt.message),
+            None => format!("{label}：{}", attempt.message),
         };
         log_line(&format!("[tts] 合成失败 {reason}"));
         reasons.push(reason);
