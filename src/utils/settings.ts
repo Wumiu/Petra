@@ -178,6 +178,8 @@ export interface Settings {
      *  - "full" 明显：每种情绪都传，语速偏 ±8~10（起伏大，容易听出"演"）
      */
     emotionLevel: "off" | "soft" | "full";
+    /** 语速：100 = 服务端"正常"，但真人听着偏快，默认压到 90；范围 50~200（服务端要整数） */
+    speechRate: number;
   };
   /** 语音识别（输入）配置 */
   asr: {
@@ -267,6 +269,7 @@ const DEFAULTS: Settings = {
   tts: {
     enabled: false,
     emotionLevel: "soft",
+    speechRate: 85,
     apiKey: "",
     speakerId: "",
   },
