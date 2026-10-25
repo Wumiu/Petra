@@ -306,13 +306,13 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       <div class="logo">P</div>
       <div>
         <b>PETRA · 控制面板</b>
-        <span id="subline">正在连接桌宠…</span>
+        <span id="subline">正在和桌宠建立连接…</span>
       </div>
     </div>
     <div class="pills" id="pills"></div>
     <div class="tb-actions">
-      <button class="btn btn-sm" id="btnShowPet" title="把桌宠叫到所有窗口前面（被隐藏或压在浏览器后面时用）">👀 桌宠</button>
-      <button class="theme-btn" id="themeBtn" title="切换深浅色">◐</button>
+      <button class="btn btn-sm" id="btnShowPet" title="把桌宠叫到前面（被隐藏或压在其他窗口后面时点击）">看看桌宠</button>
+      <button class="theme-btn" id="themeBtn" title="深浅色切换">◐</button>
     </div>
   </div>
 </header>
@@ -324,7 +324,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   <main class="page" id="page"></main>
 
   <footer class="foot">
-    <span>改一下就立刻生效，没有「保存」这一步——参数直接写进正在运行的那个桌宠，不用重启。</span>
+    <span>改动后立刻生效，无需手动保存和重启</span>
     <span id="footStat"></span>
   </footer>
 </div>
@@ -388,8 +388,8 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     let body = null;
     try { body = await res.json(); } catch (_) {}
     if (res.status === 401) {
-      setBanner("这个面板已经失效了（桌宠重启过，凭证换了）。请回到托盘图标或右键菜单，重新点一次「控制面板」。");
-      throw new Error("凭证已失效");
+      setBanner("这个面板因为凭证过期所以失效啦，如需使用控制面板，请在托盘图标或右键菜单中重新打开控制面板。");
+      throw new Error("凭证失效了喵~");
     }
     if (!res.ok || (body && body.ok === false)) {
       throw new Error((body && body.error) || ("HTTP " + res.status));
@@ -425,59 +425,59 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   const SECTIONS = [
     {
       id: "overview", label: "总览", title: "运行总览",
-      desc: "桌宠当前状态一览。参数在左边几个页签里改，改完统一保存。",
+      desc: "显示桌宠当前状态，参数请在具体页签中修改",
       cards: [
-        { title: "状态", desc: "这些值实时来自正在运行的桌宠。", type: "status" },
-        { title: "常用动作", desc: "点一下立刻执行（跟右键菜单里的是同一套功能）。", type: "quick" },
+        { title: "状态", desc: "由正在运行的桌宠汇报捏", type: "status" },
+        { title: "常用动作", desc: "点击立即执行，也可以用右键菜单捏", type: "quick" },
       ],
     },
     {
       id: "look", label: "外观", title: "外观与动作",
-      desc: "模型本身、大小与边界、活动频率 —— 原来「右键 → 模型」那一整块功能都收在这一页。",
+      desc: "模型、大小与边界和桌宠行为",
       cards: [
         { title: "模型", desc: "", type: "model" },
         {
-          title: "大小与边界", desc: "窗口固定 700×700，模型按基准 300px 缩放。",
+          title: "大小与边界", desc: "窗口固定 700×700，模型按基准 300px 缩放",
           fields: [
-            { path: "modelScale", label: "模型大小", type: "range", min: 0.2, max: 2, step: 0.05, unit: "×", desc: "按当前模型单独记录，切换模型会各自恢复" },
-            { type: "actionSwitch", label: "显示绿框（角色边界）", action: "model-bounds-toggle", stateKey: "modelBounds", desc: "拖下面四个滑条时会自动打开，方便看出边在哪" },
-            { type: "actionSwitch", label: "调试边框（红线）", action: "border", stateKey: "debugBorder", desc: "窗口边界，排查出屏用" },
-            { type: "note", text: "边界松紧**按模型分别保存**：换模型各调各的，重启也记得；拖到很负会把可点区域压小（已做 120×160 保底，不至于点不到）。" },
-            { path: "boundsPadding.left", label: "边界 · 左", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true, desc: "正=往外放宽，负=往里收紧；拖动时绿框实时跟着动" },
+            { path: "modelScale", label: "模型大小", type: "range", min: 0.2, max: 2, step: 0.05, unit: "×", desc: "每个模型单独记录，切换模型会同时切换" },
+            { type: "actionSwitch", label: "显示角色边界（绿框）", action: "model-bounds-toggle", stateKey: "modelBounds", desc: "手动调整边界时会自动打开" },
+            { type: "actionSwitch", label: "调试边框（红框）", action: "border", stateKey: "debugBorder", desc: "窗口边界，检查桌宠是否出屏" },
+            { type: "note", text: "边界会按模型分别保存，换模型需要重新调整；拖到负值时会把可点区域压小（最低120×160）" },
+            { path: "boundsPadding.left", label: "边界 · 左", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true, desc: "正=向外调整，负=向内调整" },
             { path: "boundsPadding.right", label: "边界 · 右", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
             { path: "boundsPadding.top", label: "边界 · 上", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
             { path: "boundsPadding.bottom", label: "边界 · 下", type: "range", min: -120, max: 120, step: 1, unit: "px", live: true },
-            { type: "actions", items: [{ id: "__data:bounds-reset", label: "这个模型：四边归零" }] },
+            { type: "actions", items: [{ id: "__data:bounds-reset", label: "重置此模型四边边界" }] },
             { type: "actions", items: [
-              { id: "bounds", label: "在桌宠窗口里调（带滑条面板）" },
-              { id: "size", label: "大小面板" },
+              { id: "bounds", label: "进入桌宠窗口调整模型边界" },
+              { id: "size", label: "打开调整模型大小面板" },
               { id: "__model:adjust", label: "模型调节（高级参数）" },
             ] },
           ],
         },
         {
-          title: "行为", desc: "影响它在桌面上怎么动、怎么待着。",
+          title: "行为", desc: "影响桌宠行为",
           fields: [
-            { path: "activity", label: "活动频率", type: "select", options: [["low", "低（安静）"], ["mid", "中"], ["high", "高（活泼）"]], desc: "越高，待机小动作与表情越多" },
-            { path: "mouseTrack", label: "跟随鼠标", type: "switch", desc: "视线与脑袋跟着光标转" },
-            { path: "idleMode", label: "待机模式", type: "switch", desc: "开：缩到屏幕边缘睡觉，点它才醒" },
+            { path: "activity", label: "活动频率", type: "select", options: [["low", "低（安静）"], ["mid", "中"], ["high", "高（活泼）"]], desc: "影响桌宠待机小动作和表情" },
+            { path: "mouseTrack", label: "跟随鼠标", type: "switch", desc: "视线跟随光标" },
+            { path: "idleMode", label: "待机模式", type: "switch", desc: "缩到任务栏睡觉" },
           ],
         },
       ],
     },
     {
       id: "interact", label: "交互", title: "交互与声音",
-      desc: "点它、整点报时、游戏音效这些「出声 / 出气泡」的开关。",
+      desc: "点击交互、整点报时、声音",
       cards: [
         {
-          title: "信息气泡", desc: "左键点桌宠时弹出的那块面板。",
+          title: "信息气泡", desc: "左键面板",
           fields: [
             { path: "weatherBubble", label: "点击弹出信息面板", type: "switch", desc: "天气 / 待办 / 陪伴时间" },
-            { path: "weatherCity", label: "天气城市", type: "text", placeholder: "如：杭州（留空用接口返回的城市名）" },
+            { path: "weatherCity", label: "天气城市", type: "text", placeholder: "如：杭州（留空会使用接口返回的城市）" },
           ],
         },
         {
-          title: "整点播报", desc: "每到整点报一次时间，纯本地文案、不花 token。",
+          title: "整点播报", desc: "每个整点报一次时间，使用本地文案，无token消耗",
           fields: [
             { path: "hourlyChime", label: "开启整点播报", type: "switch" },
             { path: "hourlyChimeQuiet", label: "夜间免打扰", type: "switch", desc: "免打扰时段内不播报" },
@@ -486,7 +486,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           ],
         },
         {
-          title: "声音", desc: "音量都按 0~1 存。",
+          title: "声音", desc: "音量数值区间为0~1",
           fields: [
             { path: "audioEnabled", label: "声音总开关", type: "switch" },
             { path: "gameSound", label: "游戏音效", type: "switch" },
@@ -499,31 +499,31 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "assistant", label: "小助手", title: "小助手",
-      desc: "对话模型的线路、人设、称呼与主动问候节奏。API Key 走系统钥匙串，不在这页明文保存。",
+      desc: "API模型，小助手人设、称呼、主动问候节奏等。API Key不在此页明文保存",
       cards: [
         {
-          title: "模型线路", desc: "供应商 / 模型 / 端点 / Key 都在这一张卡里。Key 按供应商或预设分槽保存，换供应商会用各自那一把。",
+          title: "API设置", desc: "供应商、模型、端点、Key，通过预设分组保存",
           fields: [
             { path: "assistant.enabled", label: "启用小助手", type: "switch" },
             { path: "assistant.provider", label: "供应商", type: "select", options: "providers" },
-            { path: "assistant.model", label: "模型", type: "text", placeholder: "留空用供应商默认" },
-            { path: "assistant.customBaseUrl", label: "自定义接口地址", type: "text", placeholder: "仅“自定义”供应商需要" },
-            { type: "actions", items: [{ id: "__data:models-fetch", label: "自动获取模型列表" }] },
-            { type: "secret", key: "assistant", label: "API Key", desc: "不回显；留空表示不改，填了就覆盖当前供应商/预设的槽位" },
+            { path: "assistant.model", label: "模型", type: "text", placeholder: "留空则使用供应商默认模型" },
+            { path: "assistant.customBaseUrl", label: "自定义接口地址", type: "text", placeholder: "仅选择自定义供应商时填写" },
+            { type: "actions", items: [{ id: "__data:models-fetch", label: "获取模型列表" }] },
+            { type: "secret", key: "assistant", label: "API Key", desc: "填写时不会显示，填写后覆盖当前预设设置" },
             { type: "usage" },
           ],
         },
         { title: "预设", desc: "", type: "presets" },
         { title: "对话记录", desc: "", type: "chat" },
         {
-          title: "人设与语言", desc: "人设会拼进每轮系统提示。",
+          title: "人设与语言", desc: "人设将拼进每轮系统提示",
           fields: [
-            { type: "note", text: "人设现在有独立页面了 —— 顶栏「人设」：姓名/年龄/身份/世界观/欲望/性格/说话方式/口头禅/表情，一格一格填。" },
-            { path: "assistant.nickname", label: "怎么称呼你", type: "text", placeholder: "留空让它自己决定" },
+            { type: "note", text: "人设请在人设页签中填写" },
+            { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空让它自己决定" },
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
               { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不自动收起）" },
-            { type: "hotkey", label: "呼出快捷键", desc: "点「录制」后在浏览器里按下组合键（Esc 取消）" },
+            { type: "hotkey", label: "呼出快捷键", desc: "点击录制后在浏览器里按下组合键（Esc 取消）" },
             
           ],
         },
@@ -531,10 +531,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "persona", label: "人设", title: "人设 · 它是谁",
-      desc: "决定它说话像谁。填得越具体，演起来越稳；留空的不写进提示词。改一下立刻生效，右侧有拼好的最终提示词预览。",
+      desc: "决定它的说话发生，填得越具体人设越稳定。改动后立刻生效，右侧为最终提示词预览",
       cards: [
         {
-          title: "它是谁", desc: "身份类信息，决定它用什么口吻、举什么例子。",
+          title: "它是谁", desc: "它的身份",
           fields: [
             { path: "assistant.personaFields.name", label: "名字 / 昵称", type: "text", placeholder: "如：小满" },
             { path: "assistant.personaFields.age", label: "年龄", type: "text", placeholder: "如：看着十七八岁，不报岁数" },
@@ -544,20 +544,20 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           ],
         },
         {
-          title: "它怎么说话", desc: "这几项直接影响回复的长度和语气。",
+          title: "它怎么说话", desc: "影响回复的长度和语气",
           fields: [
             { path: "assistant.personaFields.traits", label: "性格关键词", type: "textarea", rows: 4, placeholder: "如：安静、细心、嘴硬心软、偶尔犯困、被夸会装作没听见" },
             { path: "assistant.personaFields.speech", label: "说话方式", type: "textarea", rows: 7, placeholder: "如：短句为主，像打字不像念稿；默认 5~25 字；少用感叹号" },
             { path: "assistant.personaFields.catchphrase", label: "口头禅", type: "text", placeholder: "如：嗯…我在 / 该喝水了哦 / 又要熬夜？" },
-            { path: "assistant.personaFields.emoji", label: "喜欢用的表情 / 动作", type: "text", placeholder: "如：歪头、揉眼睛、尾巴甩一下（一条最多一个）" },
+            { path: "assistant.personaFields.emoji", label: "喜欢用的表情 / 动作", type: "text", placeholder: "如：歪头、揉眼睛（最多一个）" },
           ],
         },
         {
-          title: "人设预设", desc: "把现在这套人设（含模型线路）存成预设；以后想换回来，点「应用」就整套还原 —— 这就是一键换人格。",
+          title: "人设预设", desc: "把当前人设（含API）保存为预设",
           type: "presets",
         },
         {
-          title: "自由补充", desc: "不想被分栏限制的，直接在这写；会拼在结构化内容后面。",
+          title: "自由补充", desc: "如果不想被分栏限制可以在这里填写，会拼最终提示词之后",
           fields: [
             { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多但会记住你说过的事，偶尔冒一句冷幽默，提醒你休息时从不啰嗦" },
             { type: "personaPreview" },
@@ -571,27 +571,27 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       desc: "朗读（TTS）、麦克风（ASR）、跟随音乐歌词。",
       cards: [
         {
-          title: "语音朗读", desc: "Key 存在系统钥匙串里，面板不回显；留空表示不改，填了就覆盖。",
+          title: "语音朗读", desc: "Key保存在本地，填写时面板不显示，填写后覆盖原设置",
           fields: [
             { path: "tts.enabled", label: "开启朗读", type: "switch" },
             { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
-            { type: "secret", key: "tts", label: "语音朗读 Key", desc: "不回显，只有你自己知道；要换就直接粘新的再保存" },
+            { type: "secret", key: "tts", label: "语音朗读 Key", desc: "填写时面板不显示，填写后覆盖原设置" },
             { type: "actions", items: [{ id: "tts-test", label: "试听一句" }] },
           ],
         },
         {
-          title: "语音识别", desc: "说话输入。默认走云端模型；关掉下面的开关才先试系统识别。",
+          title: "语音识别", desc: "语音输入，默认通过云端模型识别；关闭优先云端识别则使用系统识别",
           fields: [
             { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
-            { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置 Key 会直接显示在这里，可以复制或换成自己的" },
-            { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风直接走 XingChen（下面的模型）；关：Windows 先试系统识别" },
-            { path: "asr.denoise", label: "降噪 + 自动增益", type: "switch", desc: "采集端就做降噪/自动增益/回声消除：风扇声、麦克风离得远时更清楚；极安静环境觉得齿音被削可以关掉" },
-            { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号没开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
+            { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置Key会直接显示，可以进行更换，填写后覆盖原设置" },
+            { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风通过下方标注的模型识别；关：使用系统识别" },
+            { path: "asr.denoise", label: "降噪 + 自动增益", type: "switch", desc: "采集端进行降噪/自动增益/回声消除，在喧闹环境下识别更清楚；安静环境下觉得齿音被削可以选择关闭" },
+            { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号未开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
             { type: "asrProbe" },
           ],
         },
         {
-          title: "歌词", desc: "识别正在播放的歌，气泡里跟唱。",
+          title: "歌词", desc: "识别播放歌曲，气泡显示歌词",
           fields: [
             { path: "musicLyrics", label: "显示歌词气泡", type: "switch" },
             { path: "lyricsTranslate", label: "显示翻译", type: "switch", desc: "来源带译文时才显示" },
@@ -626,17 +626,17 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "perm", label: "权限", title: "权限与文件",
-      desc: "小助手能替你做的事的边界。放宽前想清楚。",
+      desc: "小助手能替你决定所做事情的边界，请务必在修改前思考其必要性，如修改后造成财产经济损失，本程序概不负责",
       cards: [
         {
           title: "命令与写入", desc: "关掉时会弹确认气泡，逐次确认。",
           fields: [
-            { path: "allowAllShell", label: "免确认执行命令", type: "switch", desc: "危险：等于把终端交给它" },
+            { path: "allowAllShell", label: "免确认执行命令", type: "switch", desc: "危险：等于把终端交给它，可能带来不可预知的后果或损失" },
             { path: "allowAllFileWrite", label: "免确认写文件", type: "switch" },
           ],
         },
         {
-          title: "文件禁止目录", desc: "一行一个，支持 # 注释。这些目录它一律不准读写。",
+          title: "文件禁止目录", desc: "一行一个，支持 # 注释，它被禁止读写这些目录",
           fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
         },
 
@@ -711,7 +711,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
    * 文本类会被连续输入打断，所以按类型给不同防抖：滑条 120ms、文本 600ms。
    */
   let commitTimers = {};
-  /** 还没发出去的补丁：路径 → 值。页面被关掉/刷新时用它补发一次，避免"改完一刷新就没了" */
+  /** 还没发出去的补丁：路径 → 值。页面被关掉/刷新时用它补发一次，避免"刷新后失效" */
   const pendingPatches = new Map();
   function commit(path, value, delay) {
     // 本地副本先更新：之后重新渲染/读值都直接是新的
@@ -738,9 +738,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         flashSaved();
       } catch (e) {
         if (e instanceof TypeError) {
-          setBanner("连不上桌宠（Petra 可能已经退出）。重新打开 Petra 后，再从菜单点一次「控制面板」。");
+          setBanner("无法获得桌宠信号（Petra 可能已经退出），请重启控制面板");
         }
-        toast("没生效：" + e.message, "err");
+        toast("未生效：" + e.message, "err");
       }
     }, delay == null ? 120 : delay);
   }
@@ -782,7 +782,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       const wrap = el("div", "row");
       wrap.style.display = "block";
       wrap.appendChild(el("div", "rlabel", "识别自检"));
-      wrap.appendChild(el("div", "rdesc", "选一个本地音频（wav/mp3/m4a…），看它能不能真的转成文字 —— 顺便验证 Key 和模型是否可用。"));
+      wrap.appendChild(el("div", "rdesc", "选一个本地音频（文件格式：wav/mp3/m4a…）以测试功能是否可用"));
       const input = document.createElement("input");
       input.type = "file";
       input.accept = "audio/*";
@@ -818,7 +818,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       const wrap = el("div", "row");
       wrap.style.display = "block";
       const head = el("div", "rlabel", "试演一句");
-      const desc = el("div", "rdesc", "真发一次请求，用现在这套人设让它打招呼 —— 看到的回复就是模型实际拿到的人设。");
+      const desc = el("div", "rdesc", "使用当前人设打招呼，看到的回复即为模型获得的人设");
       const btn = el("button", "btn btn-sm btn-primary", "用人设试演");
       btn.style.marginTop = "8px";
       btn.onclick = () => runAction("__data:persona-test", "人设试演");
@@ -870,7 +870,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       inp.className = "kb-input";
       inp.type = reveal ? "text" : "password";
       inp.value = current;
-      inp.placeholder = reveal ? "粘贴 Key" : configured ? "已配置，留空不改" : "粘贴 Key";
+      inp.placeholder = reveal ? "粘贴 Key" : configured ? "已配置" : "粘贴 Key";
       inp.spellcheck = false;
       inp.autocomplete = "off";
       inputRow.appendChild(inp);
@@ -878,7 +878,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       save.onclick = () => runAction(`__key:${spec.key}`, { value: inp.value });
       inputRow.appendChild(save);
       const clr = el("button", "btn btn-sm btn-ghost", "清除");
-      clr.onclick = () => { if (confirm("清空这个 Key？清空后回到内置/未配置状态。")) runAction(`__key:${spec.key}`, { value: "" }); };
+      clr.onclick = () => { if (confirm("清空这个 Key？清空后将回到内置/未配置状态")) runAction(`__key:${spec.key}`, { value: "" }); };
       inputRow.appendChild(clr);
       block.appendChild(inputRow);
       return block;
@@ -1012,7 +1012,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         const wrap = el("div", "modelwrap");
         wrap.appendChild(row);
         if (models.length) {
-          wrap.appendChild(el("div", "rdesc", `已获取 ${models.length} 个模型，点一下填入：`));
+          wrap.appendChild(el("div", "rdesc", `已获取 ${models.length} 个模型，点击以填入：`));
           const chips = el("div", "modelpick");
           models.forEach((mm) => {
             const on = (cur ?? "") === mm;
@@ -1026,7 +1026,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           });
           wrap.appendChild(chips);
         } else {
-          wrap.appendChild(el("div", "rdesc", "还没拉取过 —— 点上面的「自动获取模型列表」，拉回来就能直接点选。"));
+          wrap.appendChild(el("div", "rdesc", "未拉取 —— 点击自动获取模型列表以获取模型"));
         }
         return wrap;
       }
@@ -1092,7 +1092,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function presetsCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "预设"));
-    card.appendChild(el("p", "cd", "一套 API 配置存成一个预设，一键切换。Key 各自独立存（预设槽位），不会互相覆盖。"));
+    card.appendChild(el("p", "cd", "一套 API 配置存为一个预设，一键切换。Key 各自独立存在预设槽位中，不会互相覆盖。"));
     const d = state.meta.data || {};
     const list = (state.meta.presets || {}).list || (d.presets && d.presets.list) || [];
     const activeId = (state.meta.presets || {}).activeId || "";
@@ -1118,7 +1118,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       btnRename.onclick = () => runAction(`__preset:rename:${p.id}`, { name: nameInput.value }, "改名");
       const btnDel = el("button", "btn btn-sm btn-danger", "删除");
       btnDel.onclick = () => {
-        if (!confirm(`删除预设「${p.name}」？它的 Key 也会一起清掉。`)) return;
+        if (!confirm(`删除预设「${p.name}」？它的 Key 会被同时清除。`)) return;
         runAction(`__preset:delete:${p.id}`, "删除预设");
       };
       ctl.append(nameInput, btnApply, btnRename, btnDel);
@@ -1185,7 +1185,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function diaryCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "日记本"));
-    card.appendChild(el("p", "cd", "点「读取」把这边的日记拉下来看，只读。"));
+    card.appendChild(el("p", "cd", "点击读取看看它的日记，只读。"));
     const b = el("button", "btn btn-sm btn-primary", "读取日记");
     b.onclick = () => runAction("__data:diary-load", "读取日记");
     card.appendChild(b);
@@ -1206,7 +1206,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function actionPlayCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "动作试玩"));
-    card.appendChild(el("p", "cd", "点一下让桌宠当场做这个动作。"));
+    card.appendChild(el("p", "cd", "点击后桌宠做动作给你看。"));
     const list = (state.meta.data && state.meta.data.actionList) || [];
     if (!list.length) { card.appendChild(el("div", "empty", "当前模型没有动作库")); return card; }
     const wrap = el("div", "btn-row");
