@@ -365,6 +365,8 @@ window.addEventListener(RIICHI_SOUND_SETTINGS_EVENT, () => {
 });
 let engine!: BehaviorEngine;
 let scaleFactor = 1; // 物理↔逻辑坐标转换（系统缩放）
+/** 窗口客户区**实际物理像素**尺寸：交互区域与光标判定都用它换算，别用 dpr */
+let physicalViewport = { w: 0, h: 0 };
 let winSize = WIN; // 当前窗口边长（模型缩放时跟随，默认 300）
 // 调试边框（红线勾勒窗口边界）
 let debugBorderVisible = false;
@@ -1307,6 +1309,21 @@ async function boot() {
 
   const win = getCurrentWindow();
   scaleFactor = await win.scaleFactor().catch(() => 1);
+  // 交互区域的坐标换算**不能**直接用 scaleFactor/dpr：窗口是 700 物理像素、页面也是
+  // 700 CSS 像素时，dpr 仍会报 2（DPI=192），按 dpr 换算会把区域整体放大一倍，
+  // 于是"指着宠物却判定在区域外"→ 整窗穿透、点不动也拖不动。这里用实测比例。
+  const refreshPhysicalViewport = async () => {
+    try {
+      const sz = await win.innerSize();
+      if (sz && sz.width > 0 && sz.height > 0) {
+        physicalViewport = { w: sz.width, h: sz.height };
+      }
+    } catch {
+      /* 取不到就沿用旧值 */
+    }
+  };
+  await refreshPhysicalViewport();
+  window.addEventListener("resize", () => void refreshPhysicalViewport());
   void win.onScaleChanged(({ payload }) => {
     scaleFactor = payload.scaleFactor;
     engine?.setScale(scaleFactor);
@@ -2113,15 +2130,36 @@ function visibleElementRect(element: Element): LogicalRect | null {
 }
 
 function collectInteractionRegions(): PhysicalInteractiveRegion[] {
-  const scale = scaleFactor || window.devicePixelRatio || 1;
+  // 区域一律按 **CSS 像素** 上报：Rust 侧用「真实客户区尺寸 / 这里的 innerWidth」
+  // 把光标换算到同一坐标系。用 dpr 或 scaleFactor 换算会在「窗口 700 物理像素、
+  // 页面 700 CSS 像素、dpr 却报 2」的机器上把区域整体放大一倍 → 判定在区域外 → 穿透。
+  const scale = 1;
   const clientPhysicalWidth = Math.round(window.innerWidth * scale);
   const clientPhysicalHeight = Math.round(window.innerHeight * scale);
   const regions: PhysicalInteractiveRegion[] = [];
 
   const pet = getModelRect();
+  // 点击区域保底：边界松紧（-120~120）可以把包围盒压成一条几十像素的细缝，
+  // 结果"明明指着宠物却点不动、拖动直接穿透"（实测出现过 33px 宽的区域）。
+  // 这里只放宽**交互区域**，不动绿框/面板定位用的原始 getModelRect()。
+  const MIN_W = 120;
+  const MIN_H = 160;
+  const petHit = { ...pet };
+  if (petHit.right - petHit.left < MIN_W) {
+    const cx = (petHit.left + petHit.right) / 2;
+    petHit.left = cx - MIN_W / 2;
+    petHit.right = cx + MIN_W / 2;
+    petHit.width = MIN_W;
+  }
+  if (petHit.bottom - petHit.top < MIN_H) {
+    const cy = (petHit.top + petHit.bottom) / 2;
+    petHit.top = cy - MIN_H / 2;
+    petHit.bottom = cy + MIN_H / 2;
+    petHit.height = MIN_H;
+  }
   const petRegion = logicalRectToPhysicalRegion(
     "pet",
-    pet,
+    petHit,
     scale,
     clientPhysicalWidth,
     clientPhysicalHeight,
@@ -2172,7 +2210,13 @@ async function flushInteractionRegions() {
       if (!force && fingerprint === lastInteractionFingerprint && now - lastInteractionSyncAt < 1000) {
         continue;
       }
-      await invoke("sync_interaction_regions", { regions });
+      await invoke("sync_interaction_regions", {
+        regions,
+        // 视口尺寸随区域一起上报：Rust 侧用它把 Win32 光标坐标换算到同一坐标系
+        // （高 DPI / WebView 缩放下 ScreenToClient 的刻度可能和这里差 2 倍）
+        viewportWidth: Math.round(window.innerWidth),
+        viewportHeight: Math.round(window.innerHeight),
+      });
       lastInteractionFingerprint = fingerprint;
       lastInteractionSyncAt = now;
     }
@@ -3601,6 +3645,10 @@ async function handlePanelPresetAction(kind: string, payload: unknown): Promise<
       a.provider = p.provider;
       a.customBaseUrl = p.customBaseUrl;
       a.model = p.model;
+      // 人设也跟着还原：用户要的"一键切换人格"，只换模型不换人等于没换
+      if (p.personaFree !== undefined) a.personaFree = p.personaFree;
+      if (p.personaFields) a.personaFields = { ...a.personaFields, ...p.personaFields };
+      a.persona = composePersona(a);
       saveSettings(settings);
       clearApiKeyCache();
       clearPetTalkKeyCache();
@@ -3610,7 +3658,16 @@ async function handlePanelPresetAction(kind: string, payload: unknown): Promise<
       const id = `p${Date.now().toString(36)}`;
       // 先把当前生效的 Key 复制进新槽位，再切作用域，否则「存成预设」后 Key 就丢了
       const currentKey = await getApiKey(currentKeyScope()).catch(() => "");
-      list.push({ id, name, provider: a.provider, customBaseUrl: a.customBaseUrl, model: a.model });
+      list.push({
+        id,
+        name,
+        provider: a.provider,
+        customBaseUrl: a.customBaseUrl,
+        model: a.model,
+        // 连人设一起存：这就是用户说的"改好一个预设后点保存，下次一键换回来"
+        personaFree: a.personaFree ?? "",
+        personaFields: { ...a.personaFields },
+      });
       a.activePresetId = id;
       saveSettings(settings);
       if (currentKey) await setApiKey(currentKey, presetKeyScope(id)).catch(() => {});
@@ -3642,6 +3699,17 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
   const p = (payload ?? {}) as Record<string, unknown>;
   try {
     switch (kind) {
+      case "bounds-reset":
+        // 只清当前模型这一份记录，别的模型不受影响（边界就是按模型存的）
+        setCurrentBoundsPadding({ left: 0, right: 0, top: 0, bottom: 0 });
+        toast("当前模型的边界已归零");
+        break;
+      case "website":
+        await invoke("open_url", { url: "http://petra.xin/" });
+        break;
+      case "check-update":
+        void checkUpdate(true);
+        break;
       case "usage-reset":
         resetUsageStats();
         toast("用量统计已清零");

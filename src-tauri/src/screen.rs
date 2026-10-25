@@ -5,7 +5,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW,
+    GetClientRect, GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsWindowVisible, SetWindowLongPtrW,
     SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOREDRAW, SWP_NOZORDER, SWP_NOSIZE, WS_EX_LAYERED, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT,
@@ -19,6 +19,16 @@ fn hwnd_of(win: &tauri::WebviewWindow) -> Option<HWND> {
         RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut core::ffi::c_void)),
         _ => None,
     }
+}
+
+/// 窗口客户区的**真实物理像素**尺寸（Win32 口径）。
+/// 不能用 tauri 的 `inner_size()`：在高 DPI 下它可能返回「逻辑尺寸 × 缩放」，
+/// 与实际客户区对不上，而光标坐标是按真实客户区算的。
+pub fn client_size(win: &tauri::WebviewWindow) -> Option<(i32, i32)> {
+    let hwnd = hwnd_of(win)?;
+    let mut r = RECT::default();
+    unsafe { GetClientRect(hwnd, &mut r).ok()? };
+    Some((r.right - r.left, r.bottom - r.top))
 }
 
 pub fn cursor_pos(app: &tauri::AppHandle) -> CursorPos {
