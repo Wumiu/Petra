@@ -3597,6 +3597,10 @@ async function handlePanelPresetAction(kind: string, payload: unknown): Promise<
       a.provider = p.provider;
       a.customBaseUrl = p.customBaseUrl;
       a.model = p.model;
+      // 人设也跟着还原：用户要的"一键切换人格"，只换模型不换人等于没换
+      if (p.personaFree !== undefined) a.personaFree = p.personaFree;
+      if (p.personaFields) a.personaFields = { ...a.personaFields, ...p.personaFields };
+      a.persona = composePersona(a);
       saveSettings(settings);
       clearApiKeyCache();
       clearPetTalkKeyCache();
@@ -3606,7 +3610,16 @@ async function handlePanelPresetAction(kind: string, payload: unknown): Promise<
       const id = `p${Date.now().toString(36)}`;
       // 先把当前生效的 Key 复制进新槽位，再切作用域，否则「存成预设」后 Key 就丢了
       const currentKey = await getApiKey(currentKeyScope()).catch(() => "");
-      list.push({ id, name, provider: a.provider, customBaseUrl: a.customBaseUrl, model: a.model });
+      list.push({
+        id,
+        name,
+        provider: a.provider,
+        customBaseUrl: a.customBaseUrl,
+        model: a.model,
+        // 连人设一起存：这就是用户说的"改好一个预设后点保存，下次一键换回来"
+        personaFree: a.personaFree ?? "",
+        personaFields: { ...a.personaFields },
+      });
       a.activePresetId = id;
       saveSettings(settings);
       if (currentKey) await setApiKey(currentKey, presetKeyScope(id)).catch(() => {});

@@ -342,6 +342,29 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   const getPath = (obj, path) => path.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const esc = (s) => String(s);
 
+  /** 把还没发出去的补丁立刻发一遍（页面要关了/要刷新了，走 keepalive 保证发得出去） */
+  function flushPendingPatches() {
+    if (!pendingPatches.size) return;
+    const patch = {};
+    for (const [path, value] of pendingPatches) {
+      const parts = path.split(".");
+      let cur = patch;
+      parts.slice(0, -1).forEach((k) => { cur[k] = cur[k] || {}; cur = cur[k]; });
+      cur[parts[parts.length - 1]] = value;
+    }
+    pendingPatches.clear();
+    try {
+      fetch("/api/settings", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-panel-token": TOKEN },
+        body: JSON.stringify({ patch }),
+        keepalive: true,
+      });
+    } catch (_) {}
+  }
+  window.addEventListener("pagehide", flushPendingPatches);
+  window.addEventListener("beforeunload", flushPendingPatches);
+
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       ...opts,
@@ -513,6 +536,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           ],
         },
         {
+          title: "人设预设", desc: "把现在这套人设（含模型线路）存成预设；以后想换回来，点「应用」就整套还原 —— 这就是一键换人格。",
+          type: "presets",
+        },
+        {
           title: "自由补充", desc: "不想被分栏限制的，直接在这写；会拼在结构化内容后面。",
           fields: [
             { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多但会记住你说过的事，偶尔冒一句冷幽默，提醒你休息时从不啰嗦" },
@@ -658,6 +685,8 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
    * 文本类会被连续输入打断，所以按类型给不同防抖：滑条 120ms、文本 600ms。
    */
   let commitTimers = {};
+  /** 还没发出去的补丁：路径 → 值。页面被关掉/刷新时用它补发一次，避免"改完一刷新就没了" */
+  const pendingPatches = new Map();
   function commit(path, value, delay) {
     // 本地副本先更新：之后重新渲染/读值都直接是新的
     const parts = path.split(".");
@@ -670,6 +699,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       const pre = document.getElementById("personaPre");
       if (pre) pre.value = composePersonaText() || "（还没填内容）";
     }
+    pendingPatches.set(path, value);
     clearTimeout(commitTimers[path]);
     commitTimers[path] = setTimeout(async () => {
       const patch = {};
@@ -678,6 +708,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       cur[parts[parts.length - 1]] = value;
       try {
         await api("/api/settings", { method: "POST", body: JSON.stringify({ patch }) });
+        pendingPatches.delete(path);
         flashSaved();
       } catch (e) {
         if (e instanceof TypeError) {

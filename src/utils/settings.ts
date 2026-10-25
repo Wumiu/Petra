@@ -58,6 +58,9 @@ export interface AssistantPreset {
   provider: AssistantProvider;
   customBaseUrl: string;
   model: string;
+  /** 人设快照：存预设时一起存下来，切换回来时连人设一起还原（旧存档没有这两个字段） */
+  personaFree?: string;
+  personaFields?: PersonaFields;
 }
 
 export interface AssistantSettings {
