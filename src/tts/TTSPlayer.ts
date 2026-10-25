@@ -4,6 +4,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { classifyAssistantEmotion } from "../assistant/EmotionEngine";
 
 class TTSPlayer {
   private enabled = false;
@@ -47,11 +48,15 @@ class TTSPlayer {
     if (this.current) this.current.volume = muted ? 0 : 1;
   }
 
-  setConfig(enabled: boolean, apiKey: string, speakerId: string, language = "") {
+  /** 语速：100 = 正常（服务端要整数，50~200） */
+  private speechRate = 100;
+
+  setConfig(enabled: boolean, apiKey: string, speakerId: string, language = "", speechRate = 100) {
     this.enabled = enabled;
     this.apiKey = apiKey;
     this.speakerId = speakerId;
     this.language = language;
+    this.speechRate = speechRate;
     if (!enabled) this.stop();
   }
 
@@ -127,11 +132,16 @@ class TTSPlayer {
 
   private async preload(item: { text: string; audio: HTMLAudioElement | null; ready: boolean; blobUrl: string | null }) {
     try {
+      // 按这一句的情绪给 emotion：不传的话整段语音是平的（用户反馈「没有语气、死板」）。
+      // 直接复用助手那套情绪分类，逐句带上，语气才有起伏。
+      const emo = classifyAssistantEmotion(item.text);
       const base64 = await invoke<string>("tts_synthesize", {
         apiKey: this.apiKey,
         speaker: this.speakerId,
         text: item.text,
         language: this.language || undefined,
+        emotion: emo === "neutral" ? undefined : emo,
+        speechRate: this.speechRate,
       });
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);
