@@ -1088,7 +1088,7 @@ async function send(text: string) {
     ttsKey,
     s.tts.speakerId,
     s.assistant.outputLanguage ?? "",
-    s.tts.speechRate ?? 85,
+    s.tts.speechRate ?? 100,
     s.tts.emotionLevel ?? "soft",
   );
   // 新消息开始就掐掉上一段语音：否则旧回复还在朗读，新回复的语音排在旧队列后面，

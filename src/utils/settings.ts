@@ -269,7 +269,7 @@ const DEFAULTS: Settings = {
   tts: {
     enabled: false,
     emotionLevel: "soft",
-    speechRate: 85,
+    speechRate: 100,
     apiKey: "",
     speakerId: "",
   },

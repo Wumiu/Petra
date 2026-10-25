@@ -359,7 +359,7 @@ invoke<string>("get_tts_key").then(k => {
     k,
     settings.tts.speakerId,
     settings.assistant.outputLanguage ?? "",
-    settings.tts.speechRate ?? 85,
+    settings.tts.speechRate ?? 100,
     settings.tts.emotionLevel ?? "soft",
   );
 }).catch(() => {});
