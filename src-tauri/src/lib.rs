@@ -3841,8 +3841,17 @@ async fn tts_synthesize(
     //   seed-tts-2.0 = 豆包语音合成 2.0（官方音色，支持 context_texts 语音指令）
     let is_tts2 = mode.as_deref() == Some("tts2");
     let resource = if is_tts2 { "seed-tts-2.0" } else { "seed-icl-2.0" };
+    // tts2 必须用「豆包语音合成2.0 官方音色」；克隆音色 ID（S_/ICL_ 开头）在 2.0 上会
+    // 直接报 InvalidModelType，所以这里兜一层：不是官方音色就退回内置默认音色。
+    const TTS2_DEFAULT_VOICE: &str = "zh_female_vv_uranus_bigtts";
     let use_speaker = if is_tts2 {
-        voice.filter(|v| !v.trim().is_empty()).unwrap_or(speaker.clone())
+        let v = voice.unwrap_or_default();
+        let v = v.trim();
+        if v.is_empty() || v.starts_with("S_") || v.starts_with("ICL_") {
+            TTS2_DEFAULT_VOICE.to_string()
+        } else {
+            v.to_string()
+        }
     } else {
         speaker.clone()
     };
