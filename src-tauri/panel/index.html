@@ -91,7 +91,7 @@ body::after{
 /* ===================== 灵动岛导航 ===================== */
 .navbar{position:sticky; top:61px; z-index:29; padding:14px 0 10px; display:flex; justify-content:center; min-width:0}
 .island{
-  position:relative; display:flex; gap:2px; padding:5px; border-radius:999px;
+  position:relative; display:flex; align-items:center; gap:2px; padding:5px; border-radius:999px;
   border:1px solid var(--line); background:color-mix(in srgb, var(--card-strong) 84%, transparent);
   backdrop-filter:blur(16px) saturate(1.4); box-shadow:var(--shadow);
   max-width:100%; overflow-x:auto; scrollbar-width:none;
@@ -99,16 +99,23 @@ body::after{
 .island::-webkit-scrollbar{display:none}
 .island button{
   position:relative; z-index:1; border:0; background:transparent; color:var(--txt2);
-  font:inherit; font-size:13px; padding:7px 14px; border-radius:999px; cursor:pointer;
+  font:inherit; font-size:13px; padding:0 14px; border-radius:999px; cursor:pointer;
   white-space:nowrap; transition:color .18s;
+  /* 用 flex 居中，别靠 padding + 继承行高：中文在 1.55 行高下会偏下，
+     高 DPI（125%）时「总览」两个字几乎贴着下边框。 */
+  display:inline-flex; align-items:center; justify-content:center;
+  line-height:1; min-height:34px; box-sizing:border-box;
 }
 .island button:hover{color:var(--txt)}
 .island button.active{color:var(--txt); font-weight:600}
 .ind{
-  position:absolute; top:5px; height:calc(100% - 10px); border-radius:999px;
+  position:absolute; top:5px; left:0; height:calc(100% - 10px); border-radius:999px;
   background:var(--brand-soft); border:1px solid color-mix(in srgb, var(--brand) 34%, transparent);
   transition:transform .28s cubic-bezier(.4,1.3,.5,1), width .28s cubic-bezier(.4,1.3,.5,1);
   pointer-events:none;
+  /* left:0 不能省：绝对定位元素 left:auto 时会落在"静态位置"（flex 容器的内容起点，
+     已经含了 padding），再叠加下面的 translateX(offsetLeft) 就等于偏移了两遍 ——
+     表现就是选中项的文字在胶囊里偏左。 */
 }
 
 /* 断连/失效横幅：贴在最上面，颜色要一眼能看见 */
