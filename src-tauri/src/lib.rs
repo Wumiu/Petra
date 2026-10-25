@@ -3783,18 +3783,43 @@ fn list_installed_apps() -> String {
     format!("开始菜单里可启动的软件共 {total} 个{tail}：{}", names.join("、"))
 }
 
-#[tauri::command]
-async fn tts_synthesize(
-    api_key: String,
-    speaker: String,
-    text: String,
-    language: Option<String>,
-) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client: {e}"))?;
+/// 豆包 TTS 的流式端点（一次 POST 回一串 JSONL，音频在 data 字段里）
+const TTS_ENDPOINT: &str = "https://openspeech.bytedance.com/api/v3/tts/unidirectional";
 
+/// 声音复刻的两条通道，**必须按音色的版本选对**：
+///   - `seed-icl-2.0`            声音复刻 2.0（在 2.0 控制台复刻出来的音色）
+///   - `volc.megatts.voiceclone`  声音复刻 1.0（老音色，status 接口里 version=V1）
+///
+/// 实测（2026-10-25，用户音色 S_rD64E0Hg2 是 V1）：拿 2.0 通道去合成 V1 音色时，
+/// 服务端**返回 HTTP 200 + code 20000000 "OK"，但一个音频字节都不给**
+/// （sentence.phonemes 为空、data 全为 null）——不是报错，所以代码里既播不出声、也看不到原因。
+/// 因此这里两条通道都试一遍，谁真的返回了音频就用谁。
+const TTS_RESOURCES: [&str; 2] = ["seed-icl-2.0", "volc.megatts.voiceclone"];
+
+/// 单次合成尝试的结果（"没有音频"也是一种结果，要能说清楚原因）
+struct TtsAttempt {
+    code: Option<i64>,
+    message: String,
+    audio: String,
+}
+
+fn tts_request_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}{:x}", std::process::id())
+}
+
+/// 打一次合成请求，把 JSONL 里的音频拼起来；同时记住服务端给的 code/message。
+async fn tts_attempt(
+    client: &reqwest::Client,
+    api_key: &str,
+    speaker: &str,
+    text: &str,
+    language: Option<&str>,
+    resource: &'static str,
+) -> TtsAttempt {
     let mut req = serde_json::json!({
         "req_params": {
             "text": text,
@@ -3803,39 +3828,110 @@ async fn tts_synthesize(
         }
     });
     if let Some(lang) = language.filter(|l| !l.is_empty()) {
-        req["req_params"]["explicit_language"] = serde_json::Value::String(lang);
+        req["req_params"]["explicit_language"] = serde_json::Value::String(lang.to_string());
     }
 
-    let resp = client
-        .post("https://openspeech.bytedance.com/api/v3/tts/unidirectional")
-        .header("X-Api-Key", &api_key)
-        .header("X-Api-Resource-Id", "seed-icl-2.0")
-        .header("X-Api-Request-Id", &format!("{:x}{:x}{:x}{:x}",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-            std::process::id()))
+    let mut attempt = TtsAttempt { code: None, message: String::new(), audio: String::new() };
+
+    let sent = client
+        .post(TTS_ENDPOINT)
+        .header("X-Api-Key", api_key)
+        .header("X-Api-Resource-Id", resource)
+        .header("X-Api-Request-Id", tts_request_id())
         .header("Content-Type", "application/json")
         .json(&req)
         .send()
-        .await
-        .map_err(|e| format!("TTS request: {e}"))?;
+        .await;
+    let resp = match sent {
+        Ok(r) => r,
+        Err(e) => {
+            attempt.message = format!("请求失败: {e}");
+            return attempt;
+        }
+    };
+    let status = resp.status();
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            attempt.message = format!("读取响应失败: {e}");
+            return attempt;
+        }
+    };
 
-    let body = resp.text().await.map_err(|e| format!("TTS read: {e}"))?;
-    let mut combined = String::new();
     for line in body.lines() {
         let t = line.trim();
-        if t.is_empty() { continue; }
-        if let Ok(j) = serde_json::from_str::<serde_json::Value>(t) {
-            if let Some(data) = j.get("data").and_then(|d| d.as_str()) {
-                combined.push_str(data);
+        if t.is_empty() {
+            continue;
+        }
+        let Ok(j) = serde_json::from_str::<serde_json::Value>(t) else { continue };
+        if let Some(d) = j.get("data").and_then(|d| d.as_str()) {
+            attempt.audio.push_str(d);
+        }
+        // 只在"真错误"上记 code：0 = 正常分片，20000000 = 全流程 OK（但它也常常配着空音频）
+        if let Some(c) = j.get("code").and_then(|c| c.as_i64()) {
+            if c != 0 {
+                attempt.code = Some(c);
+                if let Some(m) = j.get("message").and_then(|m| m.as_str()) {
+                    if !m.trim().is_empty() {
+                        attempt.message = m.trim().to_string();
+                    }
+                }
             }
         }
     }
-    if combined.is_empty() {
-        return Err(format!("TTS no audio: {}", body));
+    if attempt.audio.is_empty() {
+        // 没音频时把服务端原话整段记下来：2.0 通道会回 code=20000000 "OK" 却不给音频，
+        // 光看 code 什么都看不出来，只有原始 JSONL 里才可能写着原因（音色停用/额度/参数）。
+        let brief: String = body.chars().take(800).collect();
+        log_line(&format!("[tts] {resource} 无音频，HTTP {status}，原始回包：{brief}"));
+        if attempt.message.is_empty() {
+            attempt.message = format!("HTTP {status} 但没有音频");
+        }
     }
-    Ok(combined)
+    attempt
+}
+
+/// 把一段文字合成成 mp3（base64）。失败时返回**服务端原话**，别让用户只看到"没声音"。
+#[tauri::command]
+async fn tts_synthesize(
+    api_key: String,
+    speaker: String,
+    text: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    if api_key.trim().is_empty() || speaker.trim().is_empty() {
+        return Err("语音输出没配好：缺少 API Key 或音色 ID".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client: {e}"))?;
+    let lang = language.as_deref().filter(|l| !l.is_empty());
+
+    let mut reasons: Vec<String> = Vec::new();
+    for resource in TTS_RESOURCES {
+        let attempt = tts_attempt(&client, &api_key, &speaker, &text, lang, resource).await;
+        if !attempt.audio.is_empty() {
+            log_line(&format!(
+                "[tts] 合成成功 resource={} {}字 → {} 字节 base64",
+                resource,
+                text.chars().count(),
+                attempt.audio.len()
+            ));
+            return Ok(attempt.audio);
+        }
+        let reason = match attempt.code {
+            Some(code) if code == 20000000 => format!(
+                "{resource}：服务端回了 OK 但没有音频（音色本身校验通过；常见原因是该音色的额度/试用到期，或被停用）{}",
+                if attempt.message.is_empty() || attempt.message == "OK" { String::new() } else { format!("，{}", attempt.message) }
+            ),
+            Some(code) => format!("{resource}：code={code} {}", attempt.message),
+            None => format!("{resource}：{}", attempt.message),
+        };
+        log_line(&format!("[tts] 合成失败 {reason}"));
+        reasons.push(reason);
+    }
+    Err(format!("语音合成没有拿到音频 —— {}", reasons.join("；")))
 }
 
 /// 语音识别的服务端点与模型：与 TTS 同一路子 —— 请求从 Rust 侧发出，
