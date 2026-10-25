@@ -47,11 +47,27 @@ class TTSPlayer {
     if (this.current) this.current.volume = muted ? 0 : 1;
   }
 
-  setConfig(enabled: boolean, apiKey: string, speakerId: string, language = "") {
+  /** 朗读模型：clone=声音复刻 / tts2=豆包语音合成2.0（官方音色 + 语音指令） */
+  private mode: "clone" | "tts2" = "clone";
+  private voice2 = "";
+  private instruction = "";
+
+  setConfig(
+    enabled: boolean,
+    apiKey: string,
+    speakerId: string,
+    language = "",
+    mode: "clone" | "tts2" = "clone",
+    voice2 = "",
+    instruction = "",
+  ) {
     this.enabled = enabled;
     this.apiKey = apiKey;
     this.speakerId = speakerId;
     this.language = language;
+    this.mode = mode;
+    this.voice2 = voice2;
+    this.instruction = instruction;
     if (!enabled) this.stop();
   }
 
@@ -132,6 +148,9 @@ class TTSPlayer {
         speaker: this.speakerId,
         text: item.text,
         language: this.language || undefined,
+        mode: this.mode,
+        voice: this.voice2 || undefined,
+        instruction: this.instruction || undefined,
       });
       const binary = atob(base64);
       const bytes = new Uint8Array(binary.length);

@@ -1083,7 +1083,15 @@ async function send(text: string) {
   if (busy) return;
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
-  ttsPlayer.setConfig(s.tts.enabled, ttsKey, s.tts.speakerId, s.assistant.outputLanguage ?? "");
+  ttsPlayer.setConfig(
+    s.tts.enabled,
+    ttsKey,
+    s.tts.speakerId,
+    s.assistant.outputLanguage ?? "",
+    s.tts.mode ?? "clone",
+    s.tts.voice2 ?? "",
+    s.tts.instruction ?? "",
+  );
   // 新消息开始就掐掉上一段语音：否则旧回复还在朗读，新回复的语音排在旧队列后面，
   // 用户听到的内容和屏幕上的新回复完全对不上。
   if (s.tts.enabled) ttsPlayer.stop();

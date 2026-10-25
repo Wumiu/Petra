@@ -559,7 +559,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "语音朗读", desc: "Key 存在系统钥匙串里，面板不回显；留空表示不改，填了就覆盖。",
           fields: [
             { path: "tts.enabled", label: "开启朗读", type: "switch" },
-            { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
+            { path: "tts.mode", label: "朗读模型", type: "select", options: [["clone","声音复刻 · 用你自己的声音（语气偏平）"],["tts2","语音合成2.0 · 官方音色（可用语音指令控制语气）"]], desc: "二选一：复刻=你的声音但语气平；2.0=语气语调更自然，但不是你的声音" },
+            { path: "tts.speakerId", label: "音色 ID（声音复刻）", type: "text", placeholder: "留空用默认音色" },
+            { path: "tts.voice2", label: "音色 ID（语音合成2.0）", type: "text", placeholder: "如 zh_female_vv_uranus_bigtts" },
+            { path: "tts.instruction", label: "语音指令（仅 2.0）", type: "text", placeholder: "如：用轻快、带笑意的语气说；用特别痛心的语气说话" },
             { type: "secret", key: "tts", label: "语音朗读 Key", desc: "不回显，只有你自己知道；要换就直接粘新的再保存" },
             { type: "actions", items: [{ id: "tts-test", label: "试听一句" }] },
           ],
