@@ -148,7 +148,11 @@ body::after{
 .row .rtext{flex:1 1 180px; min-width:0}
 .row .rlabel{font-size:13.5px}
 .row .rdesc{font-size:12px; color:var(--txt3); margin-top:2px}
-.row .rctl{flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end}
+.row .rctl{flex:0 1 auto; min-width:0; max-width:100%; display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end}
+/* 输入框要能收缩：默认 min-width:auto 会按内容宽度撑住整行，
+   右边几个按钮就被挤到卡片外面（快捷键那一行实测「清除」被裁掉）。 */
+.row .rctl input[type=text]{min-width:0; flex:1 1 120px; width:auto}
+.row .rctl .btn{flex:none}
 
 /* 开关 */
 .sw{position:relative; width:42px; height:24px; border-radius:999px; border:1px solid var(--line-strong);
@@ -285,6 +289,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   .row{flex-direction:column; align-items:stretch; padding:9px 0; gap:7px}
   .row .rtext{flex:1 1 auto}
   .row .rctl{justify-content:space-between}
+  /* 输入框独占一行，按钮换到下一行：否则「输入框 + 录制/保存/清除」刚好顶到卡片边缘，
+     右边那颗按钮会被裁掉（快捷键那一行就是这样）。 */
+  .row .rctl input[type=text]{flex:1 1 100%}
   input[type=text],input[type=number],select{width:100%}
   input[type=range]{flex:1 1 auto; width:auto; min-width:120px}
   .savebar{left:12px; right:12px; transform:translate(0, 140%)}
