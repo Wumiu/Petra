@@ -552,6 +552,32 @@ body {
   cursor: pointer;
   user-select: none;
 }
+/* 输入框底部一行：左边「免确认 shell」，右边关闭按钮 */
+.as-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 3px 0;
+}
+.as-foot .as-allow {
+  flex: 1;
+  padding: 0;
+}
+.as-close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: #8a7a95;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.as-close:hover {
+  background: rgba(120, 100, 140, 0.14);
+  color: #5a4a68;
+}
 .as-allow input {
   accent-color: #d06a9a;
   cursor: pointer;

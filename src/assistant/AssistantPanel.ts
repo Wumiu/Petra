@@ -23,8 +23,10 @@ import { toast } from "../ui/Toast";
 import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
-/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
-const IDLE_HIDE_MS = 20000;
+/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音。
+ *  20 秒太长（用户反馈"没操作也一直杵着"），8 秒足够点开输入框开始打字；
+ *  输入框里有没发出去的文字时不会自动收（见 resetTimer）。 */
+const IDLE_HIDE_MS = 8000;
 const HIST_KEY = "live2d-pet-assistant-history";
 const MEM_KEY = "live2d-pet-assistant-memory";
 
@@ -106,13 +108,17 @@ function setInputValue(text: string): void {
 function keepInputBarOnScreen(): void {
   if (!inputBar || inputBar.classList.contains("hidden")) return;
   const vr = getVisibleRect();
+  // 先恢复"贴底"布局再测量：top 与 bottom 同时生效时，浏览器会把元素
+  // 拉满剩余高度（表现为一个很高的白色空盒子，交互区域也跟着变大）。
+  inputBar.style.top = "";
+  inputBar.style.bottom = "";
   const r = inputBar.getBoundingClientRect();
   const overflow = r.bottom - (vr.bottom - 8);
-  if (overflow > 0) {
-    const curTop = parseFloat(inputBar.style.top || "0") || r.top;
-    const minTop = vr.top + 8;
-    inputBar.style.top = `${Math.round(Math.max(minTop, curTop - overflow))}px`;
-  }
+  if (overflow <= 0) return;
+  const minTop = vr.top + 8;
+  inputBar.style.top = `${Math.round(Math.max(minTop, r.top - overflow))}px`;
+  // 只保留 top 定位：必须把 bottom 置成 auto，否则又会被拉伸成整屏高
+  inputBar.style.bottom = "auto";
 }
 
 // API Key 存 Rust 侧（DPAPI 加密 / Keychain / Secret Service），前端只做按供应商的缓存
@@ -273,8 +279,14 @@ function ensureInput() {
     autoGrowInput();
   });
   // 失焦不再自动关闭输入框（点麦克风按钮会失焦，之前 2.5 秒就被关了）
-  // 关闭只靠 20 秒无操作超时，或者用户主动关闭。
+  // 关闭只靠空闲超时（默认 8 秒，输入框里有字时不收）或用户主动关闭。
   input.addEventListener("keydown", (e) => {
+    // Esc 直接收起输入框：用户想关掉时不用去点角落的 ✕
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeAssistant();
+      return;
+    }
     // Enter 发送，Shift+Enter 换行（多行框的常规约定）
     if (e.key === "Enter" && !e.shiftKey) {
       // 输入法组合中的 Enter 是"选词"，不是发送：以前这里只判断 key，
@@ -344,7 +356,22 @@ function ensureInput() {
   lbl.textContent = "免确认 shell";
   allowRow.append(allowAllShell, lbl);
 
-  inputBar.append(row, allowRow);
+  // 主动关闭按钮：以前只能等空闲超时，用户找不到"我现在就想收起来"的入口
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "as-close";
+  closeBtn.type = "button";
+  closeBtn.textContent = "✕";
+  closeBtn.title = "关闭输入框（Esc）";
+  closeBtn.setAttribute("aria-label", "关闭输入框");
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeAssistant();
+  });
+  const foot = document.createElement("div");
+  foot.className = "as-foot";
+  foot.append(allowRow, closeBtn);
+
+  inputBar.append(row, foot);
   // 点输入条也算"人在用它"：重置空闲计时（顺带阻止事件穿透到桌宠的拖动/摸头）
   inputBar.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
@@ -496,13 +523,19 @@ function ensureBubbles() {
 
 function resetTimer() {
   if (timer) clearTimeout(timer);
-  // 5 分钟没在用（没点输入条、没打字、没语音）就把输入条收起来
+  // 空闲（没点输入条、没打字、没语音）就收起输入条
   timer = setTimeout(() => {
     timer = null;
     // 正在听语音时不收：麦克风还开着，把面板收掉等于打断用户说话。
     // 这跟以前那个 `if (busy) 续一轮` 不一样 —— 识别器自己有上限
     // （说完了 / 一直没声音 / 硬上限 60 秒都会结束），不会无限续下去。
     if (recognizer?.isRecording()) {
+      resetTimer();
+      return;
+    }
+    // 输入框里有没发出去的文字时不收：收了等于把用户写了一半的话藏起来。
+    // （这跟 busy 续命是两回事：busy 是"模型还在说"，这里是"用户写了字"。）
+    if (input && input.value.trim()) {
       resetTimer();
       return;
     }

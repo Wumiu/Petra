@@ -1353,6 +1353,8 @@ async function boot() {
         dueAt: lastGreetAt + greetIntervalMsNow(),
         timerArmed: greetTimer !== null,
       }),
+      // 打开小助手输入框，便于验证空闲收起与关闭按钮
+      openAssistantBar: () => void openAssistant(),
       // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
       popupWarn: (text: string) => showErrorPopup("warn", text),
