@@ -472,7 +472,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "信息气泡", desc: "左键面板",
           fields: [
-            { path: "weatherBubble", label: "点击弹出信息面板", type: "switch", desc: "天气 / 待办 / 陪伴时间" },
+            { path: "weatherBubble", label: "点击展开信息面板", type: "switch", desc: "天气、待办和陪伴时间" },
             { path: "weatherCity", label: "天气城市", type: "text", placeholder: "如：杭州（留空会使用接口返回的城市）" },
           ],
         },
@@ -522,7 +522,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空让它自己决定" },
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
-              { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不自动收起）" },
+              { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不收起）" },
             { type: "hotkey", label: "呼出快捷键", desc: "点击录制后在浏览器里按下组合键（Esc 取消）" },
             
           ],
@@ -538,9 +538,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [
             { path: "assistant.personaFields.name", label: "名字 / 昵称", type: "text", placeholder: "如：小满" },
             { path: "assistant.personaFields.age", label: "年龄", type: "text", placeholder: "如：看着十七八岁，不报岁数" },
-            { path: "assistant.personaFields.identity", label: "身份 / 职业", type: "text", placeholder: "如：住在你桌面上的一只小女仆，负责提醒喝水、催你睡觉" },
-            { path: "assistant.personaFields.world", label: "时代 / 世界观", type: "textarea", rows: 4, placeholder: "如：你这台电脑的屏幕——她住右下角那扇小窗里，窗内是自己的小房间" },
-            { path: "assistant.personaFields.desire", label: "核心欲望", type: "textarea", rows: 3, placeholder: "如：想被你注意到，也想真的帮上忙，而不是只会卖萌" },
+            { path: "assistant.personaFields.identity", label: "身份 / 职业", type: "text", placeholder: "如：住在你桌面上的小女仆，提醒你喝水、催你早睡" },
+            { path: "assistant.personaFields.world", label: "时代 / 世界观", type: "textarea", rows: 4, placeholder: "如：你这台电脑的屏幕，她住右下角的小窗里，窗内是她的房间" },
+            { path: "assistant.personaFields.desire", label: "核心欲望", type: "textarea", rows: 3, placeholder: "如：想被你注意到，也想真的帮上忙，不只是卖萌" },
           ],
         },
         {
@@ -559,7 +559,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "自由补充", desc: "如果不想被分栏限制可以在这里填写，会拼最终提示词之后",
           fields: [
-            { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多但会记住你说过的事，偶尔冒一句冷幽默，提醒你休息时从不啰嗦" },
+            { path: "assistant.personaFree", label: "自由人设", type: "textarea", rows: 8, placeholder: "例如：话不多，但会记住你说过的事；偶尔来句冷幽默；提醒休息时从不啰嗦" },
             { type: "personaPreview" },
             { type: "personaTest" },
           ],
@@ -568,7 +568,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "voice", label: "语音", title: "语音与歌词",
-      desc: "朗读（TTS）、麦克风（ASR）、跟随音乐歌词。",
+      desc: "朗读、麦克风和歌词跟随",
       cards: [
         {
           title: "语音朗读", desc: "Key保存在本地，填写时面板不显示，填写后覆盖原设置",
@@ -585,8 +585,8 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
             { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置Key会直接显示，可以进行更换，填写后覆盖原设置" },
             { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风通过下方标注的模型识别；关：使用系统识别" },
-            { path: "asr.denoise", label: "降噪 + 自动增益", type: "switch", desc: "采集端进行降噪/自动增益/回声消除，在喧闹环境下识别更清楚；安静环境下觉得齿音被削可以选择关闭" },
-            { type: "note", text: () => "云端模型：" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号未开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
+            { path: "asr.denoise", label: "降噪和自动增益", type: "switch", desc: "采集端进行降噪/自动增益/回声消除，在喧闹环境下识别更清楚；安静环境下觉得齿音被削可以选择关闭" },
+            { type: "note", text: () => "云端模型" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号未开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
             { type: "asrProbe" },
           ],
         },
@@ -595,17 +595,17 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [
             { path: "musicLyrics", label: "显示歌词气泡", type: "switch" },
             { path: "lyricsTranslate", label: "显示翻译", type: "switch", desc: "来源带译文时才显示" },
-            { type: "actions", items: [{ id: "lyrics-sync", label: "按歌微调时间轴（打开子菜单）" }] },
+            { type: "actions", items: [{ id: "lyrics-sync", label: "按歌微调时间轴" }] },
           ],
         },
       ],
     },
     {
-      id: "fun", label: "娱乐", title: "日记 · 抽卡 · 麻将",
-      desc: "这些功能各自有独立开关，互不影响。",
+      id: "fun", label: "娱乐", title: "日记、抽卡、麻将",
+      desc: "各自独立开关，互不影响",
       cards: [
         {
-          title: "日记", desc: "把今天的互动写成一篇小日记。",
+          title: "日记", desc: "把今天的互动写成小日记",
           fields: [
             { path: "diary.enabled", label: "启用日记", type: "switch" },
             { path: "diary.autoGenerate", label: "每天自动生成", type: "switch" },
@@ -614,7 +614,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         },
         { title: "抽卡", desc: "", type: "card" },
         {
-          title: "麻将", desc: "AI 实时互动会消耗 token（有节流与上限）。",
+          title: "麻将", desc: "实时互动会消耗 token，已做节流和上限",
           fields: [
             { path: "gameTalk", label: "桌上实时互动", type: "switch" },
             { type: "actions", items: [{ id: "minigames", label: "打开小游戏" }] },
@@ -629,7 +629,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       desc: "小助手能替你决定所做事情的边界，请务必在修改前思考其必要性，如修改后造成财产经济损失，本程序概不负责",
       cards: [
         {
-          title: "命令与写入", desc: "关掉时会弹确认气泡，逐次确认。",
+          title: "命令与写入", desc: "关掉后会弹确认气泡，逐次确认",
           fields: [
             { path: "allowAllShell", label: "免确认执行命令", type: "switch", desc: "危险：等于把终端交给它，可能带来不可预知的后果或损失" },
             { path: "allowAllFileWrite", label: "免确认写文件", type: "switch" },
@@ -644,7 +644,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "about", label: "关于", title: "关于 · 反馈",
-      desc: "有 bug、想要新功能，写在这里直接发给我；顺手可以看版本、去官网。",
+      desc: "有 bug 或想要新功能就写在这儿；还能看版本、去官网",
       cards: [
         { title: "反馈", desc: "", type: "feedback" },
         { title: "关于 Petra", desc: "", type: "about-card" },
@@ -652,7 +652,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     },
     {
       id: "actions", label: "动作", title: "全部功能",
-      desc: "右键菜单里的功能项都在这里，点一下等价于在桌宠上点那一项。",
+      desc: "右键菜单里的功能都在这儿，点击等于在桌宠上点那一项",
       cards: [ { title: "功能清单", desc: "", type: "actions-all" }, { title: "自检", desc: "", type: "selfcheck" } ],
     },
   ];
@@ -1137,7 +1137,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function chatCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "对话记录"));
-    card.appendChild(el("p", "cd", "只读展示最近 30 条（主动问候/主动学习已过滤）。"));
+    card.appendChild(el("p", "cd", "只读最近 30 条，主动问候和学习已过滤"));
     const btns = el("div", "btn-row");
     const load = el("button", "btn btn-sm btn-primary", "读取记录");
     load.onclick = () => runAction("__data:chat-load", "读取对话");
@@ -1146,7 +1146,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     btns.append(load, clr);
     card.appendChild(btns);
     const list = (state.meta.data && state.meta.data.chat) || [];
-    if (!list.length) { card.appendChild(el("div", "empty", "还没读取（点上面「读取记录」）")); return card; }
+    if (!list.length) { card.appendChild(el("div", "empty", "还没读取，点上面的「读取记录」")); return card; }
     const box = el("div", "chatlist");
     list.forEach((m) => {
       const it = el("div", "chatitem " + (m.role === "user" ? "me" : "ai"));
@@ -1223,9 +1223,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function feedbackCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "反馈"));
-    card.appendChild(el("p", "cd", "直接发到我这边（附当前版本与最近日志）。"));
+    card.appendChild(el("p", "cd", "直接发给我，会附上版本和最近日志"));
     const ta = document.createElement("textarea");
-    ta.placeholder = "遇到了什么问题 / 想要什么功能…";
+    ta.placeholder = "遇到什么问题或想要什么功能…";
     card.appendChild(ta);
     const b = el("button", "btn btn-primary btn-sm", "发送反馈");
     b.onclick = () => {
@@ -1266,13 +1266,13 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const cur = m.current || {};
     const curName = (cur.name || "").replace(/\.psd$/i, "") || (cur.type === "live2d" ? "标准 Live2D 模型" : "—");
 
-    card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}。导入 .psd 会直接换成新模型；边界补偿按模型保存，切回时恢复。`));
+    card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}，导入 .psd 会直接换成新模型；边界补偿按模型保存，切回时恢复`));
 
     // 切换
     const row = el("div", "row");
     const txt = el("div", "rtext");
     txt.appendChild(el("div", "rlabel", "切换到"));
-    txt.appendChild(el("div", "rdesc", "内置模型随程序打包，已导入的来自你自己的 PSD"));
+    txt.appendChild(el("div", "rdesc", "内置模型随程序打包，已导入的来自你的 PSD"));
     row.appendChild(txt);
     const ctl = el("div", "rctl");
     const sel = document.createElement("select");
@@ -1314,7 +1314,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     if (cur.type === "import" && cur.name) {
       const delBtn = el("button", "btn btn-danger btn-sm", "删除当前模型");
       delBtn.onclick = () => {
-        if (!confirm(`确定删除「${curName}」吗？删除后要重新导入才能恢复。`)) return;
+        if (!confirm(`确定删除「${curName}」？删除后需重新导入才能恢复`)) return;
         runAction(`__model:delete:${cur.name}`, "删除模型");
         void refreshUntilCurrent("");
       };
@@ -1322,7 +1322,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     }
     // 只会新增不会丢：PSD 先落到 models 目录，再由桌宠切过去
     card.appendChild(btns);
-    card.appendChild(el("div", "rdesc", "导入的 PSD 与「把文件拖进桌宠窗口」落在同一个目录，两种方式可以混用。"));
+    card.appendChild(el("div", "rdesc", "导入的 PSD 和拖进窗口的文件落在同一目录，两种方式都能用"));
     return card;
   }
 
@@ -1341,7 +1341,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
 
   /** 面板里选的 PSD → 二进制 POST 给桌宠，落地后它会自己切换并重载 */
   async function uploadPsd(file) {
-    if (!/\.psd$/i.test(file.name)) { toast("只支持 .psd 文件", "err"); return; }
+    if (!/\.psd$/i.test(file.name)) { toast("只支持 .psd", "err"); return; }
     toast(`正在导入 ${file.name}…`);
     try {
       const res = await fetch(`/api/import?name=${encodeURIComponent(file.name)}`, {
@@ -1351,7 +1351,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.ok === false) throw new Error(body.error || ("HTTP " + res.status));
-      toast(`已导入 ${body.name}，桌宠正在切换…`);
+      toast(`已导入 ${body.name}，正在切换`);
       void refreshUntilCurrent(body.name);
     } catch (e) {
       toast("导入失败：" + e.message, "err");
@@ -1375,7 +1375,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function selfCheckCard() {
     const card = el("div", "card");
     card.appendChild(el("h2", null, "自检"));
-    card.appendChild(el("p", "cd", "核对「功能清单」里的每一项在当前桌宠里都还找得到对应实现 —— 只检查、不执行，不会改任何设置。"));
+    card.appendChild(el("p", "cd", "逐项核对功能清单在当前桌宠里是否还有实现；只检查、不执行、不改设置"));
     const row = el("div", "btn-row");
     const b = el("button", "btn btn-primary btn-sm", "检查全部功能");
     b.onclick = () => runAction("__selfcheck", "功能自检");
@@ -1558,7 +1558,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
 
 
   window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toast("已经是即改即生效了，不用保存"); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toast("改完即生效，不用保存"); }
   });
 
   // ---------- 启动 ----------

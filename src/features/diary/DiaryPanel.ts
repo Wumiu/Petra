@@ -61,7 +61,7 @@ function renderList(host: HTMLElement) {
   if (!apiReady) {
     const hint = document.createElement("div");
     hint.className = "dp-hint";
-    hint.textContent = "📖 日记由大模型撰写：请先在「右键 → 小助手设置」里填好 API Key，之后每天会自动回顾你今天做了什么。";
+    hint.textContent = "日记由大模型撰写：先在「右键 → 小助手设置」填好 API Key，之后每天会自动回顾你今天做了什么";
     host.appendChild(hint);
   }
 
@@ -100,7 +100,7 @@ function renderList(host: HTMLElement) {
     const exportBtn = document.createElement("button");
     exportBtn.className = "dp-btn";
     exportBtn.textContent = "📤 导出";
-    exportBtn.title = "把所有日记导出成 Markdown 文件到桌面";
+    exportBtn.title = "把所有日记导出成 Markdown 到桌面";
     exportBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       exportBtn.disabled = true;
@@ -180,7 +180,7 @@ function renderList(host: HTMLElement) {
         e.stopPropagation();
         const copyBody = diary.translation ? `${diary.content}\n\n${diary.translation}` : diary.content;
         const ok = await copyText(`${formatDate(diary.date)}\n${copyBody}`);
-        toast(ok ? "日记已复制到剪贴板" : "复制失败，请手动选中复制", ok ? "info" : "warn");
+        toast(ok ? "日记已复制到剪贴板" : "复制失败，请手动选中", ok ? "info" : "warn");
       });
       actions.appendChild(copyBtn);
 

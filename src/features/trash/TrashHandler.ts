@@ -39,7 +39,7 @@ async function handleTrash(paths: string[], view: PetView) {
   try {
     const res = await invoke<{ ok: boolean; count: number }>("trash_files", { paths });
     if (res.ok) {
-      toast(res.count > 1 ? `咕咚咕咚，吃了 ${res.count} 个文件 → 回收站` : "咕咚，送进回收站了");
+      toast(res.count > 1 ? `咕咚咕咚，吃了 ${res.count} 个文件，送进回收站` : "咕咚，送进回收站了");
     }
   } catch (err) {
     view.playClick();
