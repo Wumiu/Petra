@@ -3823,33 +3823,19 @@ async fn tts_synthesize(
     speaker: String,
     text: String,
     language: Option<String>,
-    emotion: Option<String>,
-    speech_rate: Option<i64>,
 ) -> Result<String, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
 
-    let mut audio_params = serde_json::json!({ "format": "mp3", "sample_rate": 24000 });
-    // 语速是**整数**（100 = 正常，允许 50~200）：传 1.2 这种小数服务端会拒
-    // （`cannot unmarshal number 1.2 into Go struct field ... of type int`）。
-    if let Some(rate) = speech_rate.filter(|r| (50..=200).contains(r)) {
-        audio_params["speech_rate"] = serde_json::Value::from(rate);
-    }
     let mut req = serde_json::json!({
         "req_params": {
             "text": text,
             "speaker": speaker,
-            "audio_params": audio_params
+            "audio_params": { "format": "mp3", "sample_rate": 24000 }
         }
     });
-    // 情感：服务端接受 happy/sad/angry/surprised/shy/tired/love/worried 等，
-    // 不带 emotion 就是"平铺直叙"（用户原话「死板得很」）。实测同一句话不同 emotion
-    // 出音频长度都不同，说明真的生效；neutral 不传，省得把语气压平。
-    if let Some(emo) = emotion.filter(|e| !e.is_empty() && e != "neutral") {
-        req["req_params"]["emotion"] = serde_json::Value::String(emo);
-    }
     if let Some(lang) = language.filter(|l| !l.is_empty()) {
         req["req_params"]["explicit_language"] = serde_json::Value::String(lang);
     }

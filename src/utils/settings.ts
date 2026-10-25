@@ -171,15 +171,6 @@ export interface Settings {
     enabled: boolean;
     apiKey: string;
     speakerId: string;
-    /**
-     * 语气强度：
-     *  - "off"  自然：不传 emotion、语速固定 100（最接近"正常说话"）
-     *  - "soft" 轻微：只对 happy/sad 传 emotion，语速只偏 ±4（默认）
-     *  - "full" 明显：每种情绪都传，语速偏 ±8~10（起伏大，容易听出"演"）
-     */
-    emotionLevel: "off" | "soft" | "full";
-    /** 语速：100 = 服务端"正常"，但真人听着偏快，默认压到 90；范围 50~200（服务端要整数） */
-    speechRate: number;
   };
   /** 语音识别（输入）配置 */
   asr: {
@@ -268,8 +259,6 @@ const DEFAULTS: Settings = {
   hourlyQuietEnd: 8,
   tts: {
     enabled: false,
-    emotionLevel: "soft",
-    speechRate: 100,
     apiKey: "",
     speakerId: "",
   },
