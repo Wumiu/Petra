@@ -3891,6 +3891,27 @@ async fn tts_attempt(
     attempt
 }
 
+/// 查音色状态：2=Success、4=Active 才能合成；0/1/3/5 都表示当前不能用来合成。
+/// 接口是 v1 的 mega_tts/status（新老控制台的音色都能查）。
+async fn tts_speaker_status(
+    client: &reqwest::Client,
+    api_key: &str,
+    speaker: &str,
+) -> Option<i64> {
+    let resp = client
+        .post("https://openspeech.bytedance.com/api/v1/mega_tts/status")
+        .header("X-Api-Key", api_key)
+        .header("X-Api-Request-Id", tts_request_id())
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "speaker_id": speaker }))
+        .send()
+        .await
+        .ok()?;
+    let body = resp.text().await.ok()?;
+    let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+    json.get("status").and_then(|v| v.as_i64())
+}
+
 /// 把一段文字合成成 mp3（base64）。失败时返回**服务端原话**，别让用户只看到"没声音"。
 #[tauri::command]
 async fn tts_synthesize(
@@ -3907,6 +3928,20 @@ async fn tts_synthesize(
         .build()
         .map_err(|e| format!("HTTP client: {e}"))?;
     let lang = language.as_deref().filter(|l| !l.is_empty());
+
+    // 合成前先查音色状态：状态不是 2(Success) / 4(Active) 时，合成接口多半只会给出
+    // 一堆看不懂的报错（如 45000001 InvalidModelType / HTTP 200 但零音频）。
+    // 先把话说明白：「这个音色现在不能用」，别让用户去猜。
+    match tts_speaker_status(&client, &api_key, &speaker).await {
+        Some(st) if st != 2 && st != 4 => {
+            log_line(&format!("[tts] 音色 {speaker} 状态={st}（不是 2/4），直接判不可用"));
+            return Err(format!(
+                "音色 {speaker} 当前不可用（服务端状态={st}，可用状态是 2/4）—— 请到火山控制台「声音复刻」里看这个音色是否已激活/过期，或换一个音色。"
+            ));
+        }
+        Some(st) => log_line(&format!("[tts] 音色 {speaker} 状态={st}，可以合成")),
+        None => {}
+    }
 
     let mut reasons: Vec<String> = Vec::new();
     for resource in TTS_RESOURCES {
