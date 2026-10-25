@@ -79,6 +79,8 @@ export interface AssistantSettings {
   historyLang: string;
   /** 主动问候间隔时间（分钟） */
   greetInterval: number;
+  /** 输入框空闲多久自动收起（秒）；0 = 不自动收起 */
+  inputIdleHideSec: number;
   /** 对用户的称呼（如"主人"），空则让 AI 自行决定 */
   nickname: string;
   /** 全局呼出快捷键（Tauri accelerator 字符串，如 "Ctrl+Shift+A"）；空表示未设置 */
@@ -227,6 +229,7 @@ const DEFAULTS: Settings = {
     activePresetId: "",
     historyLang: "",
     greetInterval: 20,
+    inputIdleHideSec: 8,
     nickname: "",
     shortcut: "",
     outputLanguage: "",

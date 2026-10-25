@@ -124,7 +124,7 @@ import { OUTPUT_LANGUAGE_OPTIONS } from "./utils/outputLanguage";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
-import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights, rearmIdleTimer } from "./assistant/AssistantPanel";
 import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
 import {
@@ -3421,6 +3421,8 @@ async function applyPanelPatch(patch: Record<string, unknown>): Promise<void> {
   // 留一条日志：面板改了什么一眼能在 lasted.log 里查到（用户报「面板改了没反应」时靠它定位）
   void invoke("debug_mark", { msg: `[panel] 应用补丁：${[...changed].join(", ")}` }).catch(() => {});
   saveSettingsRaw(settings); // 只落盘；末尾统一回推一次，别在这里触发防抖循环
+  // 面板改了「输入框空闲收起」→ 落盘之后按新值重新计时（必须在 save 之后，否则读到旧值）
+  if (assistantPatch && "inputIdleHideSec" in assistantPatch) rearmIdleTimer();
   if (changed.has("modelScale")) await applyModelScale(settings.modelScale);
   if (changed.has("activity")) engine?.setActivityLevel(settings.activity);
   if (changed.has("mouseTrack")) {
@@ -5271,6 +5273,25 @@ async function toggleAssistantSettings() {
     greetRow.append(greetLabel, greetInputRow);
     host.appendChild(greetRow);
 
+    // 输入框空闲收起时间（秒，0 = 不自动收起）
+    const idleInput = document.createElement("input");
+    idleInput.className = "as-input";
+    idleInput.type = "number";
+    idleInput.min = "0";
+    idleInput.max = "600";
+    idleInput.step = "1";
+    idleInput.value = String(settings.assistant.inputIdleHideSec ?? 8);
+    idleInput.style.width = "90px";
+    idleInput.style.textAlign = "center";
+    const idleUnit = document.createElement("span");
+    idleUnit.textContent = "秒（0 = 不自动收起）";
+    idleUnit.style.fontSize = "12px";
+    idleUnit.style.color = "#8a7a95";
+    const idleWrap = document.createElement("div");
+    idleWrap.style.cssText = "display:flex;align-items:center;gap:6px;";
+    idleWrap.append(idleInput, idleUnit);
+    mkRow("输入框空闲收起", idleWrap);
+
     const gameTalk = document.createElement("input");
     gameTalk.type = "checkbox";
     gameTalk.checked = settings.gameTalk === true;
@@ -5406,7 +5427,14 @@ async function toggleAssistantSettings() {
       const greetVal = parseInt(greetInput.value, 10);
       const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
       settings.assistant.greetInterval = nextGreetInterval;
+      // 输入框空闲收起（秒，0 = 不自动收起；留空/非法值回落到默认 8）
+      const idleVal = parseInt(idleInput.value, 10);
+      settings.assistant.inputIdleHideSec = Number.isFinite(idleVal)
+        ? Math.max(0, Math.min(600, idleVal))
+        : 8;
       saveSettings(settings);
+      // 设置变了要立刻按新值重新计时，否则本次仍按旧的 8 秒/不收起执行
+      rearmIdleTimer();
       // 重排必须在**新间隔写进 settings 之后**：反过来的话 resync 会按旧间隔算下一次，
       // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
       // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。

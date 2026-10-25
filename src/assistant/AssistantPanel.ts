@@ -23,10 +23,13 @@ import { toast } from "../ui/Toast";
 import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
-/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音。
- *  20 秒太长（用户反馈"没操作也一直杵着"），8 秒足够点开输入框开始打字；
- *  输入框里有没发出去的文字时不会自动收（见 resetTimer）。 */
-const IDLE_HIDE_MS = 8000;
+/** 输入条空闲多久自动收起（毫秒）。读设置（秒），0 表示不自动收起。
+ *  只认"真的在用"：点它、打字、用语音；输入框里有没发出去的文字时不收（见 resetTimer）。 */
+function idleHideMs(): number {
+  const sec = loadSettings().assistant.inputIdleHideSec;
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec <= 0) return 0;
+  return Math.min(3600, sec) * 1000;
+}
 const HIST_KEY = "live2d-pet-assistant-history";
 const MEM_KEY = "live2d-pet-assistant-memory";
 
@@ -522,7 +525,12 @@ function ensureBubbles() {
 }
 
 function resetTimer() {
-  if (timer) clearTimeout(timer);
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  const idleMs = idleHideMs();
+  if (idleMs <= 0) return; // 设置里选了「不自动收起」
   // 空闲（没点输入条、没打字、没语音）就收起输入条
   timer = setTimeout(() => {
     timer = null;
@@ -543,7 +551,12 @@ function resetTimer() {
     // 输入条就永远收不掉了（用户实际遇到的就是这个）。收起只隐藏输入条，气泡与回复
     // 照常显示，所以"等它说完再收"本来就没必要。
     closeAssistant();
-  }, IDLE_HIDE_MS);
+  }, idleMs);
+}
+
+/** 设置里改了空闲时间后调用：重新计时（输入框开着才需要） */
+export function rearmIdleTimer(): void {
+  if (inputBar && !inputBar.classList.contains("hidden")) resetTimer();
 }
 
 /** 把识别器的事件接到输入框上（每次点麦克风都重接一遍，反正很便宜） */

@@ -483,6 +483,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "assistant.nickname", label: "怎么称呼你", type: "text", placeholder: "留空让它自己决定" },
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
+              { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不自动收起）" },
             { type: "hotkey", label: "呼出快捷键", desc: "点「录制」后在浏览器里按下组合键（Esc 取消）" },
             
           ],
