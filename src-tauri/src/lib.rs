@@ -3945,6 +3945,8 @@ fn asr_key_ready(app: AppHandle) -> bool {
 struct MicPermission {
     /// 全局总开关（设置 → 隐私和安全性 → 麦克风 最上面那个）
     global: String,
+    /// 「让桌面应用访问麦克风」这个总开关（Windows 11 单独一栏；WebView2 属于桌面应用）
+    desktop: String,
     /// 本应用（WebView2 宿主进程）的逐应用开关
     app: String,
 }
@@ -3952,6 +3954,12 @@ struct MicPermission {
 #[cfg(windows)]
 const MIC_CONSENT_KEY: &str =
     r"HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone";
+
+/// Windows 11 的「让桌面应用访问麦克风」总开关。**它和上面那个全局开关是两个键**：
+/// 只改 `microphone\Value` 不给桌面应用放行，WebView2 一样拿不到麦克风 —— 这是旧实现
+/// 最容易漏掉的一层（用户看到的界面全是"开"，实际还是被拒）。
+#[cfg(windows)]
+const MIC_DESKTOP_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged";
 
 #[cfg(windows)]
 fn norm_perm(v: &str) -> String {
@@ -3962,15 +3970,16 @@ fn norm_perm(v: &str) -> String {
     }
 }
 
-/// 列出 `ConsentStore\microphone\NonPackaged` 下所有 WebView2 的项。
+/// 列出 `ConsentStore\microphone\NonPackaged` 下属于本应用的项。
 ///
 /// 为什么要枚举而不是拼一个固定路径：键名里带着 WebView2 的**版本号目录**
 /// （…\EdgeWebView\Application\154.0.4258.62\msedgewebview2.exe，`\` 换成 `#`），
-/// 运行时一旦升级，路径就变了；枚举能同时覆盖新旧几份。
+/// 运行时一旦升级，路径就变了；枚举能同时覆盖新旧几份。另外某些系统会把宿主
+/// 自己的 exe（petra.exe）记成一项，一并收进来。
 #[cfg(windows)]
-fn webview2_mic_keys() -> Vec<String> {
+fn app_mic_keys() -> Vec<String> {
     let Ok(out) = hidden_command("reg")
-        .args(["query", &format!("{MIC_CONSENT_KEY}\\NonPackaged")])
+        .args(["query", &format!("{MIC_DESKTOP_KEY}")])
         .output()
     else {
         return Vec::new();
@@ -3978,7 +3987,10 @@ fn webview2_mic_keys() -> Vec<String> {
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(|l| l.trim().to_string())
-        .filter(|l| l.to_ascii_lowercase().contains("msedgewebview2.exe"))
+        .filter(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("msedgewebview2.exe") || l.contains("petra.exe")
+        })
         .collect()
 }
 
@@ -3986,9 +3998,10 @@ fn webview2_mic_keys() -> Vec<String> {
 #[tauri::command]
 fn get_mic_permission() -> MicPermission {
     let global = norm_perm(&read_reg_value(MIC_CONSENT_KEY, "Value"));
+    let desktop = norm_perm(&read_reg_value(MIC_DESKTOP_KEY, "Value"));
     // 任一 WebView2 项是 Deny 就算"本应用被拒"（逐应用项会覆盖全局）
     let mut app = "unset".to_string();
-    for key in webview2_mic_keys() {
+    for key in app_mic_keys() {
         match norm_perm(&read_reg_value(&key, "Value")).as_str() {
             "deny" => {
                 app = "deny".to_string();
@@ -3998,30 +4011,139 @@ fn get_mic_permission() -> MicPermission {
             _ => {}
         }
     }
-    MicPermission { global, app }
+    MicPermission { global, desktop, app }
+}
+
+/// WebView2 自己的权限状态（按 origin 存在 profile 里）。
+///
+/// 和 Windows 注册表**完全无关**：用户在 WebView2 的授权条上点过一次"拒绝"，
+/// 或者授权条在无边框/穿透窗口里根本点不到被当成拒绝，`getUserMedia` 就会
+/// 永远 `NotAllowedError` —— Windows 设置里所有开关都是"开"，也没有任何系统界面
+/// 能把它改回来。唯一可靠的办法是应用自己调 Profile.SetPermissionState。
+#[cfg(windows)]
+static WEBVIEW_MIC_ALLOWED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+#[cfg(windows)]
+static WEBVIEW_MIC_HOOKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+fn apply_webview_mic_permission(window: &tauri::WebviewWindow, allow: bool) {
+    use std::sync::atomic::Ordering;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND,
+        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+        COREWEBVIEW2_PERMISSION_STATE_DENY,
+    };
+    use webview2_com::{PermissionRequestedEventHandler, SetPermissionStateCompletedHandler};
+    use windows_core::{Interface, HSTRING};
+
+    WEBVIEW_MIC_ALLOWED.store(allow, Ordering::SeqCst);
+    // 生产环境 origin 固定是 http://tauri.localhost，dev 是 vite 的 127.0.0.1:1420。
+    // 两个都置一遍：dev 下也要把生产 origin 上历史遗留的 deny 清掉（发布版才不会再踩）。
+    let mut origins = vec![
+        window
+            .url()
+            .ok()
+            .map(|u| u.origin().ascii_serialization())
+            .unwrap_or_else(|| "http://tauri.localhost".to_string()),
+    ];
+    if !origins.iter().any(|o| o == "http://tauri.localhost") {
+        origins.push("http://tauri.localhost".to_string());
+    }
+    let result = window.with_webview(move |wv| unsafe {
+        let Ok(core) = wv.controller().CoreWebView2() else {
+            log_line("[mic] WebView2 尚未初始化，跳过权限重设");
+            return;
+        };
+        // 1) 接住 WebView2 自己的授权请求：按应用内开关直接放行/拒绝。
+        //    不接的话它会弹一条授权条 —— 桌宠是无边框 + 点击穿透窗口，这条很容易
+        //    点不到或被当成拒绝，然后就永久记成 block。
+        if !WEBVIEW_MIC_HOOKED.swap(true, Ordering::SeqCst) {
+            let mut token = 0;
+            let hooked = core.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                    args.PermissionKind(&mut kind)?;
+                    if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                        let state = if WEBVIEW_MIC_ALLOWED.load(Ordering::SeqCst) {
+                            COREWEBVIEW2_PERMISSION_STATE_ALLOW
+                        } else {
+                            COREWEBVIEW2_PERMISSION_STATE_DENY
+                        };
+                        args.SetState(state)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            );
+            if let Err(e) = hooked {
+                WEBVIEW_MIC_HOOKED.store(false, Ordering::SeqCst);
+                log_line(&format!("[mic] 挂 PermissionRequested 失败: {e}"));
+            }
+        }
+        // 2) 把已经存下来的 deny/prompt 主动改成应用内开关的状态。
+        //    存成 deny 时 PermissionRequested 根本不会触发，只能这样重置。
+        let Ok(core13) = core.cast::<ICoreWebView2_13>() else {
+            log_line("[mic] 运行时太旧，没有 ICoreWebView2_13");
+            return;
+        };
+        let Ok(profile) = core13.Profile() else { return };
+        let Ok(profile4) = profile.cast::<ICoreWebView2Profile4>() else {
+            log_line("[mic] 运行时太旧，没有 ICoreWebView2Profile4");
+            return;
+        };
+        let state = if allow {
+            COREWEBVIEW2_PERMISSION_STATE_ALLOW
+        } else {
+            COREWEBVIEW2_PERMISSION_STATE_DENY
+        };
+        for origin in origins {
+            let origin_h = HSTRING::from(origin.as_str());
+            let handler = SetPermissionStateCompletedHandler::create(Box::new(move |hr| {
+                match hr {
+                    Ok(()) => log_line(&format!("[mic] WebView2 麦克风权限已置为 {allow}（{origin}）")),
+                    Err(e) => log_line(&format!("[mic] SetPermissionState 失败（{origin}）: {e}")),
+                }
+                Ok(())
+            }));
+            if let Err(e) =
+                profile4.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, &origin_h, state, &handler)
+            {
+                log_line(&format!("[mic] SetPermissionState 调用失败: {e}"));
+            }
+        }
+    });
+    if let Err(e) = result {
+        log_line(&format!("[mic] with_webview 失败: {e}"));
+    }
 }
 
 /// 改系统里的麦克风权限。
 ///
-/// 开启：全局置 Allow（否则逐应用放行也没用）+ 删掉逐应用的覆盖项，让它跟随全局 ——
-///       这样用户以后自己在 Windows 设置里关掉总开关，本应用也会一起被关。
+/// 开启：全局置 Allow + 「让桌面应用访问麦克风」置 Allow（否则逐应用放行也没用）
+///       + 清掉逐应用的覆盖项，让它跟随全局 —— 这样用户以后自己在 Windows 设置里
+///       关掉总开关，本应用也会一起被关。
 /// 关闭：**只**把本应用（WebView2）的逐应用项设成 Deny，不动全局，免得影响其它软件。
-///
-/// ⚠️ 对**已经在跑的** WebView2 进程，系统这一层不一定立刻生效（实测：设成 Deny 后
-/// getUserMedia 照样拿得到麦克风，页面 reload 也不行）—— 所以真正的即时开关在应用内
-/// （settings.asr.micAllowed），这里只是把系统设置同步成一致的状态、重启后由系统兜底。
 #[cfg(windows)]
 #[tauri::command]
-fn set_mic_permission(allow: bool) -> Result<String, String> {
-    let keys = webview2_mic_keys();
+fn set_mic_permission(app: AppHandle, allow: bool) -> Result<String, String> {
+    let keys = app_mic_keys();
     if allow {
         let _ = hidden_command("reg")
             .args(["add", MIC_CONSENT_KEY, "/v", "Value", "/t", "REG_SZ", "/d", "Allow", "/f"])
             .output();
+        let _ = hidden_command("reg")
+            .args(["add", MIC_DESKTOP_KEY, "/v", "Value", "/t", "REG_SZ", "/d", "Allow", "/f"])
+            .output();
         for key in &keys {
-            let _ = hidden_command("reg").args(["delete", key, "/v", "Value", "/f"]).output();
+            let _ = hidden_command("reg").args(["delete", &key, "/v", "Value", "/f"]).output();
         }
-        return Ok("已在系统里允许麦克风".to_string());
+        if let Some(win) = app.get_webview_window("main") {
+            apply_webview_mic_permission(&win, true);
+        }
+        return Ok("已在系统里允许麦克风（总开关 + 桌面应用）".to_string());
     }
     if keys.is_empty() {
         return Err("没找到本应用在系统里的麦克风权限项，请到 Windows 设置的麦克风页面里关".to_string());
@@ -4031,19 +4153,72 @@ fn set_mic_permission(allow: bool) -> Result<String, String> {
             .args(["add", key, "/v", "Value", "/t", "REG_SZ", "/d", "Deny", "/f"])
             .output();
     }
+    if let Some(win) = app.get_webview_window("main") {
+        apply_webview_mic_permission(&win, false);
+    }
     Ok("已在系统里拒绝麦克风".to_string())
+}
+
+/// 只同步 WebView2 这一层的权限（不动 Windows 的任何开关）。
+///
+/// 启动时用这个：旧版本可能把 WebView2 的麦克风权限永久记成 deny，而它只影响 Petra
+/// 自己；系统级的总开关属于用户隐私设置，不能在启动时偷偷改。
+#[cfg(windows)]
+#[tauri::command]
+fn sync_webview_mic_permission(app: AppHandle, allow: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        apply_webview_mic_permission(&win, allow);
+    }
+    Ok(())
+}
+
+/// 一键修复麦克风：系统三层开关全部放行 + 重置 WebView2 profile 里可能残留的 deny。
+///
+/// 用户点「检测麦克风」失败时会自动调它；也可以从设置里手动触发。
+#[cfg(windows)]
+#[tauri::command]
+fn repair_mic_permission(app: AppHandle) -> Result<String, String> {
+    let _ = hidden_command("reg")
+        .args(["add", MIC_CONSENT_KEY, "/v", "Value", "/t", "REG_SZ", "/d", "Allow", "/f"])
+        .output();
+    let _ = hidden_command("reg")
+        .args(["add", MIC_DESKTOP_KEY, "/v", "Value", "/t", "REG_SZ", "/d", "Allow", "/f"])
+        .output();
+    for key in app_mic_keys() {
+        let _ = hidden_command("reg").args(["delete", &key, "/v", "Value", "/f"]).output();
+    }
+    if let Some(win) = app.get_webview_window("main") {
+        apply_webview_mic_permission(&win, true);
+    }
+    Ok("已重新授予麦克风权限".to_string())
 }
 
 /// macOS 的麦克风权限由系统 TCC 托管，应用只能请求、不能替用户改；Linux 没有对应概念。
 #[cfg(not(windows))]
 #[tauri::command]
 fn get_mic_permission() -> MicPermission {
-    MicPermission { global: "unsupported".to_string(), app: "unsupported".to_string() }
+    MicPermission {
+        global: "unsupported".to_string(),
+        desktop: "unsupported".to_string(),
+        app: "unsupported".to_string(),
+    }
 }
 
 #[cfg(not(windows))]
 #[tauri::command]
-fn set_mic_permission(_allow: bool) -> Result<String, String> {
+fn set_mic_permission(_app: AppHandle, _allow: bool) -> Result<String, String> {
+    Err("当前系统的麦克风权限只能在系统设置里改".to_string())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn sync_webview_mic_permission(_app: AppHandle, _allow: bool) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn repair_mic_permission(_app: AppHandle) -> Result<String, String> {
     Err("当前系统的麦克风权限只能在系统设置里改".to_string())
 }
 
@@ -5310,7 +5485,7 @@ pub fn run() {
             register_assistant_shortcut, unregister_assistant_shortcut,
             tts_synthesize, set_tts_key, get_tts_key,
             asr_transcribe, set_asr_key, get_asr_key, asr_key_ready, asr_model_name, asr_key_info,
-            get_mic_permission, set_mic_permission,
+            get_mic_permission, set_mic_permission, repair_mic_permission, sync_webview_mic_permission,
             capture_screen,
             panel::panel_prepare, panel::panel_push_settings, panel::panel_url, panel::panel_running,
         ])

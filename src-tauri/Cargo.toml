@@ -48,6 +48,11 @@ objc2-foundation = { version = "0.3", features = ["NSString"] }
 # 见 src/files.rs —— 中文用户的老 .txt 多是 GBK，按 UTF-8 硬读就是乱码
 # （必须放在 cfgs 里，否则 macOS 上根本编不过）
 [target.'cfg(windows)'.dependencies]
+# WebView2 的 PermissionRequested / Profile.SetPermissionState：麦克风权限必须在
+# WebView2 这一层自己接住，否则它自己的授权条一旦被点成"拒绝"就再也回不来
+# （Windows 设置里没有这个开关，应用内旧开关也改不到它）。
+webview2-com = "0.38"
+windows-core = "0.61"
 windows = { version = "0.58", features = [
     "Foundation",
     "Foundation_Collections",

@@ -1306,6 +1306,10 @@ async function boot() {
 
   // 同步 Rust 侧音频开关到持久化设置
   void invoke("set_audio_enabled", { enabled: settings.audioEnabled });
+  // 自愈：WebView2 的麦克风权限按 origin 存在 profile 里，一旦被记成 deny
+  // （授权条点不到/误点拒绝），Windows 设置里怎么开都没用。这里只重置 WebView2
+  // 自己这一层（只影响 Petra），不碰 Windows 的隐私总开关。
+  void invoke("sync_webview_mic_permission", { allow: !!settings.asr.micAllowed }).catch(() => {});
 
   const win = getCurrentWindow();
   scaleFactor = await win.scaleFactor().catch(() => 1);
@@ -2617,9 +2621,10 @@ async function showAsrDialog() {
     <div style="font-weight:bold;font-size:16px;margin-bottom:12px;">语音识别设置</div>
     <div style="color:#999;margin-bottom:14px;line-height:1.6;">${backendLine}</div>
     <div style="color:#999;margin-bottom:4px;">麦克风权限</div>
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <div id="asr-perm-state" style="flex:1;line-height:1.5;"></div>
-      <button id="asr-perm-btn" style="padding:6px 14px;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;white-space:nowrap;"></button>
+    <div id="asr-perm-state" style="line-height:1.5;margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <button id="asr-perm-test" style="flex:1;padding:6px 0;border-radius:6px;border:1px solid #555;background:#333;color:#fff;cursor:pointer;">检测 / 修复</button>
+      <button id="asr-perm-btn" style="flex:1;padding:6px 0;border-radius:6px;border:none;background:#5a9;color:#fff;cursor:pointer;white-space:nowrap;"></button>
     </div>
     <div id="asr-perm-note" style="color:#888;font-size:11.5px;line-height:1.5;margin-bottom:16px;"></div>
     <div style="color:#999;margin-bottom:4px;">硅基流动 API Key（留空 = 用内置默认）</div>
@@ -2636,22 +2641,24 @@ async function showAsrDialog() {
   // ---- 麦克风权限：应用内开关（立即生效）+ 同步 Windows 隐私设置 ----
   const stateEl = dlg.querySelector("#asr-perm-state") as HTMLElement;
   const btnEl = dlg.querySelector("#asr-perm-btn") as HTMLButtonElement;
+  const testEl = dlg.querySelector("#asr-perm-test") as HTMLButtonElement;
   const noteEl = dlg.querySelector("#asr-perm-note") as HTMLElement;
   const renderPermission = async () => {
     // 读模块级 settings（而不是 loadSettings() 的副本）：这里和别处的保存
     // 都写同一个对象，避免"改完又被别的 saveSettings(settings) 覆盖回去"
     const allowed = settings.asr.micAllowed;
-    const os = await invoke<{ global: string; app: string }>("get_mic_permission").catch(() => null);
+    const os = await invoke<{ global: string; desktop: string; app: string }>("get_mic_permission").catch(() => null);
     stateEl.innerHTML = allowed
       ? '<span style="color:#6c6;">已开启</span>'
       : '<span style="color:#e08;">已关闭</span><span style="color:#999;">（点 🎤 会直接提示权限已关）</span>';
     btnEl.textContent = allowed ? "关闭麦克风" : "开启麦克风";
     btnEl.style.background = allowed ? "#555" : "#5a9";
     const bits: string[] = [];
-    if (os && os.global === "deny") bits.push("⚠ 系统总开关是「拒绝」，语音输入用不了 —— 点「开启麦克风」会一并改回允许");
-    if (os && os.app === "deny") bits.push("⚠ Windows 里本应用被设为「拒绝」（开启时会清掉）");
+    if (os && os.global === "deny") bits.push("⚠ 系统总开关是「拒绝」，语音输入用不了 —— 点「检测 / 修复」会自动改回允许");
+    if (os && os.desktop === "deny") bits.push("⚠ Windows 的「让桌面应用访问麦克风」是关的（桌宠属于桌面应用）—— 点「检测 / 修复」会自动改回允许");
+    if (os && os.app === "deny") bits.push("⚠ Windows 里本应用被设为「拒绝」（检测时会清掉）");
     if (os && os.global === "unsupported") bits.push("当前系统不支持在应用内改权限（macOS 只能在“系统设置 → 隐私与安全性 → 麦克风”里改）");
-    bits.push("应用内开关立即生效，同时会同步到 Windows 的麦克风隐私设置（对已经在跑的窗口，系统那一层要重启应用后才算数）");
+    bits.push("应用内开关立即生效；「检测 / 修复」会顺带把 Windows 三层开关和 WebView2 里残留的拒绝一起重置");
     noteEl.textContent = bits.join("\n");
     noteEl.style.whiteSpace = "pre-line";
   };
@@ -2668,6 +2675,38 @@ async function showAsrDialog() {
     }
     await renderPermission();
     toast(next ? `麦克风已开启（${osMsg}）` : `麦克风已关闭（${osMsg}）`);
+  };
+  // 检测麦克风：真的开一次 getUserMedia。失败时自动修三层权限 + WebView2 profile
+  // 里可能残留的 deny，再试一次 —— 用户不需要知道是哪一层在拦。
+  const probeMic = async (): Promise<string> => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      return "";
+    } catch (e) {
+      return e instanceof DOMException
+        ? `${e.name}${e.message ? `：${e.message}` : ""}`
+        : e instanceof Error ? e.message : String(e);
+    }
+  };
+  testEl.onclick = async () => {
+    if (!settings.asr.micAllowed) {
+      toast("应用内麦克风是关的：先点「开启麦克风」", "warn");
+      return;
+    }
+    testEl.disabled = true;
+    testEl.textContent = "检测中…";
+    let err = await probeMic();
+    // 只有"被拒绝"才值得去修权限；没设备/被占用修权限也没用
+    if (err.startsWith("NotAllowedError") || err.startsWith("SecurityError")) {
+      await invoke("repair_mic_permission").catch(() => {});
+      await new Promise((r) => setTimeout(r, 400));
+      err = await probeMic();
+    }
+    testEl.disabled = false;
+    testEl.textContent = "检测 / 修复";
+    await renderPermission();
+    toast(err ? `麦克风仍不可用：${err}` : "麦克风可用 ✓", err ? "warn" : "info");
   };
   await renderPermission();
 
