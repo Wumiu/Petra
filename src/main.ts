@@ -5670,8 +5670,9 @@ function showUpdateBubble(tag: string) {
   el.append(title, hint, bar, actions);
   document.body.appendChild(el);
 
-  const openDownloadPage = () => {
-    void invoke("open_url", { url: `https://github.com/Wumiu/Petra/releases/tag/${tag}` });
+  // 下载失败时统一跳官网：GitHub 在国内经常下不动，官网有可直接下载的安装包
+  const openOfficialSite = () => {
+    void invoke("open_url", { url: "http://petra.xin/" });
     el.remove();
   };
   laterBtn.addEventListener("click", () => el.remove());
@@ -5687,13 +5688,15 @@ function showUpdateBubble(tag: string) {
     if (ok) {
       hint.textContent = "下载完成，即将安装…";
     } else {
-      hint.textContent = "下载失败，请前往下载页手动更新。";
+      hint.textContent = "下载失败，正在打开官网，可在官网手动下载。";
       bar.style.display = "none";
       updateBtn.disabled = false;
       updateBtn.textContent = "重试";
       laterBtn.disabled = false;
-      laterBtn.textContent = "前往下载";
-      laterBtn.onclick = openDownloadPage;
+      laterBtn.textContent = "前往官网";
+      laterBtn.onclick = openOfficialSite;
+      // 留 600ms 让用户看清"下载失败"，再自动跳官网；气泡保留，方便回来点「重试」
+      window.setTimeout(() => void invoke("open_url", { url: "http://petra.xin/" }), 600);
     }
   });
 
