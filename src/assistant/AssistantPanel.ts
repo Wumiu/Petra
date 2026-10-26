@@ -23,8 +23,13 @@ import { toast } from "../ui/Toast";
 import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
 
-/** 输入条空闲多久自动收起（毫秒）。只认"真的在用"：点它、打字、用语音 */
-const IDLE_HIDE_MS = 20000;
+/** 输入条空闲多久自动收起（毫秒）。读设置（秒），0 表示不自动收起。
+ *  只认"真的在用"：点它、打字、用语音；输入框里有没发出去的文字时不收（见 resetTimer）。 */
+function idleHideMs(): number {
+  const sec = loadSettings().assistant.inputIdleHideSec;
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec <= 0) return 0;
+  return Math.min(3600, sec) * 1000;
+}
 const HIST_KEY = "live2d-pet-assistant-history";
 const MEM_KEY = "live2d-pet-assistant-memory";
 
@@ -106,13 +111,17 @@ function setInputValue(text: string): void {
 function keepInputBarOnScreen(): void {
   if (!inputBar || inputBar.classList.contains("hidden")) return;
   const vr = getVisibleRect();
+  // 先恢复"贴底"布局再测量：top 与 bottom 同时生效时，浏览器会把元素
+  // 拉满剩余高度（表现为一个很高的白色空盒子，交互区域也跟着变大）。
+  inputBar.style.top = "";
+  inputBar.style.bottom = "";
   const r = inputBar.getBoundingClientRect();
   const overflow = r.bottom - (vr.bottom - 8);
-  if (overflow > 0) {
-    const curTop = parseFloat(inputBar.style.top || "0") || r.top;
-    const minTop = vr.top + 8;
-    inputBar.style.top = `${Math.round(Math.max(minTop, curTop - overflow))}px`;
-  }
+  if (overflow <= 0) return;
+  const minTop = vr.top + 8;
+  inputBar.style.top = `${Math.round(Math.max(minTop, r.top - overflow))}px`;
+  // 只保留 top 定位：必须把 bottom 置成 auto，否则又会被拉伸成整屏高
+  inputBar.style.bottom = "auto";
 }
 
 // API Key 存 Rust 侧（DPAPI 加密 / Keychain / Secret Service），前端只做按供应商的缓存
@@ -273,8 +282,14 @@ function ensureInput() {
     autoGrowInput();
   });
   // 失焦不再自动关闭输入框（点麦克风按钮会失焦，之前 2.5 秒就被关了）
-  // 关闭只靠 20 秒无操作超时，或者用户主动关闭。
+  // 关闭只靠空闲超时（默认 8 秒，输入框里有字时不收）或用户主动关闭。
   input.addEventListener("keydown", (e) => {
+    // Esc 直接收起输入框：用户想关掉时不用去点角落的 ✕
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeAssistant();
+      return;
+    }
     // Enter 发送，Shift+Enter 换行（多行框的常规约定）
     if (e.key === "Enter" && !e.shiftKey) {
       // 输入法组合中的 Enter 是"选词"，不是发送：以前这里只判断 key，
@@ -287,7 +302,7 @@ function ensureInput() {
       // 和语音路径保持一致：留在输入框里并提示，别让用户以为发出去了。
       if (busy) {
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "info");
+        toast("上一句还没答完，先放进输入框了", "info");
         return;
       }
       setInputValue("");
@@ -302,7 +317,7 @@ function ensureInput() {
     if (!t) return;
     if (busy) {
       setInputValue(t);
-      toast("上一句还没答完，这句先放进输入框了", "info");
+      toast("上一句还没答完，先放进输入框了", "info");
       return;
     }
     setInputValue("");
@@ -320,7 +335,7 @@ function ensureInput() {
   mic.className = "as-mic";
   mic.type = "button";
   mic.innerHTML = MIC_ICON_SVG + MIC_WAVE_HTML;
-  mic.title = "语音输入（说完自动发送，再点一下取消）";
+  mic.title = "语音输入，说完自动发送，再点取消";
   mic.setAttribute("aria-label", "语音输入");
   mic.setAttribute("aria-pressed", "false");
   mic.addEventListener("click", () => void toggleVoiceInput());
@@ -344,7 +359,22 @@ function ensureInput() {
   lbl.textContent = "免确认 shell";
   allowRow.append(allowAllShell, lbl);
 
-  inputBar.append(row, allowRow);
+  // 主动关闭按钮：以前只能等空闲超时，用户找不到"我现在就想收起来"的入口
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "as-close";
+  closeBtn.type = "button";
+  closeBtn.textContent = "✕";
+  closeBtn.title = "关闭输入框（Esc）";
+  closeBtn.setAttribute("aria-label", "关闭输入框");
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeAssistant();
+  });
+  const foot = document.createElement("div");
+  foot.className = "as-foot";
+  foot.append(allowRow, closeBtn);
+
+  inputBar.append(row, foot);
   // 点输入条也算"人在用它"：重置空闲计时（顺带阻止事件穿透到桌宠的拖动/摸头）
   inputBar.addEventListener("pointerdown", (e) => {
     e.stopPropagation();
@@ -495,8 +525,13 @@ function ensureBubbles() {
 }
 
 function resetTimer() {
-  if (timer) clearTimeout(timer);
-  // 5 分钟没在用（没点输入条、没打字、没语音）就把输入条收起来
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  const idleMs = idleHideMs();
+  if (idleMs <= 0) return; // 设置里选了「不自动收起」
+  // 空闲（没点输入条、没打字、没语音）就收起输入条
   timer = setTimeout(() => {
     timer = null;
     // 正在听语音时不收：麦克风还开着，把面板收掉等于打断用户说话。
@@ -506,11 +541,22 @@ function resetTimer() {
       resetTimer();
       return;
     }
+    // 输入框里有没发出去的文字时不收：收了等于把用户写了一半的话藏起来。
+    // （这跟 busy 续命是两回事：busy 是"模型还在说"，这里是"用户写了字"。）
+    if (input && input.value.trim()) {
+      resetTimer();
+      return;
+    }
     // 这里**不能**再看 busy 续命：桌宠流式回话、卡在工具循环里时 busy 可能长时间为真，
     // 输入条就永远收不掉了（用户实际遇到的就是这个）。收起只隐藏输入条，气泡与回复
     // 照常显示，所以"等它说完再收"本来就没必要。
     closeAssistant();
-  }, IDLE_HIDE_MS);
+  }, idleMs);
+}
+
+/** 设置里改了空闲时间后调用：重新计时（输入框开着才需要） */
+export function rearmIdleTimer(): void {
+  if (inputBar && !inputBar.classList.contains("hidden")) resetTimer();
 }
 
 /** 把识别器的事件接到输入框上（每次点麦克风都重接一遍，反正很便宜） */
@@ -536,13 +582,13 @@ function wireRecognizer(): SpeechRecognizer {
         setInputValue(t);
         input.focus();
         keepInputBarOnScreen();
-        toast("已暂停识别，内容留在输入框，回车发送", "info");
+        toast("已暂停，内容留在输入框，回车发送", "info");
         return;
       }
       if (busy) {
         // send() 忙的时候会直接 return；不留住的话用户刚说的话就凭空消失了
         setInputValue(t);
-        toast("上一句还没答完，这句先放进输入框了", "info");
+        toast("上一句还没答完，先放进输入框了", "info");
         return;
       }
       // 面板可能在这几秒里被收起了：先把面板叫回来，否则识别结果无处显示
@@ -561,7 +607,7 @@ function wireRecognizer(): SpeechRecognizer {
       addBubble("user", t);
       void send(t);
     },
-    onRecordingStart: () => { input.placeholder = "正在听…（说完停一下自动结束）"; },
+    onRecordingStart: () => { input.placeholder = "正在听…说完停一下自动结束"; },
     // 录音已结束、正在上传识别：这几秒必须给提示，否则用户以为卡死了
     onTranscribing: () => { input.placeholder = "识别中…"; },
     // 听了半天一个字都没识别到：必须出声，不然就是"点了麦克风没反应"
@@ -573,7 +619,7 @@ function wireRecognizer(): SpeechRecognizer {
         toast("已暂停语音识别", "info");
         return;
       }
-      toast("没听到内容，再说一次试试（确认麦克风没被静音）", "warn");
+      toast("没听到内容，再说一次？确认麦克风没静音", "warn");
     },
     onError: (msg) => {
       input.placeholder = "问点什么…";
@@ -586,9 +632,9 @@ function wireRecognizer(): SpeechRecognizer {
       micBtn.classList.toggle("as-mic-recording", recording);
       micBtn.setAttribute("aria-pressed", recording ? "true" : "false");
       micBtn.title = recording
-        ? "正在听…（说完停顿约 1.6 秒自动结束；按任意键暂停、内容留在输入框；再点一下取消）"
+        ? "正在听…说完停顿约 1.6 秒结束；按任意键暂停并保留内容；再点取消"
         : "语音输入（说完 5 秒自动发送；按任意键暂停不发送）";
-      input.placeholder = recording ? "正在听…（按任意键暂停）" : "问点什么…";
+      input.placeholder = recording ? "正在听…按任意键暂停" : "问点什么…";
       if (recording) {
         // 新一轮开始才重置"按键盘暂停"的标记。
         // 注意不能在 recording=false 时重置 —— stop() 会先触发 onStateChange(false)
@@ -641,7 +687,7 @@ async function toggleVoiceInput(): Promise<void> {
   // 应用内的麦克风权限开关（在「🎤 语音识别设置」里关掉后，这里直接拦住，
   // 既不去开麦克风、也不去申请权限）
   if (!loadSettings().asr.micAllowed) {
-    toast("麦克风权限已关闭：右键 →「🎤 语音识别设置」→ 麦克风权限", "warn");
+    toast("麦克风权限关了：右键 →「🎤 语音识别设置」→ 麦克风权限", "warn");
     return;
   }
   // 在线识别（Mac/Linux，以及原生识别降级后的 Windows）要有可用的 Key，
@@ -650,7 +696,7 @@ async function toggleVoiceInput(): Promise<void> {
   if (r.needsApiKey()) {
     const ready = await invoke<boolean>("asr_key_ready").catch(() => false);
     if (!ready) {
-      toast("未配置语音识别 API Key：右键 →「🎤 语音识别设置」", "info");
+      toast("还没配语音识别 Key：右键 →「🎤 语音识别设置」", "info");
       return;
     }
   }
@@ -1089,18 +1135,18 @@ async function send(text: string) {
   if (s.tts.enabled) ttsPlayer.stop();
   const apiKey = await ensureApiKey();
   if (!s.assistant.enabled) {
-    const b = addBubble("sys", "小助手模式没开：右键 →「小助手模式」打开");
+    const b = addBubble("sys", "小助手模式没开，右键 →「小助手模式」打开");
     scheduleFade(b, 4000);
     return;
   }
   // 本地 Ollama / 本机自定义端点不需要 Key，这里不能再按"Key 为空"拦下
   if (!isProviderReady(s.assistant, apiKey)) {
-    const b = addBubble("sys", "未配置 API Key，请到「小助手设置」填写（本地 Ollama 可以留空）");
+    const b = addBubble("sys", "还没配 API Key，请到「小助手设置」填写（本地 Ollama 可留空）");
     scheduleFade(b, 4000);
     return;
   }
   if (!s.assistant.persona.trim()) {
-    const b = addBubble("sys", "请先到「小助手设置」填写人格设定（必填）");
+    const b = addBubble("sys", "请先在「小助手设置」填人格设定（必填）");
     scheduleFade(b, 5000);
     return;
   }
@@ -1271,7 +1317,7 @@ async function send(text: string) {
     }
     if (!finished) {
       // 工具循环被预算刹住了：明确告诉用户，而不是留一个空气泡
-      const note = addBubble("sys", "工具调用到达上限先停住了，可以直接说「继续」。");
+      const note = addBubble("sys", "工具调用到上限了，说「继续」就行");
       scheduleFade(note, 6000);
     }
     saveHistory();

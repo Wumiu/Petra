@@ -7,7 +7,7 @@ export function registerRiichiGame(): void {
     id: "riichi",
     name: "立直麻将（双人）",
     emoji: "🀄",
-    desc: "与桌宠一对一立直麻将：碰/杠/立直/宝牌/番数算点，桌宠会实时给情绪反应。",
+    desc: "和桌宠一对一立直麻将：碰、杠、立直、宝牌、番数算点，桌宠会实时反应",
     mount: (ctx) => mountRiichi(ctx),
   });
 }

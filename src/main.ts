@@ -124,7 +124,7 @@ import { OUTPUT_LANGUAGE_OPTIONS } from "./utils/outputLanguage";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
-import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights } from "./assistant/AssistantPanel";
+import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights, rearmIdleTimer } from "./assistant/AssistantPanel";
 import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
 import {
@@ -1034,8 +1034,8 @@ async function doReloadView() {
 // WebGL 上下文丢失（驱动重置 / 休眠唤醒 / 远程桌面）时模型会整块消失但 UI 还在，
 // 且没有任何自愈路径 —— 只能换模型或重启。这里自动重建一次。
 document.addEventListener("petra:webgl-lost", () => {
-  toast("显示上下文丢失了，正在重新加载模型…", "info");
-  void reloadView().catch(() => toast("模型重新加载失败，可在菜单里换一个模型", "warn"));
+  toast("显示上下文丢了，正在重新加载模型…", "info");
+  void reloadView().catch(() => toast("重新加载失败，可在菜单里换个模型", "warn"));
 });
 
 // ---------- 小助手全局呼出快捷键 ----------
@@ -1053,7 +1053,7 @@ function showHotkeyCapture() {
   removeHotkeyCapture();
   const el = document.createElement("div");
   el.className = "hotkey-capture";
-  el.textContent = "请按下新的快捷键组合…（Esc 取消）";
+  el.textContent = "请按下新的快捷键组合…Esc 取消";
   document.body.appendChild(el);
   hotkeyCaptureEl = el;
 }
@@ -1153,7 +1153,7 @@ async function setAssistantHotkey() {
   if (ok) {
     settings.assistant.shortcut = acc;
     saveSettings(settings);
-    toast(`呼出快捷键已设为 ${acc}`, "info");
+    toast(`呼出快捷键设为 ${acc}`, "info");
     return;
   }
   // 注册失败：把旧键重新注册回去，别让用户两头落空
@@ -1183,7 +1183,7 @@ async function setupAssistantHotkeyListener() {
   await listen(ASSISTANT_HOTKEY_EVENT, async () => {
     const s = loadSettings();
     if (!s.assistant.enabled) {
-      toast("小助手模式没开，先右键开启再唤出", "info");
+      toast("小助手模式没开，右键开启后再唤出", "info");
       return;
     }
     // 待机模式下：不弹对话框，改为在模型旁弹出"待机模式 开/关 + 睡着啦"小菜单
@@ -1344,7 +1344,7 @@ async function boot() {
     const onScreen = await isWindowPosOnScreen(savedPos);
     if (!onScreen) {
       pos = await centerOfPrimaryMonitor();
-      toast("上次的位置在已断开的显示器上，已把桌宠放回主屏中间", "info");
+      toast("上次的位置在已断开的显示器上，已放回主屏中间", "info");
     }
     void win.setPosition(new LogicalPosition(pos.x, pos.y));
   }
@@ -1374,6 +1374,8 @@ async function boot() {
         dueAt: lastGreetAt + greetIntervalMsNow(),
         timerArmed: greetTimer !== null,
       }),
+      // 打开小助手输入框，便于验证空闲收起与关闭按钮
+      openAssistantBar: () => void openAssistant(),
       // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
       popupWarn: (text: string) => showErrorPopup("warn", text),
@@ -2293,7 +2295,7 @@ async function toggleModelPanel() {
 
   // 动作库仅 PSD 角色支持，标准 Live2D 模型提示
   if (currentModel.type === "live2d") {
-    toast("动作库暂仅支持 PSD 角色（当前为标准 Live2D 模型）", "info");
+    toast("动作库暂只支持 PSD 角色，当前是标准 Live2D 模型", "info");
   }
 
   const render = (host: HTMLElement) => {
@@ -2352,7 +2354,7 @@ async function toggleModelPanel() {
       const del = document.createElement("button");
       del.className = "mp-del";
       del.textContent = "删除";
-      del.title = "删除该模型（删除后需重新导入才能恢复）";
+      del.title = "删除模型？删除后需重新导入";
       del.addEventListener("click", (e) => {
         e.stopPropagation();
         showDeleteConfirm(host, m, label, active);
@@ -2428,7 +2430,7 @@ async function toggleModelPanel() {
     panel.appendChild(title);
     const hint = document.createElement("div");
     hint.className = "mp-hint";
-    hint.textContent = `确定删除「${label}」吗？删除后需要重新导入 PSD 才能恢复。`;
+    hint.textContent = `确定删除「${label}」？删除后需重新导入 PSD`;
     panel.appendChild(hint);
     const btns = document.createElement("div");
     btns.className = "as-set-btns";
@@ -2480,7 +2482,7 @@ async function toggleModelPanel() {
         localStorage.setItem(PSD_KEY, file);
         console.error("删除时切回内置模型失败:", err);
         await reloadView().catch(() => {});
-        toast("内置模型加载失败，删除已取消", "warn");
+        toast("内置模型加载失败，已取消删除", "warn");
         return;
       }
     }
@@ -2494,7 +2496,7 @@ async function toggleModelPanel() {
         await reloadView().catch(() => {});
       }
       console.error("delete_imported_model 失败:", err);
-      toast("删除模型失败，请重试", "warn");
+      toast("删除失败，请重试", "warn");
       return;
     }
     // 成功：刷新列表
@@ -2733,7 +2735,7 @@ function fmtLyricOffset(ms: number): string {
 /** 调一次歌词同步（0 = 复位），并把结果告诉用户 —— 静默改数值等于让用户以为没生效 */
 function nudgeLyricOffset(deltaMs: number): void {
   const v = adjustLyricOffset(deltaMs);
-  toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}（本首记住）`);
+  toast(deltaMs === 0 ? "歌词同步已复位（本首）" : `歌词同步：${fmtLyricOffset(v)}，本首记住`);
 }
 
 function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): MenuItemSpec[] {
@@ -2885,7 +2887,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
             saveSettings(settings);
             engine.setTracking(settings.mouseTrack);
             if (settings.mouseTrack && settings.activity === "low") {
-              toast("低活动频率下桌宠保持静止，逗猫棒不生效");
+              toast("低频率下桌宠不动，逗猫棒也不生效");
             } else {
               toast(settings.mouseTrack ? "逗猫棒来啦～" : "收起逗猫棒");
             }
@@ -2920,7 +2922,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
                 settings.hourlyChime = !settings.hourlyChime;
                 saveSettings(settings);
                 applyHourlyChime();
-                toast(settings.hourlyChime ? "每到整点，桌宠会报一下时间" : "已关闭整点播报");
+                toast(settings.hourlyChime ? "每到整点报一下时间" : "已关闭整点播报");
               },
             },
             ...buildHourlyQuietMenuItems(
@@ -3006,7 +3008,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       onPick: () => {
         // 语音输出没开的时候点测试：直接提示，不自动打开、不花钱调API
         if (!settings.tts.enabled) {
-          toast("请先开启语音输出再测试", "info");
+          toast("先开启语音输出再测试", "info");
           return;
         }
         const lang = settings.assistant.outputLanguage ?? "";
@@ -3104,7 +3106,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
             settings.gameSound = !settings.gameSound;
             saveSettings(settings);
             window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
-            toast(settings.gameSound ? `麻将音效已开启（${Math.round(settings.gameSoundVolume * 100)}%）` : "麻将音效已关闭");
+            toast(settings.gameSound ? `麻将音效开了（${Math.round(settings.gameSoundVolume * 100)}%）` : "麻将音效已关闭");
           },
         },
         {
@@ -3115,7 +3117,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
             settings.gameMusic = !settings.gameMusic;
             saveSettings(settings);
             window.dispatchEvent(new Event(RIICHI_SOUND_SETTINGS_EVENT));
-            toast(settings.gameMusic ? `麻将音乐已开启（${Math.round(settings.gameMusicVolume * 100)}%）` : "麻将音乐已关闭");
+            toast(settings.gameMusic ? `麻将音乐开了（${Math.round(settings.gameMusicVolume * 100)}%）` : "麻将音乐已关闭");
           },
         },
         { id: "mg-close", label: "关闭游戏", onPick: () => closeMiniGame() },
@@ -3143,7 +3145,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       state: topmostCache ? "取消置顶" : "置顶",
       onPick: () => {
         void invoke("hide_pet");
-        toast("已隐藏（托盘/Alt+P唤出）");
+        toast("已隐藏，托盘或 Alt+P 唤出");
       },
       onStatePick: () => {
         const next = !topmostCache;
@@ -3502,6 +3504,8 @@ async function applyPanelPatch(patch: Record<string, unknown>): Promise<void> {
   // 留一条日志：面板改了什么一眼能在 lasted.log 里查到（用户报「面板改了没反应」时靠它定位）
   void invoke("debug_mark", { msg: `[panel] 应用补丁：${[...changed].join(", ")}` }).catch(() => {});
   saveSettingsRaw(settings); // 只落盘；末尾统一回推一次，别在这里触发防抖循环
+  // 面板改了「输入框空闲收起」→ 落盘之后按新值重新计时（必须在 save 之后，否则读到旧值）
+  if (assistantPatch && "inputIdleHideSec" in assistantPatch) rearmIdleTimer();
   if (changed.has("modelScale")) await applyModelScale(settings.modelScale);
   if (changed.has("activity")) engine?.setActivityLevel(settings.activity);
   if (changed.has("mouseTrack")) {
@@ -3801,7 +3805,7 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         saveSettings(settings);
         if (acc) {
           const ok = await registerAssistantHotkey(acc);
-          toast(ok ? `呼出快捷键已设为 ${acc}` : `快捷键 ${acc} 注册失败，换一个试试`, ok ? "info" : "warn");
+          toast(ok ? `呼出快捷键设为 ${acc}` : `快捷键 ${acc} 注册失败，换一个试试`, ok ? "info" : "warn");
         } else {
           await invoke("unregister_assistant_shortcut").catch(() => {});
           toast("已清除呼出快捷键");
@@ -3819,7 +3823,7 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
           toast("还没配 API Key，没法试演", "info");
           return;
         }
-        toast("正在用它的人设试演一句…");
+        toast("正在用人设试演一句…");
         const res = await chatStream(
           settings.assistant.provider,
           apiKey,
@@ -4025,7 +4029,7 @@ async function openControlPanel(): Promise<void> {
     // 面板是用来「看着桌宠调它」的：先确保它没被隐藏、也没被浏览器压住。
     // 这一步失败不该影响打开面板本身，所以单独 try。
     await ensurePetVisible();
-    toast("控制面板已在浏览器打开，我在屏幕上，改完立刻能看到");
+    toast("控制面板已在浏览器打开，改完立刻生效");
   } catch (e) {
     console.warn("控制面板：启动失败", e);
     toast("控制面板打不开，先用内置设置窗口", "warn");
@@ -4702,7 +4706,7 @@ function toggleBoundsPanel() {
 
     const hint = document.createElement("div");
     hint.className = "mp-hint";
-    hint.textContent = "微调绿框（角色边界）四边松紧，正=放大，负=收紧";
+    hint.textContent = "微调绿框四边松紧，正数放大、负数收紧";
     host.appendChild(hint);
 
     const mkSlider = (label: string, key: keyof BoundsPadding) => {
@@ -5012,7 +5016,7 @@ async function toggleAssistantSettings() {
       const showing = key.type === "text";
       key.type = showing ? "password" : "text";
       eye.textContent = showing ? "👁" : "🙈";
-      eye.title = showing ? "临时显示 API Key" : "点击隐藏 API Key";
+      eye.title = showing ? "临时显示 API Key" : "点击隐藏";
     });
     mkRow("API Key", keyWrap);
     toggleBaseUrl(); // set initial placeholder
@@ -5035,13 +5039,13 @@ async function toggleAssistantSettings() {
     modelSelect.className = "as-input as-select";
     const emptyOpt = document.createElement("option");
     emptyOpt.value = "";
-    emptyOpt.textContent = "（点下方「自动获取模型」）";
+    emptyOpt.textContent = "点下方「自动获取模型」";
     modelSelect.appendChild(emptyOpt);
     mkRow("模型列表", modelSelect);
 
     const model = document.createElement("input");
     model.className = "as-input";
-    model.placeholder = "模型名（留空用默认）";
+    model.placeholder = "模型名，留空用默认";
     model.value = settings.assistant.model;
     mkRow("模型名", model);
     modelSelect.addEventListener("change", () => {
@@ -5144,7 +5148,7 @@ async function toggleAssistantSettings() {
     presetNameLabel.textContent = "预设名称";
     const presetName = document.createElement("input");
     presetName.className = "as-input";
-    presetName.placeholder = "重命名用，或作为新预设的名字";
+    presetName.placeholder = "重命名用，或作为新预设名字";
     presetNameRow.append(presetNameLabel, presetName);
     host.appendChild(presetNameRow);
 
@@ -5178,7 +5182,7 @@ async function toggleAssistantSettings() {
       if (!p) {
         presetName.value = "";
         presetInfo.textContent =
-          presetsOf().length ? "选一个预设查看端点与模型" : "把当前配置存成预设，之后一键切换";
+          presetsOf().length ? "选一个预设查看端点和模型" : "当前配置存成预设，之后一键切换";
         return;
       }
       presetName.value = p.name;
@@ -5285,7 +5289,7 @@ async function toggleAssistantSettings() {
     const persona = document.createElement("textarea");
     persona.className = "as-input as-persona";
     persona.rows = 3;
-    persona.placeholder = "人格设定，如：你是一只爱撒娇的猫娘，说话带波浪号～（留空则默认）";
+    persona.placeholder = "人格设定，例如：你是一只爱撒娇的猫娘，说话带波浪号～留空用默认";
     persona.value = settings.assistant.persona;
     mkRow("人格设定", persona);
 
@@ -5318,13 +5322,13 @@ async function toggleAssistantSettings() {
     mkRow("人物语言", langSelect);
     const langHint = document.createElement("div");
     langHint.className = "as-privacy";
-    langHint.textContent = "AI 用该语言回复，气泡下方显示中文翻译（翻译不朗读）";
+    langHint.textContent = "AI 用该语言回复，气泡下显示中文翻译，翻译不朗读";
     host.appendChild(langHint);
 
     // 对用户的称呼
     const nickname = document.createElement("input");
     nickname.className = "as-input";
-    nickname.placeholder = "对用户的称呼（如“主人”，留空由 AI 决定）";
+    nickname.placeholder = "对你的称呼，比如「主人」，留空由 AI 决定";
     nickname.value = settings.assistant.nickname ?? "";
     mkRow("对用户的称呼", nickname);
 
@@ -5339,16 +5343,16 @@ async function toggleAssistantSettings() {
     const denyHint = document.createElement("div");
     denyHint.className = "as-privacy";
     denyHint.textContent =
-      "小助手读写文件只允许在 桌面 / 文档 / 下载 之内；这里填的目录（含其子目录）一律拒绝 —— 建议把项目源码目录加进来";
+      "小助手只能读写桌面、文档、下载；这里填的目录一律拒绝，建议把项目源码目录加进来";
     host.appendChild(denyHint);
 
     // 天气城市：填了就按城市查，不会再被代理出口 IP 带偏
     const weatherCity = document.createElement("input");
     weatherCity.className = "as-input";
-    weatherCity.placeholder = "天气城市（如 北京；留空自动定位）";
+    weatherCity.placeholder = "天气城市，如北京；留空自动定位";
     weatherCity.value = settings.weatherCity ?? "";
     const weatherCityRow = mkRow("天气城市", weatherCity);
-    weatherCityRow.title = "开了代理/VPN 时自动定位可能指向梯子地区，填上城市就不会错";
+    weatherCityRow.title = "开代理时自动定位可能跑到梯子地区，填上城市就不会错";
 
     // 主动问候间隔时间设置
     const greetRow = document.createElement("div");
@@ -5376,16 +5380,35 @@ async function toggleAssistantSettings() {
     greetRow.append(greetLabel, greetInputRow);
     host.appendChild(greetRow);
 
+    // 输入框空闲收起时间（秒，0 = 不自动收起）
+    const idleInput = document.createElement("input");
+    idleInput.className = "as-input";
+    idleInput.type = "number";
+    idleInput.min = "0";
+    idleInput.max = "600";
+    idleInput.step = "1";
+    idleInput.value = String(settings.assistant.inputIdleHideSec ?? 8);
+    idleInput.style.width = "90px";
+    idleInput.style.textAlign = "center";
+    const idleUnit = document.createElement("span");
+    idleUnit.textContent = "秒（0 = 不收起）";
+    idleUnit.style.fontSize = "12px";
+    idleUnit.style.color = "#8a7a95";
+    const idleWrap = document.createElement("div");
+    idleWrap.style.cssText = "display:flex;align-items:center;gap:6px;";
+    idleWrap.append(idleInput, idleUnit);
+    mkRow("输入框空闲收起", idleWrap);
+
     const gameTalk = document.createElement("input");
     gameTalk.type = "checkbox";
     gameTalk.checked = settings.gameTalk === true;
     gameTalk.setAttribute("aria-describedby", "game-talk-help");
     const gameTalkRow = mkRow("AI 对局互动", gameTalk);
-    gameTalkRow.title = "开启后仅在麻将关键事件发送精简公开牌况，并消耗已配置服务的 API 额度";
+    gameTalkRow.title = "开启后只在麻将关键事件发送精简公开牌况，会消耗 API 额度";
     const gameTalkHelp = document.createElement("div");
     gameTalkHelp.id = "game-talk-help";
     gameTalkHelp.className = "as-privacy";
-    gameTalkHelp.textContent = "关闭时使用本地台词。开启后仅在关键牌局事件发送精简可知牌况，会消耗 API 额度；不会发送玩家暗牌或牌山顺序。";
+    gameTalkHelp.textContent = "关闭时用本地台词；开启后只在关键牌局发送精简牌况，会消耗 API 额度，不会发送暗牌或牌山顺序";
     host.appendChild(gameTalkHelp);
 
 
@@ -5432,13 +5455,13 @@ async function toggleAssistantSettings() {
     clearHistBtn.textContent = "清空对话历史";
     clearHistBtn.addEventListener("click", () => {
       clearHistory();
-      toast("对话历史已清空（长期记忆保留）");
+      toast("对话历史已清空，长期记忆保留");
     });
 
     sep(); // 分组：隐私
     const privacyHint = document.createElement("div");
     privacyHint.className = "as-privacy";
-    privacyHint.textContent = "隐私提示：主动问候会读取当前前台窗口标题+进程名并发送给 AI。API Key 经系统 DPAPI 加密存储。";
+    privacyHint.textContent = "隐私提示：主动问候会读取前台窗口标题和进程名发给 AI；API Key 经系统 DPAPI 加密存储";
     host.appendChild(privacyHint);
     // 直接 append 到 host 会是左对齐，和上面那些靠右的按钮不一致；放进按钮组统一靠右
     const clearHistRow = document.createElement("div");
@@ -5511,7 +5534,14 @@ async function toggleAssistantSettings() {
       const greetVal = parseInt(greetInput.value, 10);
       const nextGreetInterval = Math.max(5, Math.min(120, isNaN(greetVal) ? 20 : greetVal));
       settings.assistant.greetInterval = nextGreetInterval;
+      // 输入框空闲收起（秒，0 = 不自动收起；留空/非法值回落到默认 8）
+      const idleVal = parseInt(idleInput.value, 10);
+      settings.assistant.inputIdleHideSec = Number.isFinite(idleVal)
+        ? Math.max(0, Math.min(600, idleVal))
+        : 8;
       saveSettings(settings);
+      // 设置变了要立刻按新值重新计时，否则本次仍按旧的 8 秒/不收起执行
+      rearmIdleTimer();
       // 重排必须在**新间隔写进 settings 之后**：反过来的话 resync 会按旧间隔算下一次，
       // 用户改成 60 分钟却还是 20 分钟来一次（"间隔不准"的另一个来源）。
       // 顺带把锚点重设到当下，避免"保存前累积的时长已到，刚保存就被问候一下"。
@@ -5568,7 +5598,7 @@ function openFeedbackInput() {
     const desc = document.createElement("div");
     desc.className = "mp-hint";
     desc.textContent =
-      "告诉我们遇到了什么问题，会自动附上本次启动的运行日志。提交后直达飞书反馈群；网络发不出去时会导出到桌面，也可以直接「复制」贴给我。";
+      "写清楚遇到的问题就行，会自动附上本次启动日志；提交直达飞书反馈群，网络发不出去会导出到桌面，也可以直接复制给我";
     host.appendChild(desc);
 
     const ta = document.createElement("textarea");
@@ -5588,16 +5618,16 @@ function openFeedbackInput() {
     const copy = document.createElement("button");
     copy.className = "as-btn";
     copy.textContent = "复制";
-    copy.title = "复制描述 + 环境信息 + 本次启动日志，可直接粘给别人";
+    copy.title = "复制描述、环境信息和启动日志，可直接粘给别人";
     copy.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "info");
+        toast("请先描述问题", "info");
         return;
       }
       void invoke<string>("feedback_text", { message: t })
         .then((text) => copyText(text))
-        .then((ok) => toast(ok ? "反馈内容已复制（含本次启动日志）" : "复制失败，请手动选中复制", ok ? "info" : "warn"))
+        .then((ok) => toast(ok ? "反馈内容已复制，含启动日志" : "复制失败，请手动选中", ok ? "info" : "warn"))
         .catch((e) => toast(`复制失败：${e}`, "warn"));
     });
     const send = document.createElement("button");
@@ -5606,7 +5636,7 @@ function openFeedbackInput() {
     send.addEventListener("click", () => {
       const t = ta.value.trim();
       if (!t) {
-        toast("请先描述一下遇到的问题", "info");
+        toast("请先描述问题", "info");
         return;
       }
       host.classList.add("hidden");
@@ -5639,13 +5669,13 @@ async function doSendFeedback(message: string) {
     return;
   } catch (e) {
     // 飞书推送失败（网络/代理问题）：说清原因，再走桌面导出
-    toast(`飞书推送不可用：${e}，已改为导出桌面`, "warn");
+    toast(`飞书推送不可用：${e}，已导出到桌面`, "warn");
   }
   try {
     const path = await invoke<string>("export_feedback", { message });
-    toast(`已导出到桌面：${path}（把这个文件发给我即可）`);
+    toast(`已导出到桌面：${path}，把这个文件发给我就行`);
   } catch (e2) {
-    toast(`导出也失败了：${e2}。请用「复制」把内容贴给我`, "warn");
+    toast(`导出也失败了：${e2}，请用「复制」把内容贴给我`, "warn");
   }
 }
 
@@ -5725,7 +5755,7 @@ function showUpdateBubble(tag: string) {
       hint.textContent = `正在下载… ${pct}%`;
     });
     if (ok) {
-      hint.textContent = "下载完成，即将安装…";
+      hint.textContent = "下载完成，即将安装";
     } else {
       hint.textContent = "下载失败，正在打开官网，可在官网手动下载。";
       bar.style.display = "none";
@@ -5769,7 +5799,7 @@ async function checkUpdate(manual = false) {
       showUpdateBubble(info.version);
     } else if (manual) {
       const v = await getVersion().catch(() => "?");
-      toast(`已是最新版本（v${v}）`);
+      toast(`已是最新版本 v${v}`);
     }
   } catch (e) {
     // 按错误类型给用户可理解提示（自动检查静默，仅记录日志）
