@@ -3286,7 +3286,9 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "webkit2gtk",
+ "webview2-com",
  "windows 0.58.0",
+ "windows-core 0.61.2",
  "xcap",
  "zip",
 ]

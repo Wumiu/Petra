@@ -303,7 +303,7 @@ export class SpeechRecognizer {
         this.handlers.onError?.(
           err === "audio-capture"
             ? "找不到麦克风设备：确认设备插好并在系统里启用"
-            : "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」",
+            : "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 点「检测 / 修复」自动修复",
         );
         this.finishWebSpeech(false); // 丢弃这一轮，不再继续等
         return;
@@ -407,6 +407,14 @@ export class SpeechRecognizer {
     try {
       // 采集端就开始处理：降噪、自动增益、回声消除。风扇/空调底噪、麦克风离得远
       // 的时候差别很明显；极安静环境下如果觉得齿音被削，可在面板里关掉。
+      // 先把权限状态写进日志：NotAllowedError 到底是"系统拒绝"还是"WebView2 里
+      // 存了一次 deny"，看这一行 + 下面 name= 就能分清
+      try {
+        const p = await navigator.permissions.query({ name: "microphone" as PermissionName });
+        asrLog(`权限状态=${p.state}`);
+      } catch {
+        /* 个别 WebView 不支持 permissions.query，忽略 */
+      }
       const denoise = (() => {
         try {
           return loadSettings().asr?.denoise !== false;
@@ -490,10 +498,12 @@ export class SpeechRecognizer {
       asrLog(`录音启动失败 name=${name} msg=${e instanceof Error ? e.message : String(e)}`);
       this.handlers.onError?.(
         name === "NotAllowedError" || name === "SecurityError"
-          ? "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 麦克风权限，点「开启麦克风」"
+          ? "麦克风权限被拒：右键 →「🎤 语音识别设置」→ 点「检测 / 修复」自动修复"
           : name === "NotFoundError"
             ? "找不到麦克风设备：确认设备插好并在系统里启用"
-            : `麦克风启动失败：${e instanceof Error ? e.message : String(e)}`,
+            : name === "NotReadableError" || name === "TrackStartError"
+              ? "麦克风被其它程序占用：关掉正在录音/开会的软件再试"
+              : `麦克风启动失败：${e instanceof Error ? e.message : String(e)}`,
       );
     } finally {
       if (token === this.startToken) this.starting = false;
