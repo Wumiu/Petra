@@ -3191,13 +3191,18 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
 }
 
 /**
- * 右键菜单精简版：只保留 交互 / 语音输出 / 今日抽卡 / 小游戏 / 小助手模式，
+ * 右键菜单精简版：保留 交互 / 小助手 / 语音输出 / 日记本 / 今日抽卡 / 小游戏，
  * 其余全部收纳进「设置」独立窗口（openSettingsPanel）。
  * buildMenu(engine) 仍是唯一的全量菜单数据源——设置窗口与右键菜单共用同一份
  * 项定义与 onPick 闭包，保证被转移的功能行为与原来完全一致。
+ *
+ * 日记 / 抽卡是用户点名要回到右键菜单的：这里直接复用 buildMenu 里的原始定义
+ * （含 diary 的三项子菜单和 daily-card 的「已抽/未抽」实时 state），不另建一份逻辑；
+ * 顺序跟着 buildMenu 走 —— 日记在抽卡前、抽卡在小游戏前。
+ * 它们同时仍在控制面板里（日记页的开关 + 娱乐页的抽卡），右键只是快捷入口，
+ * 所以从「设置」窗口的兜底列表里去掉不会丢功能。
  */
-// 抽卡已经有面板原生界面（娱乐 → 抽卡），不再占右键菜单；游戏本体仍在桌宠窗口里跑
-const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant"]);
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant", "diary", "daily-card"]);
 
 function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   const all = buildMenu(engine);
