@@ -154,6 +154,8 @@ body::after{
 .row .rctl input[type=text]{min-width:0; flex:1 1 120px; width:auto}
 .row .rctl .btn{flex:none}
 
+/* 插件页里的原生 checkbox：跟随品牌色，别用系统默认蓝 */
+input[type=checkbox]{accent-color:var(--brand); width:16px; height:16px; cursor:pointer}
 /* 开关 */
 .sw{position:relative; width:42px; height:24px; border-radius:999px; border:1px solid var(--line-strong);
   background:color-mix(in srgb, var(--txt3) 42%, transparent); cursor:pointer; transition:background .18s, border-color .18s; padding:0}
@@ -640,6 +642,13 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
         },
 
+      ],
+    },
+    {
+      id: "plugins", label: "插件", title: "插件",
+      desc: "安装、启用或停用 Petra 插件；插件注册的工具会进入小助手的工具列表",
+      cards: [
+        { title: "已安装插件", desc: "只安装你信任的插件。插件运行在独立 Worker 里，但仍是本地代码。", type: "plugins" },
       ],
     },
     {
@@ -1410,6 +1419,108 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 插件页：列表、启停、重载、删除 + manifest 声明的简单设置表单 */
+  function pluginsCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "插件"));
+    card.appendChild(el("p", "cd", "插件是本地 JS，拥有 manifest 里声明的能力；只安装你信任的插件。"));
+
+    const row = el("div", "btn-row");
+    const mkBtn = (label, id, payload) => {
+      const b = el("button", "btn btn-sm", label);
+      b.onclick = () => runAction(id, payload, label);
+      row.appendChild(b);
+    };
+    mkBtn("打开插件目录", "__data:plugins-open-dir");
+    mkBtn("安装示例插件", "__data:plugins-install-example");
+    mkBtn("全部重载", "__data:plugins-reload-all");
+    card.appendChild(row);
+
+    const list = (state.meta.data || {}).plugins || [];
+    if (!list.length) {
+      card.appendChild(el("div", "empty", "还没有安装插件。把插件目录放进插件目录后点「全部重载」，或先点「安装示例插件」。"));
+      return card;
+    }
+
+    list.forEach((p) => {
+      const box = el("div", "row");
+      box.style.alignItems = "flex-start";
+      const txt = el("div", "rtext");
+      txt.appendChild(el("div", "rlabel", `${p.name} v${p.version}`));
+      const status = p.loaded ? "已加载" : (p.enabled ? "加载失败" : "已停用");
+      txt.appendChild(el("div", "rdesc", `${p.id} · ${status}`));
+      if (p.description) txt.appendChild(el("div", "rdesc", p.description));
+      if (p.error) txt.appendChild(el("div", "rdesc", "⚠️ " + p.error));
+      if (Array.isArray(p.tools) && p.tools.length) {
+        txt.appendChild(el("div", "rdesc", "工具：" + p.tools.map((t) => t.name).join("、")));
+      }
+      if (Array.isArray(p.permissions) && p.permissions.length) {
+        txt.appendChild(el("div", "rdesc", "权限：" + p.permissions.join("、")));
+      }
+      box.appendChild(txt);
+
+      const ctl = el("div", "rctl");
+      const toggle = el("button", "btn btn-sm", p.enabled ? "停用" : "启用");
+      toggle.onclick = () => runAction("__data:plugins-toggle", { id: p.id, enabled: !p.enabled }, p.enabled ? "停用" : "启用");
+      ctl.appendChild(toggle);
+      const reload = el("button", "btn btn-sm", "重载");
+      reload.onclick = () => runAction("__data:plugins-reload", { id: p.id }, "重载");
+      ctl.appendChild(reload);
+      const del = el("button", "btn btn-sm", "删除");
+      del.onclick = () => {
+        if (confirm(`删除插件「${p.name}」？插件目录会被移除，不可恢复。`)) {
+          runAction("__data:plugins-remove", { id: p.id }, "删除插件");
+        }
+      };
+      ctl.appendChild(del);
+      box.appendChild(ctl);
+      card.appendChild(box);
+
+      (p.settings || []).forEach((f) => {
+        const r = el("div", "row");
+        const t = el("div", "rtext");
+        t.appendChild(el("div", "rlabel", f.label || f.key));
+        if (f.description) t.appendChild(el("div", "rdesc", f.description));
+        r.appendChild(t);
+        const c = el("div", "rctl");
+        let input;
+        if (f.type === "boolean") {
+          input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = !!p.values[f.key];
+          input.onchange = () => runAction("__data:plugins-setting", { id: p.id, key: f.key, value: !!input.checked }, "保存插件设置");
+        } else if (f.type === "select") {
+          input = document.createElement("select");
+          (f.options || []).forEach(([value, label]) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = label;
+            input.appendChild(opt);
+          });
+          input.value = String(p.values[f.key] ?? "");
+          input.onchange = () => runAction("__data:plugins-setting", { id: p.id, key: f.key, value: input.value }, "保存插件设置");
+        } else {
+          input = document.createElement("input");
+          input.type = f.type === "number" ? "number" : "text";
+          if (f.placeholder) input.placeholder = f.placeholder;
+          if (f.min != null) input.min = String(f.min);
+          if (f.max != null) input.max = String(f.max);
+          if (f.step != null) input.step = String(f.step);
+          input.value = String(p.values[f.key] ?? "");
+          input.onchange = () => runAction("__data:plugins-setting", {
+            id: p.id,
+            key: f.key,
+            value: f.type === "number" ? Number(input.value) : input.value,
+          }, "保存插件设置");
+        }
+        c.appendChild(input);
+        r.appendChild(c);
+        card.appendChild(r);
+      });
+    });
+    return card;
+  }
+
   function renderSection() {
     const sec = SECTIONS.find((s) => s.id === state.section) || SECTIONS[0];
     const page = $("#page");
@@ -1433,6 +1544,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "quick") return grid.appendChild(quickCard());
       if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
+      if (cardSpec.type === "plugins") return grid.appendChild(pluginsCard());
       const card = el("div", "card");
       card.appendChild(el("h2", null, cardSpec.title));
       if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));

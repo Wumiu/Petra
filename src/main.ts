@@ -124,6 +124,7 @@ import { OUTPUT_LANGUAGE_OPTIONS } from "./utils/outputLanguage";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
+import { pluginRuntime, configurePluginHost } from "./plugins/runtime";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights, rearmIdleTimer } from "./assistant/AssistantPanel";
 import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
@@ -1359,6 +1360,12 @@ async function boot() {
   // 菜单开关在正式构建里也可见，提前在 boot 里按 dev 创建会让打包版"有开关无效果"。
   // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
   setModelRectProvider(getModelRect);
+  // 插件 Host：插件运行在 Worker 里，pet.say 等能力通过这个回调回到主窗口。
+  // 初始化失败不能拖垮桌宠启动；单个插件的错误保留在插件面板里显示。
+  configurePluginHost({
+    say: (text, holdMs) => sayPetLine(text, holdMs),
+  });
+  void pluginRuntime.init().catch((e) => console.warn("插件初始化失败：", e));
   if (import.meta.env.DEV) {
     // dev 调试钩子：CDP 里直接读角色包围盒/绿框状态，排查"气泡位置/绿框不对"时不用再临时改代码
     (window as any).__petraDebug = {
@@ -1376,6 +1383,8 @@ async function boot() {
       }),
       // 打开小助手输入框，便于验证空闲收起与关闭按钮
       openAssistantBar: () => void openAssistant(),
+      // 插件运行时：CDP 里核对 Worker 是否真的加载、工具/菜单是否注册
+      plugins: pluginRuntime,
       // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
       popupWarn: (text: string) => showErrorPopup("warn", text),
@@ -2747,6 +2756,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       { id: "idle-hint", label: "睡着啦，喊我起来吧", hint: true },
     ];
   }
+  const pluginMenus = pluginRuntime.getMenuItems();
   return [
     {
       id: "model",
@@ -3124,6 +3134,27 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       ],
     },
     {
+      id: "plugins",
+      label: "🧩 插件",
+      submenu: [
+        ...pluginMenus.map((item) => ({
+          id: `plugin:${item.pluginId}:${item.id}`,
+          label: item.label,
+          onPick: () => {
+            void pluginRuntime.runCommand(item.pluginId, item.id).catch((e) => {
+              toast(`插件命令失败：${e instanceof Error ? e.message : String(e)}`, "warn");
+            });
+          },
+        })),
+        ...(pluginMenus.length ? [{ id: "plugins-sep", separator: true }] : []),
+        {
+          id: "plugins-manage",
+          label: "插件管理",
+          onPick: () => void openControlPanel("plugins"),
+        },
+      ],
+    },
+    {
       id: "feedback",
       label: "反馈",
       onPick: () => openFeedbackInput(),
@@ -3202,7 +3233,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
  * 它们同时仍在控制面板里（日记页的开关 + 娱乐页的抽卡），右键只是快捷入口，
  * 所以从「设置」窗口的兜底列表里去掉不会丢功能。
  */
-const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant", "diary", "daily-card"]);
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant", "diary", "daily-card", "plugins"]);
 
 function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   const all = buildMenu(engine);
@@ -3409,6 +3440,7 @@ function buildPanelMeta() {
       personaTest: panelPersonaTest,
       asrModel: panelAsrModel,
       asrTest: panelAsrTest,
+      plugins: pluginRuntime.getPanelPlugins(),
     },
     quick: [
       { id: "show-pet", label: "把桌宠叫到前面" },
@@ -3884,6 +3916,45 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(`拿到 ${panelAssistantModels.length} 个模型`);
         break;
       }
+      case "plugins-open-dir": {
+        const dir = await invoke<string>("plugin_dir");
+        await invoke("open_path", { path: dir });
+        toast("已打开插件目录");
+        break;
+      }
+      case "plugins-install-example": {
+        const msg = await invoke<string>("plugin_install_example");
+        await pluginRuntime.reloadAll();
+        toast(msg);
+        break;
+      }
+      case "plugins-reload-all": {
+        await pluginRuntime.reloadAll();
+        toast("插件已全部重新加载");
+        break;
+      }
+      case "plugins-reload": {
+        await pluginRuntime.reloadPlugin(String(p.id ?? ""));
+        toast("插件已重载");
+        break;
+      }
+      case "plugins-toggle": {
+        const id = String(p.id ?? "");
+        const enabled = !!p.enabled;
+        await pluginRuntime.setEnabled(id, enabled);
+        toast(enabled ? "插件已启用" : "插件已停用");
+        break;
+      }
+      case "plugins-setting": {
+        await pluginRuntime.updateSettings(String(p.id ?? ""), String(p.key ?? ""), p.value);
+        toast("插件设置已保存");
+        break;
+      }
+      case "plugins-remove": {
+        await pluginRuntime.removePlugin(String(p.id ?? ""));
+        toast("插件已删除");
+        break;
+      }
       default:
         toast(`未实现的面板动作：${kind}`, "warn");
         return;
@@ -4042,9 +4113,16 @@ function runPanelAction(id: string, payload?: unknown): void {
 }
 
 /** 右键菜单与托盘的统一入口：起服务 → 推设置 → 用默认浏览器打开 */
-async function openControlPanel(): Promise<void> {
+async function openControlPanel(section?: string): Promise<void> {
   try {
-    const url = await invoke<string>("panel_prepare");
+    let url = await invoke<string>("panel_prepare");
+    if (section) {
+      try {
+        const u = new URL(url);
+        u.searchParams.set("s", section);
+        url = u.toString();
+      } catch { /* URL 解析失败就按原地址打开 */ }
+    }
     await pushPanelState();
     panelEverOpened = true;
     await invoke("open_url", { url });

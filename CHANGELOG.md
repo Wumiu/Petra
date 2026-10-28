@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+- 新增** Petra 原生插件系统 MVP**（分支 `ks-kbl`）：小助手工具从硬编码走向可插拔。
+  - `ToolRegistry` 收口：内置工具仍由 `TOOL_SPECS` 提供，插件工具在运行时注册到同一张表，参数校验 / 结果截断 / 未知工具提示共用一套逻辑；`AssistantClient` 每轮请求动态拼接 `extraTools`，插件热重载后立即生效。
+  - 插件运行在 **Web Worker**：单文件 ESM，入口导出 `activate(pet)` / `deactivate()`；插件不能直接碰 DOM 或 Tauri invoke，只能通过 `pet.tools.register`、`pet.menu.add`、`pet.settings`、`pet.say`、`pet.notify`、`pet.log` 这些白名单 API。manifest 声明 `permissions`，宿主逐项检查。
+  - Rust 新增 `src-tauri/src/plugins.rs`：扫描 `app_data_dir/plugins`、校验 id/入口路径、读源码、安装内置示例、删除插件；路径穿越和越界读都挡在 Rust 侧。
+  - 控制面板新增「插件」页：启用/停用、重载、删除、打开插件目录、安装示例插件；manifest 里的 `settings` 自动渲染成简单表单（string/number/boolean/select），改完热推给 Worker。
+  - 右键菜单新增「🧩 插件」入口，插件菜单项和「插件管理」都走 `buildMenu` 唯一数据源；`COMPACT_MENU_KEEP` 加入 `plugins`，右键可直接用。
+  - 示例插件 `plugins/petra-plugin-hello`：一个 `hello_petra` 工具 + 一个「插件：打个招呼」菜单 + 两个设置项；真机 CDP 验证安装、Worker 加载、工具调用、菜单命令、设置热更新、停用/启用、删除/重装全链路。
+  - 新增 `npm run test:plugins`（manifest 校验、目录 id 一致性、路径穿越拒绝、动态工具规格注册/卸载）；`npm run build`、`cargo test --lib`（68）全绿。
+
 - 修「定时问候的时间又不准」（用户报障）：**根因是问候锚点只存在内存里** —— `lastGreetAt` 初值为 0，每次刷新页面 / 重启应用都会归零，`sinceGreet` 变成天文数字，于是一分钟后就补一次问候。
   - 证据（当天日记事件流，`petra-diary-events-*` 里的 greeting 记录）：设置的是 20 分钟，12:02→12:23 是正常的 **21 分钟**；之后变成 6分44 / 3分12 / **1分36** / 6分15 / **2分09** / **1分26** …，而那段时间正是我用 CDP 反复 `location.reload()` 做验证的窗口。单独复现：刷新后 **65 秒**必出一条问候（已量到）。
   - 修法：锚点**落盘**（`localStorage['petra-last-greet-at']`，统一走 `markGreeted()`），重启/刷新不再重置节奏；顺带删掉那条永远命不中的"早晨首次"分支（锚点持久化后 `lastGreetAt===0` 几乎不可能，而且它在用户**离开**时也会触发 —— 会冲着空房间问候）。早上的问候由"隔夜超过间隔"和"从离开回到活跃"两条覆盖，两处的 prompt 里都带当前时间。

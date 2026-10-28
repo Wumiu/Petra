@@ -23,7 +23,8 @@
     "test:lang": "tsc src/utils/outputLanguage.ts src/assistant/proactivePrompts.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/output-language.test.js",
     "test:weather": "tsc src/features/weather/WeatherFormat.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/weather.test.js",
     "test:hourly": "tsc src/features/hourly/HourlyChime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/hourly.test.js",
-    "test:visible": "tsc src/ui/visible.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/visible-clamp.test.js"
+    "test:visible": "tsc src/ui/visible.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/visible-clamp.test.js",
+    "test:plugins": "tsc src/plugins/manifest.ts src/assistant/toolRuntime.ts --rootDir src --outDir tests/build --module commonjs --target ES2020 --skipLibCheck --moduleResolution node && node tests/plugin-manifest.test.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

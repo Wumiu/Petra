@@ -648,8 +648,10 @@ export async function chatStream(
   const m = model || PROVIDERS[provider].defaultModel;
   if (!m) throw new Error("未设置模型名");
   const messages = buildMessages(history, persona, memory, extraContext, systemOverride);
+  // 插件工具是运行时注册的：每次请求都重新拼一份，不能缓存在模块级常量里。
+  const toolDefs = enableTools ? [...TOOLS, ...(requestOptions.extraTools ?? [])] : [];
   // 输入 token 估算（消息 + 工具定义），用于本地用量统计兜底
-  const inputTokens = estimateTokens(JSON.stringify(messages)) + (enableTools ? estimateToolsTokens() : 0) + 4;
+  const inputTokens = estimateTokens(JSON.stringify(messages)) + (enableTools ? estimateToolsTokens(toolDefs) : 0) + 4;
   // 支持流式 usage 回传的提供商白名单（其余端点可能拒绝未知字段）
   const supportsStreamUsage = USAGE_STREAM_PROVIDERS.has(provider);
   const requestBody = JSON.stringify({
@@ -657,7 +659,7 @@ export async function chatStream(
     messages: attachScreenImage(messages, requestOptions.screenImage),
     // 所有 OpenAI 兼容端点（含 custom，如小米 API）都发工具定义；
     // enableTools=false（日记/抽卡等纯文本生成）时一律不带 tools，避免模型返回空正文
-    ...(enableTools ? { tools: TOOLS } : {}),
+    ...(enableTools ? { tools: toolDefs } : {}),
     ...(supportsStreamUsage ? { stream_options: { include_usage: true } } : {}),
     ...(requestOptions.maxOutputTokens ? { max_tokens: requestOptions.maxOutputTokens } : {}),
     // MiniMax：让思考内容与正文分离（详见 isMiniMaxEndpoint 的说明）。
@@ -841,6 +843,7 @@ const USAGE_STREAM_PROVIDERS: ReadonlySet<string> = new Set([
 ]);
 const DEFAULT_USAGE: UsageStats = { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, lastInput: 0, lastOutput: 0, lastCached: 0, lastAt: 0 };
 let toolsTokensCache = -1;
+let toolsTokensKey = "";
 
 /** 估算一段文本的 token 数：中文≈0.8/字，其他≈3.6 字/token，emoji≈1 */
 export function estimateTokens(text: string): number {
@@ -860,9 +863,13 @@ export function estimateTokens(text: string): number {
   return Math.max(1, Math.round(cjk * 0.8 + other / 3.6));
 }
 
-/** 工具定义整体 token 估算（缓存，仅算一次） */
-function estimateToolsTokens(): number {
-  if (toolsTokensCache < 0) toolsTokensCache = estimateTokens(JSON.stringify(TOOLS)) + 8;
+/** 工具定义整体 token 估算（按当前工具集合缓存；插件热加载后自动失效） */
+function estimateToolsTokens(tools: unknown[]): number {
+  const key = JSON.stringify(tools);
+  if (toolsTokensCache < 0 || toolsTokensKey !== key) {
+    toolsTokensCache = estimateTokens(key) + 8;
+    toolsTokensKey = key;
+  }
   return toolsTokensCache;
 }
 
@@ -1013,4 +1020,9 @@ export interface ChatRequestOptions {
    * 历史文件撑爆，也会让 buildMessages 的字符预算（MAX_CHARS）失真。
    */
   screenImage?: string;
+  /**
+   * 额外的工具定义（插件工具）。内置 TOOLS 始终会一起发；
+   * 这里只放插件注册的工具，避免和内置表重复。
+   */
+  extraTools?: unknown[];
 }

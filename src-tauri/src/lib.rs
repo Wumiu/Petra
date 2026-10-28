@@ -10,6 +10,8 @@ mod audio;
 #[path = "audio_linux.rs"]
 mod audio;
 
+mod plugins;
+
 #[cfg(windows)]
 mod launch;
 #[cfg(target_os = "macos")]
@@ -5663,6 +5665,8 @@ pub fn run() {
             asr_transcribe, set_asr_key, get_asr_key, asr_key_ready, asr_model_name, asr_key_info,
             get_mic_permission, set_mic_permission, repair_mic_permission, sync_webview_mic_permission,
             capture_screen,
+            plugins::plugin_dir, plugins::plugin_list, plugins::plugin_read_source,
+            plugins::plugin_install_example, plugins::plugin_delete,
             panel::panel_prepare, panel::panel_push_settings, panel::panel_url, panel::panel_running,
         ])
         .setup(|app| {

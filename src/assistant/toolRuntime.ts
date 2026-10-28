@@ -55,11 +55,38 @@ export const TOOL_SPECS: Record<string, ToolSpec> = {
 /** 没写 maxResultChars 的工具统一用这个上限 */
 export const DEFAULT_MAX_RESULT_CHARS = 1500;
 
+/**
+ * 运行时动态工具（插件）的规格。
+ *
+ * 内置工具仍写在 TOOL_SPECS 里；插件在加载时把 name → spec 注册到这里，
+ * 卸载时撤销。validateToolArgs / toolNames / truncateToolResult 都统一查这两张表，
+ * 这样插件工具和内置工具走同一套参数校验与截断逻辑。
+ */
+const DYNAMIC_TOOL_SPECS = new Map<string, ToolSpec>();
+
+/** 注册/覆盖一个动态工具规格；返回撤销函数。 */
+export function registerToolSpec(name: string, spec: ToolSpec): () => void {
+  DYNAMIC_TOOL_SPECS.set(name, spec);
+  return () => {
+    // 只在还是同一份 spec 时删除，避免旧插件卸载时误删新插件同名工具
+    if (DYNAMIC_TOOL_SPECS.get(name) === spec) DYNAMIC_TOOL_SPECS.delete(name);
+  };
+}
+
+export function toolSpec(name: string): ToolSpec | undefined {
+  return DYNAMIC_TOOL_SPECS.get(name) ?? TOOL_SPECS[name];
+}
+
 export function toolNames(): string[] {
-  return Object.keys(TOOL_SPECS);
+  return [...Object.keys(TOOL_SPECS), ...DYNAMIC_TOOL_SPECS.keys()];
 }
 
 export function isKnownTool(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TOOL_SPECS, name) || DYNAMIC_TOOL_SPECS.has(name);
+}
+
+/** 是否为内置工具（不是插件动态注册的） */
+export function isBuiltinTool(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(TOOL_SPECS, name);
 }
 
@@ -77,7 +104,8 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): T
       message: `未知工具「${name}」，没有这个工具。可用工具只有：${toolNames().join("、")}。请改用其中之一，不要编造工具名。`,
     };
   }
-  const spec = TOOL_SPECS[name];
+  const spec = toolSpec(name);
+  if (!spec) return { ok: false, message: `未知工具「${name}」，没有这个工具。` };
   const missing = (spec.required ?? []).filter((key) => {
     const v = args[key];
     if (v === undefined || v === null) return true;
@@ -100,7 +128,7 @@ export function formatToolError(name: string, reason: string, hint = ""): string
 
 /** 工具结果按工具名截断：保留开头和结尾，中间省略，避免一次输出吃掉 token 预算 */
 export function truncateToolResult(name: string, text: string): string {
-  const cap = TOOL_SPECS[name]?.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
+  const cap = toolSpec(name)?.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS;
   if (text.length <= cap) return text;
   const head = Math.ceil(cap * 0.6);
   const tail = cap - head;

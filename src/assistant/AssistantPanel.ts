@@ -22,6 +22,7 @@ import { deleteWrongHistory } from "./ChatHistory";
 import { toast } from "../ui/Toast";
 import { notifyHttpError } from "../ui/ErrorPopup";
 import { getSpeechRecognizer, type SpeechRecognizer } from "../asr/SpeechRecognizer";
+import { pluginRuntime } from "../plugins/runtime";
 
 /** 输入条空闲多久自动收起（毫秒）。读设置（秒），0 表示不自动收起。
  *  只认"真的在用"：点它、打字、用语音；输入框里有没发出去的文字时不收（见 resetTimer）。 */
@@ -1245,7 +1246,11 @@ async function send(text: string) {
         extraCtxWithLang,
         "",
         // 有截图就传（可能模型第二轮才调用截图工具）
-        screenshot.image ? { screenImage: screenshot.image } : undefined,
+        // extraTools：插件在运行时注册的工具；每轮重新取，插件热重载后立即生效
+        {
+          ...(screenshot.image ? { screenImage: screenshot.image } : {}),
+          extraTools: pluginRuntime.getOpenAITools(),
+        },
       );
       if (colorHook.lastEmotion() !== "neutral") streamEmo = colorHook.lastEmotion();
 
@@ -1474,6 +1479,16 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
         role: "tool",
         tool_call_id: tc.id,
         content: withHint(formatToolError(tc.name, check.message), repeatHint),
+      });
+      continue;
+    }
+    // 插件工具：交给 PluginRuntime 的 Worker 执行。插件内部可以再调 pet.say 等白名单能力。
+    if (pluginRuntime.isPluginTool(tc.name)) {
+      const result = await pluginRuntime.executeTool(tc.name, tc.args);
+      history.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: withHint(truncateToolResult(tc.name, result), repeatHint),
       });
       continue;
     }
