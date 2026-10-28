@@ -59,6 +59,9 @@ let recognizer: SpeechRecognizer | null = null;
  * （用户按下任意键 = 想自己看一眼/改一改再发）。会话结束时清掉。
  */
 let voicePausedByKey = false;
+/** 最近一次真正发出去的文本 + 时刻：语音收尾迟到时用它挡掉重复发送 */
+let lastSentText = "";
+let lastSentAt = 0;
 let micBtn: HTMLButtonElement | null = null;
 
 /** 麦克风图标：细描边的胶囊 + 拾音弧 + 支架，24 网格便于缩放 */
@@ -580,6 +583,13 @@ function wireRecognizer(): SpeechRecognizer {
       input.placeholder = "问点什么…";
       void invoke("debug_mark", { msg: `[asr] onFinal len=${t.length} voicePaused=${voicePausedByKey} busy=${busy} barHidden=${!document.querySelector(".as-inputbar")}` }).catch(() => {});
       if (!t) return;
+      // 兜底去重：同一句话 8 秒内已经发过就不再发（比如用户手动点了发送、
+      // 识别收尾又迟到一次）。不清输入框、不弹提示，只留一条日志。
+      if (t === lastSentText && Date.now() - lastSentAt < 8000) {
+        void invoke("debug_mark", { msg: `[asr] 丢弃重复的语音结果（${t.length} 字）` }).catch(() => {});
+        setInputValue("");
+        return;
+      }
       // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
       if (voicePausedByKey) {
         voicePausedByKey = false;
@@ -1132,6 +1142,11 @@ function buildChatContext(nickname: string, outputLang: string): string {
 }
 
 async function send(text: string) {
+  // 手动发送（回车 / 点「发送」）时如果麦克风还在听，直接取消这一轮：
+  // 否则几秒后识别收尾 → onFinal → 把这句**再发一次**。
+  // 实测：12:31 点发送把 interim 发了出去，2 秒后 final 回来又发了一遍，
+  // 于是 AI 回了一句「刚关过了呀，那页已经没了」。
+  if (recognizer?.isRecording()) recognizer.cancel();
   if (busy) return;
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
@@ -1179,6 +1194,9 @@ async function send(text: string) {
   const userContent = langReminder ? `${text}\n${langReminder}` : text;
   history.push({ role: "user", content: userContent });
   saveHistory();
+  // 记下"确实发出去了"的原文：语音收尾迟到时 onFinal 靠它去重
+  lastSentText = text.trim();
+  lastSentAt = Date.now();
   // 情感反馈：先分析用户消息（零 token），立即驱动角色表情/动作 + 心情
   const userEmo = classifyEmotion(text);
   reactNow(userEmo);
