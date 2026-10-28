@@ -5666,7 +5666,7 @@ pub fn run() {
             get_mic_permission, set_mic_permission, repair_mic_permission, sync_webview_mic_permission,
             capture_screen,
             plugins::plugin_dir, plugins::plugin_list, plugins::plugin_read_source,
-            plugins::plugin_install_example, plugins::plugin_delete,
+            plugins::plugin_install_example, plugins::plugin_delete, plugins::plugin_sdk_install, plugins::plugin_sdk_dir,
             panel::panel_prepare, panel::panel_push_settings, panel::panel_url, panel::panel_running,
         ])
         .setup(|app| {
@@ -5697,6 +5697,10 @@ pub fn run() {
                 if verbose { "，详细日志开" } else { "" }
             ));
             log_environment();
+
+            // 本地 bridge / MCP 服务随应用启动：dsh 通过 app_data_dir/bridge.json
+            // 找到当前端口与 token，不需要用户先打开控制面板。
+            let _ = panel::ensure_started(app.handle());
 
             // 崩溃也要落日志：后端线程 panic 时日志里原本一个字都没有，
             // 只能靠"功能突然不工作"去猜。这里把 panic 内容和文件:行号写进 pet.log，

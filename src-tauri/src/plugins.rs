@@ -133,6 +133,139 @@ pub fn plugin_read_source(app: AppHandle, id: String) -> Result<String, String> 
     fs::read_to_string(&full).map_err(|e| format!("读取插件入口失败：{e}"))
 }
 
+/// 从任意本地目录安装/更新插件（给 MCP / dsh 用）。
+///
+/// 只接受目录；manifest 必须合法，id 必须与目录名一致。复制时拒绝符号链接，
+/// 并限制文件数/总大小，避免把一整个 node_modules 或恶意目录塞进来。
+pub fn install_from_dir(app: &AppHandle, source: &str) -> Result<String, String> {
+    let source = PathBuf::from(source);
+    let source = fs::canonicalize(&source)
+        .map_err(|e| format!("插件源目录无效：{e}"))?;
+    if !source.is_dir() {
+        return Err("插件源路径不是目录".into());
+    }
+    let manifest_raw = fs::read_to_string(source.join("petra-plugin.json"))
+        .map_err(|e| format!("源目录缺少 petra-plugin.json：{e}"))?;
+    let manifest: Value = serde_json::from_str(&manifest_raw)
+        .map_err(|e| format!("petra-plugin.json 不是合法 JSON：{e}"))?;
+    let id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !valid_id(&id) {
+        return Err(format!("插件 id 不合法：{id}"));
+    }
+    let dir_name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if dir_name != id {
+        return Err(format!("插件目录名（{dir_name}）必须与 manifest.id（{id}）一致"));
+    }
+    let main = manifest
+        .get("main")
+        .and_then(Value::as_str)
+        .unwrap_or("index.js");
+    let main_rel = safe_relative_main(main).ok_or_else(|| format!("插件入口路径不合法：{main}"))?;
+    if !source.join(&main_rel).is_file() {
+        return Err(format!("插件入口不存在：{}", main_rel.display()));
+    }
+    let root = plugins_root(app)?;
+    let dest = root.join(&id);
+    // 先复制到临时目录，成功后再替换旧插件：避免复制到一半失败把可用插件删没了。
+    let staging = root.join(format!(".{id}.installing-{}", std::process::id()));
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|e| format!("清理临时目录失败：{e}"))?;
+    }
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    if let Err(e) = copy_plugin_dir(&source, &staging, 0, &mut files, &mut bytes) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    if dest.exists() {
+        fs::remove_dir_all(&dest).map_err(|e| format!("替换旧插件失败：{e}"))?;
+    }
+    fs::rename(&staging, &dest).map_err(|e| {
+        let _ = fs::remove_dir_all(&staging);
+        format!("启用新插件失败：{e}")
+    })?;
+    Ok(id)
+}
+
+fn copy_plugin_dir(
+    src: &Path,
+    dest: &Path,
+    depth: usize,
+    files: &mut usize,
+    bytes: &mut u64,
+) -> Result<(), String> {
+    if depth > 8 {
+        return Err("插件目录层级过深".into());
+    }
+    fs::create_dir_all(dest).map_err(|e| format!("创建插件目录失败：{e}"))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("读取插件目录失败：{e}"))? {
+        let entry = entry.map_err(|e| format!("读取插件条目失败：{e}"))?;
+        let ty = entry
+            .file_type()
+            .map_err(|e| format!("读取插件条目类型失败：{e}"))?;
+        if ty.is_symlink() {
+            return Err("插件目录里不允许符号链接".into());
+        }
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if ty.is_dir() {
+            copy_plugin_dir(&from, &to, depth + 1, files, bytes)?;
+        } else if ty.is_file() {
+            *files += 1;
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            *bytes += size;
+            if *files > 200 || *bytes > 20 * 1024 * 1024 {
+                return Err("插件包过大（最多 200 个文件 / 20MB）".into());
+            }
+            fs::copy(&from, &to).map_err(|e| format!("复制 {} 失败：{e}", from.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// 把内置 SDK（README / types / 模板）写到 app_data_dir/plugin-sdk。
+/// 文档每次覆盖，模板只在不存在时写入，避免把用户改过的模板冲掉。
+#[tauri::command]
+pub fn plugin_sdk_install(app: AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录：{e}"))?
+        .join("plugin-sdk");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 SDK 目录失败：{e}"))?;
+    fs::write(dir.join("README.md"), include_str!("../../plugins/sdk/README.md"))
+        .map_err(|e| format!("写入 SDK README 失败：{e}"))?;
+    fs::write(dir.join("types.d.ts"), include_str!("../../plugins/sdk/types.d.ts"))
+        .map_err(|e| format!("写入 SDK 类型失败：{e}"))?;
+    let tpl = dir.join("template");
+    fs::create_dir_all(&tpl).map_err(|e| format!("创建 SDK 模板目录失败：{e}"))?;
+    let tpl_manifest = tpl.join("petra-plugin.json");
+    if !tpl_manifest.is_file() {
+        fs::write(&tpl_manifest, include_str!("../../plugins/sdk/template/petra-plugin.json"))
+            .map_err(|e| format!("写入模板 manifest 失败：{e}"))?;
+    }
+    let tpl_index = tpl.join("index.js");
+    if !tpl_index.is_file() {
+        fs::write(&tpl_index, include_str!("../../plugins/sdk/template/index.js"))
+            .map_err(|e| format!("写入模板入口失败：{e}"))?;
+    }
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 返回 SDK 目录（不存在时先安装）。
+#[tauri::command]
+pub fn plugin_sdk_dir(app: AppHandle) -> Result<String, String> {
+    plugin_sdk_install(app)
+}
+
 /// 安装内置示例插件（Hello Petra）。已存在时不覆盖，避免把用户改过的示例冲掉。
 #[tauri::command]
 pub fn plugin_install_example(app: AppHandle) -> Result<String, String> {

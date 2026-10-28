@@ -649,6 +649,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       desc: "安装、启用或停用 Petra 插件；插件注册的工具会进入小助手的工具列表",
       cards: [
         { title: "已安装插件", desc: "只安装你信任的插件。插件运行在独立 Worker 里，但仍是本地代码。", type: "plugins" },
+        { title: "dsh MCP 接入", desc: "把这段 MCP 配置给 dsh，dsh 就能直接安装/重载插件、让桌宠说话", type: "mcp" },
         { title: "给 dsh 的说明", desc: "复制下面这段给 dsh，它就知道怎么给 Petra 写插件", type: "dsh-guide" },
       ],
     },
@@ -1420,12 +1421,61 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** dsh MCP 接入：显示当前端口/token 拼出来的配置，一键复制。 */
+  function mcpCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "dsh MCP 接入"));
+    card.appendChild(el("p", "cd", "Petra 启动时会写 bridge.json；MCP URL 带本次启动的 token。把下面的配置加到 dsh 的 MCP 配置里即可。"));
+    const out = el("pre", null, "正在读取 bridge…");
+    out.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--card-strong); color:var(--txt2); font-size:12px; line-height:1.65; max-height:260px; overflow:auto;";
+    card.appendChild(out);
+    const row = el("div", "btn-row");
+    let configText = "";
+    const copy = el("button", "btn btn-primary btn-sm", "复制 MCP 配置");
+    copy.onclick = async () => {
+      if (!configText) { toast("还没读到 bridge 信息", "warn"); return; }
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(configText);
+        else {
+          const ta = document.createElement("textarea");
+          ta.value = configText; document.body.appendChild(ta); ta.select();
+          document.execCommand("copy"); ta.remove();
+        }
+        toast("已复制 MCP 配置");
+      } catch (_) { toast("复制失败，请手动选中复制", "err"); }
+    };
+    row.appendChild(copy);
+    const sdk = el("button", "btn btn-sm", "打开插件 SDK");
+    sdk.onclick = () => runAction("__data:plugins-open-sdk", "打开插件 SDK");
+    row.appendChild(sdk);
+    card.appendChild(row);
+    void (async () => {
+      try {
+        const data = await api("/api/bridge/info");
+        const b = data.bridge || {};
+        configText = JSON.stringify({ mcpServers: { petra: { url: b.mcpUrl || "" } } }, null, 2);
+        out.textContent = [
+          configText,
+          "",
+          `插件目录：${b.pluginDir || "(未知)"}`,
+          `SDK 目录：${b.sdkDir || "(未知)"}`,
+          `bridge 文件：${b.bridgeFile || "(未知)"}`,
+        ].join("\n");
+      } catch (e) {
+        out.textContent = "读取失败：" + (e.message || e);
+      }
+    })();
+    return card;
+  }
+
   /** 给用户复制给 dsh 的插件开发说明。保持成一段可直接执行的 prompt，不写空话。 */
   function dshGuideText() {
     return [
       "你在为 Petra 桌宠写一个原生插件。",
       "",
-      "请先读这些文件，理解现有格式：",
+      "如果没有 Petra 源码：先调用 MCP 工具 petra_plugin_sdk，",
+      "或读 Petra 控制面板「打开插件 SDK」得到的 README.md / types.d.ts / template/。",
+      "如果有源码，也可以读：",
       "- plugins/README.md",
       "- plugins/petra-plugin-hello/petra-plugin.json",
       "- plugins/petra-plugin-hello/index.js",
@@ -1456,7 +1506,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       "- 自测步骤（怎么在控制面板启用、怎么触发、预期气泡/结果）",
       "",
       "安装方式：",
-      "把生成的整个目录复制到 Petra 控制面板 →「插件」→「打开插件目录」，然后在「插件」页点「全部重载」并启用。",
+      "A. 如果配置了 Petra MCP：调用 petra_install_plugin（sourceDir=插件目录绝对路径），",
+      "   再调用 petra_reload_plugins，最后 petra_list_plugins 确认 loaded=true。",
+      "B. 如果没有 MCP：把生成的整个目录复制到 Petra 控制面板 →「插件」→「打开插件目录」，",
+      "   然后在「插件」页点「全部重载」并启用。",
     ].join("\n");
   }
 
@@ -1637,6 +1690,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
       if (cardSpec.type === "plugins") return grid.appendChild(pluginsCard());
       if (cardSpec.type === "dsh-guide") return grid.appendChild(dshGuideCard());
+      if (cardSpec.type === "mcp") return grid.appendChild(mcpCard());
       const card = el("div", "card");
       card.appendChild(el("h2", null, cardSpec.title));
       if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));

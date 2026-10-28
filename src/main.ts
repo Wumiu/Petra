@@ -1365,7 +1365,29 @@ async function boot() {
   configurePluginHost({
     say: (text, holdMs) => sayPetLine(text, holdMs),
   });
-  void pluginRuntime.init().catch((e) => console.warn("插件初始化失败：", e));
+  void pluginRuntime.init()
+    // 启动后先把插件状态推给本地 bridge，dsh 一上来就能 petra_list_plugins 看到已装插件
+    .then(() => pushPanelState())
+    .catch((e) => console.warn("插件初始化失败：", e));
+  // dsh / MCP 通过本地 bridge 发来的事件：说一句、发通知、重载插件。
+  void listen<{ text?: string; holdMs?: number }>("petra:say", (event) => {
+    const text = String(event.payload?.text ?? "").trim();
+    if (text) sayPetLine(text, Number(event.payload?.holdMs) || 6000);
+  });
+  void listen<{ title?: string; body?: string }>("petra:notify", (event) => {
+    void invoke("send_notification", {
+      title: String(event.payload?.title ?? "Petra"),
+      body: String(event.payload?.body ?? ""),
+    }).catch(() => {});
+  });
+  void listen("plugin:reload", () => {
+    void pluginRuntime.reloadAll()
+      .then(() => pushPanelState())
+      .catch((e) => console.warn("插件重载失败：", e));
+  });
+  void listen("panel:request-state", () => {
+    void pushPanelState().catch(() => {});
+  });
   if (import.meta.env.DEV) {
     // dev 调试钩子：CDP 里直接读角色包围盒/绿框状态，排查"气泡位置/绿框不对"时不用再临时改代码
     (window as any).__petraDebug = {
@@ -1385,6 +1407,7 @@ async function boot() {
       openAssistantBar: () => void openAssistant(),
       // 插件运行时：CDP 里核对 Worker 是否真的加载、工具/菜单是否注册
       plugins: pluginRuntime,
+      pushPanelState: () => pushPanelState(),
       // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
       popupWarn: (text: string) => showErrorPopup("warn", text),
@@ -3898,6 +3921,12 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         const dir = await invoke<string>("plugin_dir");
         await invoke("open_path", { path: dir });
         toast("已打开插件目录");
+        break;
+      }
+      case "plugins-open-sdk": {
+        const dir = await invoke<string>("plugin_sdk_dir");
+        await invoke("open_path", { path: dir });
+        toast("已打开插件 SDK 目录");
         break;
       }
       case "plugins-install-example": {

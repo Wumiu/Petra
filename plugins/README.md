@@ -82,3 +82,14 @@ export function deactivate() {
 ## 安全边界
 
 插件是本地代码，**只安装你信任的插件**。Worker 隔离能防止插件直接操作主窗口 DOM，但不是操作系统级沙箱；插件仍可通过 `fetch` 访问网络。宿主 API 只暴露上述白名单，不会把 `invoke`、文件系统或 shell 直接交给插件。
+
+
+## 用 dsh 自动写 / 安装
+
+Petra 控制面板 →「插件」页提供：
+
+- **「dsh MCP 接入」**：显示可复制的 `mcpServers` 配置，dsh 可直接调用
+  `petra_plugin_sdk`、`petra_install_plugin`、`petra_reload_plugins`、`petra_list_plugins`。
+- **「给 dsh 的说明」**：一段可直接复制给 dsh 的插件开发 prompt。
+- **「打开插件 SDK」**：把 `README.md`、`types.d.ts`、`template/` 落到
+  `%APPDATA%\com.wumiu.petra\plugin-sdk`，没有源码也能让 dsh 读到契约。

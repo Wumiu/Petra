@@ -10,6 +10,10 @@
   - Rust 新增 `src-tauri/src/plugins.rs`：扫描 `app_data_dir/plugins`、校验 id/入口路径、读源码、安装内置示例、删除插件；路径穿越和越界读都挡在 Rust 侧。
   - 控制面板新增「插件」页：启用/停用、重载、删除、打开插件目录、安装示例插件；manifest 里的 `settings` 自动渲染成简单表单（string/number/boolean/select），改完热推给 Worker。
   - 插件入口**只放在控制面板**：控制面板「插件」页列出插件命令、设置、启停/重载/删除；右键菜单不加入口，避免和现有精简菜单混在一起。插件页新增「给 dsh 的说明」卡片，把 `plugins/README.md` + 示例插件 + host API 规则压成一段可一键复制的开发 prompt，用户复制给 dsh 即可开始写插件。
+  - **dsh MCP 接入**：应用启动即拉起本地 bridge，写 `app_data_dir/bridge.json`（端口/token/pluginDir/sdkDir/mcpUrl）；`POST /mcp` 支持 MCP Streamable HTTP 的 `initialize` / `tools/list` / `tools/call`，暴露 `petra_plugin_sdk`、`petra_plugin_dir`、`petra_list_plugins`、`petra_install_plugin`、`petra_reload_plugins`、`petra_say`、`petra_notify`。控制面板插件页新增「dsh MCP 接入」卡片，直接显示可复制的 `mcpServers` 配置。
+  - **插件 SDK**：`plugin_sdk_dir` / `plugin_sdk_install` 把 README、`types.d.ts`、模板写到 `app_data_dir/plugin-sdk`；控制面板可一键打开，dsh 不需要 Petra 源码也能读到插件契约。
+  - **自动安装/重载闭环**：`petra_install_plugin` 接收 dsh 生成的本地目录，校验 manifest、限制 200 文件/20MB、拒绝符号链接，先复制到临时目录、成功后再原子替换旧插件，然后 emit `plugin:reload`；前端监听后重载 Worker 并把状态推回 bridge，`petra_list_plugins` 能拿到 `loaded/error/tools/menus`。MCP 使用落盘的稳定 `bridge-token`，重启后配置不用改。
+  - **真机验证**：MCP `initialize` / `tools/list` / `tools/call` 全通；`petra_say` 能让桌宠出气泡；`petra_install_plugin` 安装临时插件后 `petra_list_plugins` 返回 `loaded=true`，插件工具能执行；重启后同一 MCP URL/token 仍然可用；`petra_plugin_sdk` 返回 SDK 目录、README 和 types。
   - 示例插件 `plugins/petra-plugin-hello`：一个 `hello_petra` 工具 + 一个「插件：打个招呼」菜单 + 两个设置项；真机 CDP 验证安装、Worker 加载、工具调用、菜单命令、设置热更新、停用/启用、删除/重装全链路。示例问候语修正为「我是 Petra 里的示例插件」（原来写反成「插件里的 Petra」），并对旧文案做一次就地迁移。
   - 新增 `npm run test:plugins`（manifest 校验、目录 id 一致性、路径穿越拒绝、动态工具规格注册/卸载）；`npm run build`、`cargo test --lib`（68）全绿。
 
