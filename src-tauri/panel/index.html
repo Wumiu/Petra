@@ -523,7 +523,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
               { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不收起）" },
-            { type: "hotkey", label: "呼出快捷键", desc: "点击录制后在浏览器里按下组合键（Esc 取消）" },
+            { type: "hotkey", label: "呼出快捷键", desc: "点「录制」后直接按组合键（Esc 取消）。由系统层面捕获，浏览器占用的组合也能录；也可以手输" },
             
           ],
         },
@@ -904,31 +904,29 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       const { row, ctl } = rowWrap(spec.label, spec.desc);
       const inp = document.createElement("input");
       inp.type = "text";
-      inp.readOnly = true;
+      // 允许手输：非 Windows 没有钩子，钩子也可能被安全软件拦，留一条手动兜底
       inp.value = (state.settings.assistant && state.settings.assistant.shortcut) || "";
-      inp.placeholder = "未设置";
+      inp.placeholder = "点「录制」自动捕获，或手输如 Ctrl+Alt+K";
       const rec = el("button", "btn btn-sm", "录制");
-      let capturing = false;
-      const onKey = (e) => {
-        if (!capturing) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.key === "Escape") { done(); return; }
-        if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
-        const mods = [];
-        if (e.ctrlKey) mods.push("Ctrl");
-        if (e.altKey) mods.push("Alt");
-        if (e.shiftKey) mods.push("Shift");
-        if (e.metaKey) mods.push("Super");
-        const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-        inp.value = [...mods, k].join("+");
-        done();
+      // 录制交给 Rust 的低级键盘钩子（__data:hotkey-capture）：
+      // 浏览器会把 Ctrl+W / Ctrl+T / Alt+← / F5 这类组合先消费掉，页面根本收不到
+      // keydown，在页面上监听永远是「按了没反应」。捕获完成后桌宠会 pushPanelState，
+      // 这里轮询刷新把这个输入框更新掉（值没变就说明用户取消了/超时了）。
+      let pollTimer = 0;
+      const startPoll = (before) => {
+        clearInterval(pollTimer);
+        let n = 0;
+        pollTimer = setInterval(async () => {
+          n++;
+          const okRefresh = await refresh(true);
+          const now = (state.settings.assistant && state.settings.assistant.shortcut) || "";
+          if (!okRefresh || now !== before || n > 24) clearInterval(pollTimer);
+        }, 900);
       };
-      const done = () => { capturing = false; rec.textContent = "录制"; window.removeEventListener("keydown", onKey, true); };
       rec.onclick = () => {
-        if (capturing) { done(); return; }
-        capturing = true; rec.textContent = "按下组合键…";
-        window.addEventListener("keydown", onKey, true);
+        rec.textContent = "按组合键…";
+        startPoll(inp.value);
+        runAction("__data:hotkey-capture", "捕获快捷键");
       };
       const save = el("button", "btn btn-sm btn-primary", "保存");
       save.onclick = () => runAction("__data:hotkey-set", { value: inp.value });
