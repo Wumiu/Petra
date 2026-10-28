@@ -13,7 +13,7 @@
       "key": "greeting",
       "label": "问候语",
       "type": "string",
-      "default": "你好呀，我是插件里的 Petra。",
+      "default": "你好呀，我是 Petra 里的示例插件。",
       "description": "插件工具和菜单都会用这句话"
     },
     {
