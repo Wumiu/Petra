@@ -623,7 +623,9 @@ function wireRecognizer(): SpeechRecognizer {
         toast("已暂停语音识别", "info");
         return;
       }
-      toast("没听到内容，再说一次？确认麦克风没静音", "warn");
+      // 「有权限但识别不了」最常见的三个原因是设备选错/音量 0/被占用，
+      // 光说"没听到内容"用户没法自查，这里直接把三条排查顺序说出来
+      toast("麦克风没收到声音：检查①系统默认输入设备选对②输入音量不为 0③没被会议/录音软件占用", "warn");
     },
     onError: (msg) => {
       input.placeholder = "问点什么…";

@@ -37,7 +37,10 @@ import { loadSettings } from "../utils/settings";
 /** 用户在设置里要求「先走云端模型」吗（默认就是先走云端） */
 function preferCloudAsr(): boolean {
   try {
-    return loadSettings().asr?.cloudFirst !== false;
+    // 默认走系统识别（Windows Web Speech）：微软那套是流式 + 自带端点检测，
+    // 中文短句比「整段 WAV 送云端」准得多，还不花识别费。只有用户显式打开
+    // 「优先用云端模型识别」才走云端；Mac/Linux 本来就没有原生识别，会自然落到云端。
+    return loadSettings().asr?.cloudFirst === true;
   } catch {
     return true;
   }
@@ -250,7 +253,7 @@ export class SpeechRecognizer {
   private startWebSpeech(): void {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
-      this.degradeToSiliconFlow("WebView 不支持浏览器语音识别", false);
+      this.degradeToSiliconFlow("这台机器没有浏览器语音识别（WebView2 版本或系统限制）");
       return;
     }
     const rec = new Ctor();
@@ -310,7 +313,7 @@ export class SpeechRecognizer {
       }
       if (isFatalWebSpeechError(err)) {
         // 这台机器上原生识别根本用不了：别再让用户对着红点干等
-        this.degradeToSiliconFlow(`浏览器语音识别不可用（${err}）`, true);
+        this.degradeToSiliconFlow(`浏览器语音识别不可用（${err}）`);
         return;
       }
       if (isReportableWebSpeechError(err)) this.handlers.onError?.(`语音识别错误：${err}`);
@@ -378,7 +381,7 @@ export class SpeechRecognizer {
    * 不在这里自动重开录音：调用方（按钮）需要先确认在线识别配了 Key，
    * 否则一开就报"未配置 Key"，用户看到的是两个连续的错误提示。
    */
-  private degradeToSiliconFlow(reason: string, reportToUser: boolean): void {
+  private degradeToSiliconFlow(reason: string): void {
     this.webSpeechBroken = true;
     this.backend = pickBackend(getSpeechRecognitionCtor() !== null, this.webSpeechBroken, preferCloudAsr());
     const rec = this.recognition;
@@ -388,11 +391,12 @@ export class SpeechRecognizer {
     this.active = false;
     try { rec?.abort(); } catch { /* ignore */ }
     this.handlers.onStateChange?.(false);
-    if (reportToUser) {
-      this.handlers.onError?.(`${reason}：已切换为在线识别，请再点一次麦克风`);
-    } else {
-      this.handlers.onError?.(`${reason}：需要配置语音识别 Key（右键 →「🎤 语音识别设置」）`);
-    }
+    // 两种降级原因（原生识别报错 / 这台机器根本没有原生识别）都要把原因说出来：
+    // 以前「没有 SpeechRecognition 构造函数」那条只提示去配 Key，用户完全不知道
+    // 是浏览器识别在这台机器上不可用。
+    this.handlers.onError?.(
+      `${reason}：已切换为在线识别 —— 若没配硅基流动 Key，请右键 →「🎤 语音识别设置」填一个，再点一次麦克风`,
+    );
   }
 
   // =============== 后端 2：录音 + Rust 转发在线识别 ===============
