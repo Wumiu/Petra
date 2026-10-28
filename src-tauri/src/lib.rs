@@ -5375,6 +5375,182 @@ fn unregister_assistant_shortcut(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 在**系统层面**捕获一次快捷键组合（Windows 低级键盘钩子）。
+///
+/// 为什么不能在控制面板里录：面板是普通浏览器页面，`Ctrl+W` / `Ctrl+T` / `Alt+←` /
+/// `F5` 这些组合会被浏览器或系统先消费，压根不会派发到页面 —— 用户看到的就是
+/// 「按了没反应，录不进去」。低级键盘钩子拿到的是原始按键，连 `Alt+Tab` 都看得见，
+/// 捕获到第一个非修饰键就立刻撤钩，不会长期驻留。
+///
+/// 返回 Tauri accelerator 字符串（如 `Ctrl+Alt+K`）；按 Esc 取消、20 秒没按键都报错。
+#[cfg(windows)]
+#[tauri::command]
+async fn capture_hotkey() -> Result<String, String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
+    use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
+        HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
+        WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    static TX: Mutex<Option<mpsc::Sender<String>>> = Mutex::new(None);
+    /// 钩子所在线程 id：钩子回调里要用它 PostThreadMessage(WM_QUIT) 把消息循环叫停
+    static HOOK_TID: AtomicU32 = AtomicU32::new(0);
+    /// 当前按住的修饰键位掩码。
+    /// **不能用 GetAsyncKeyState 判断**：捕获期间我们把所有按键都吞掉（返回 1），
+    /// 系统根本没把 Ctrl/Alt 真的按下去，查询结果永远是"没按"，于是录出来的
+    /// 只有 K 而不是 Ctrl+Alt+K。所以修饰键状态只能自己按钩子事件累加。
+    static MODS: AtomicU32 = AtomicU32::new(0);
+    const M_CTRL: u32 = 1;
+    const M_ALT: u32 = 2;
+    const M_SHIFT: u32 = 4;
+    const M_SUPER: u32 = 8;
+
+    /// 修饰键 → 位
+    fn modifier_bit(vk: u32) -> Option<u32> {
+        match vk {
+            0x11 | 0xA2 | 0xA3 => Some(M_CTRL),
+            0x12 | 0xA4 | 0xA5 => Some(M_ALT),
+            0x10 | 0xA0 | 0xA1 => Some(M_SHIFT),
+            0x5B | 0x5C => Some(M_SUPER),
+            _ => None,
+        }
+    }
+
+    /// 虚拟键码 → Tauri accelerator 里的键名；不认识的返回 None（继续等下一个键）
+    fn key_name(vk: u32) -> Option<String> {
+        if (0x41..=0x5A).contains(&vk) {
+            return Some(((vk as u8) as char).to_string()); // A-Z
+        }
+        if (0x30..=0x39).contains(&vk) {
+            return Some(((vk as u8) as char).to_string()); // 0-9
+        }
+        if (0x70..=0x87).contains(&vk) {
+            return Some(format!("F{}", vk - 0x70 + 1)); // F1-F24
+        }
+        let s = match vk {
+            0x20 => "Space",
+            0x0D => "Enter",
+            0x09 => "Tab",
+            0x08 => "Backspace",
+            0x2E => "Delete",
+            0x2D => "Insert",
+            0x24 => "Home",
+            0x23 => "End",
+            0x21 => "PageUp",
+            0x22 => "PageDown",
+            0x25 => "ArrowLeft",
+            0x26 => "ArrowUp",
+            0x27 => "ArrowRight",
+            0x28 => "ArrowDown",
+            _ => return None,
+        };
+        Some(s.to_string())
+    }
+
+    unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HC_ACTION as i32 {
+            let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            let vk = kb.vkCode;
+            let w = wparam.0 as u32;
+            let is_down = w == WM_KEYDOWN || w == WM_SYSKEYDOWN;
+            let is_up = w == WM_KEYUP || w == WM_SYSKEYUP;
+            // 修饰键：自己维护按下状态（见上面 MODS 的注释），不参与"完成"
+            if let Some(bit) = modifier_bit(vk) {
+                if is_down {
+                    MODS.fetch_or(bit, Ordering::SeqCst);
+                } else if is_up {
+                    MODS.fetch_and(!bit, Ordering::SeqCst);
+                }
+                return LRESULT(1);
+            }
+            if is_down {
+                {
+                    let mods_now = MODS.load(Ordering::SeqCst);
+                    let mut parts: Vec<String> = Vec::new();
+                    if mods_now & M_CTRL != 0 {
+                        parts.push("Ctrl".into());
+                    }
+                    if mods_now & M_ALT != 0 {
+                        parts.push("Alt".into());
+                    }
+                    if mods_now & M_SHIFT != 0 {
+                        parts.push("Shift".into());
+                    }
+                    if mods_now & M_SUPER != 0 {
+                        parts.push("Super".into());
+                    }
+                    // Esc 单独按 = 取消
+                    let cancel = vk == 0x1B && parts.is_empty();
+                    let key = if cancel { Some(String::new()) } else { key_name(vk) };
+                    if let Some(k) = key {
+                        if !k.is_empty() {
+                            parts.push(k);
+                        }
+                        let msg = if cancel { "#cancel".to_string() } else { parts.join("+") };
+                        if let Some(tx) = TX.lock().unwrap().take() {
+                            let _ = tx.send(msg);
+                        }
+                        let tid = HOOK_TID.load(Ordering::SeqCst);
+                        let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                    }
+                }
+            }
+            // 捕获期间吞掉按键，别让它同时触发浏览器/系统的动作
+            return LRESULT(1);
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+
+    let (tx, rx) = mpsc::channel::<String>();
+    MODS.store(0, Ordering::SeqCst);
+    *TX.lock().unwrap() = Some(tx);
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    std::thread::spawn(move || unsafe {
+        let tid = GetCurrentThreadId();
+        HOOK_TID.store(tid, Ordering::SeqCst);
+        let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = ready_tx.send(Err(format!("安装键盘钩子失败：{e}")));
+                return;
+            }
+        };
+        let _ = ready_tx.send(Ok(()));
+        let mut msg = MSG::default();
+        // 阻塞在消息循环里等钩子回调；收到 WM_QUIT 就退出并撤钩
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {}
+        let _ = UnhookWindowsHookEx(hook);
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(|_| "启动捕获失败".to_string())??;
+    let got = rx.recv_timeout(Duration::from_secs(20));
+    // 无论成功还是超时，都要把消息循环叫停、把钩子撤掉
+    let tid = HOOK_TID.load(Ordering::SeqCst);
+    unsafe {
+        let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+    }
+    *TX.lock().unwrap() = None;
+    match got {
+        Ok(v) if v == "#cancel" => Err("已取消".into()),
+        Ok(v) if v.is_empty() => Err("没捕获到按键".into()),
+        Ok(v) => Ok(v),
+        Err(_) => Err("20 秒没有按键，已退出捕获".into()),
+    }
+}
+
+/// 非 Windows：没有等价的可移植钩子，让面板退化成手输。
+#[cfg(not(windows))]
+#[tauri::command]
+async fn capture_hotkey() -> Result<String, String> {
+    Err("当前系统不支持自动捕获，请直接手输，例如 Ctrl+Alt+K".into())
+}
+
 /// Linux：WebKitGTK 默认**不允许网页抓麦克风**，这里把这一条放开。
 ///
 /// 两件事缺一不可：
@@ -5482,7 +5658,7 @@ pub fn run() {
             list_installed_apps, open_path, lock_screen,
             save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,
-            register_assistant_shortcut, unregister_assistant_shortcut,
+            register_assistant_shortcut, unregister_assistant_shortcut, capture_hotkey,
             tts_synthesize, set_tts_key, get_tts_key,
             asr_transcribe, set_asr_key, get_asr_key, asr_key_ready, asr_model_name, asr_key_info,
             get_mic_permission, set_mic_permission, repair_mic_permission, sync_webview_mic_permission,

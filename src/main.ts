@@ -3804,6 +3804,23 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         }
         break;
       }
+      case "hotkey-capture": {
+        // 在系统层面捕获一次按键：浏览器会把 Ctrl+W / Ctrl+T / Alt+← 这类组合吃掉，
+        // 面板里根本收不到 keydown，所以交给 Rust 的低级键盘钩子。
+        try {
+          const acc = (await invoke<string>("capture_hotkey")).trim();
+          if (!acc) throw new Error("没捕获到按键");
+          settings.assistant.shortcut = acc;
+          saveSettings(settings);
+          const ok = await registerAssistantHotkey(acc);
+          toast(ok ? `呼出快捷键设为 ${acc}` : `快捷键 ${acc} 注册失败，换一个试试`, ok ? "info" : "warn");
+        } catch (e) {
+          toast(`没录上：${e instanceof Error ? e.message : String(e)}`, "warn");
+        }
+        // 不管成败都推一次设置回去，面板上那个输入框要跟着变
+        await pushPanelState();
+        break;
+      }
       case "hotkey-set": {
         const acc = String(p.value ?? "").trim();
         settings.assistant.shortcut = acc;
