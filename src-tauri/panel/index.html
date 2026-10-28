@@ -519,7 +519,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "人设与语言", desc: "人设将拼进每轮系统提示",
           fields: [
             { type: "note", text: "人设请在人设页签中填写" },
-            { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空让它自己决定" },
+            { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空则统一用「你」；填了就是固定称呼，不会随便换" },
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
               { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不收起）" },
@@ -580,12 +580,12 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           ],
         },
         {
-          title: "语音识别", desc: "语音输入，默认通过云端模型识别；关闭优先云端识别则使用系统识别",
+          title: "语音识别", desc: "语音输入。Windows 默认用系统识别（更准、不花识别费）；Mac/Linux 没有系统识别，自动走云端模型",
           fields: [
             { path: "asr.micAllowed", label: "允许使用麦克风", type: "switch" },
             { type: "secret", key: "asr", label: "语音识别 Key", desc: "内置Key会直接显示，可以进行更换，填写后覆盖原设置" },
-            { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "开：麦克风通过下方标注的模型识别；关：使用系统识别" },
-            { path: "asr.denoise", label: "降噪和自动增益", type: "switch", desc: "采集端进行降噪/自动增益/回声消除，在喧闹环境下识别更清楚；安静环境下觉得齿音被削可以选择关闭" },
+            { path: "asr.cloudFirst", label: "优先用云端模型识别", type: "switch", desc: "默认关：Windows 用系统识别（流式、自带断句，比云端整段识别准）。开：改用下方标注的云端模型（Mac/Linux 没有系统识别，会忽略此开关直接走云端）" },
+            { path: "asr.denoise", label: "降噪和自动增益", type: "switch", desc: "默认关。采集端做降噪/自动增益/回声消除，理论上是给喧闹环境用的，但实测对小模型识别多为负收益（会削齿音、把底噪拉高），觉得识别变差就先确认它是关的" },
             { type: "note", text: () => "云端模型" + ((state.meta.data || {}).asrModel || "—") + "（api.siliconflow.cn）；账号未开通该模型时会自动退回 FunAudioLLM/SenseVoiceSmall" },
             { type: "asrProbe" },
           ],

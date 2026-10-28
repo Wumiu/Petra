@@ -177,17 +177,25 @@ export interface Settings {
   /** 语音识别（输入）配置 */
   asr: {
     /**
-     * 是否优先用云端模型识别（默认 true）。
-     * 开：麦克风直接走硅基流动的 XingChen ASR，识别质量比 Windows 系统识别稳；
-     * 关：Windows 上先试浏览器原生 SpeechRecognition，失败再降级到云端。
+     * 是否优先用云端模型识别（**默认关**）。
+     * 关：Windows 上走浏览器原生 SpeechRecognition（系统识别）——流式、自带断句，
+     *     中文短句比"整段 WAV 送云端"准得多，还不花识别费；原生不可用才降级到云端。
+     * 开：不试原生，直接用硅基流动的 XingChen ASR。
+     * Mac/Linux 没有原生识别，忽略此开关，一律走云端。
      */
     cloudFirst: boolean;
     /**
-     * 采集端降噪 + 自动增益 + 回声消除（默认开）。
-     * 用的是 getUserMedia 的约束：有风扇/空调底噪、麦克风离得远时明显更清楚；
-     * 极安静环境下若觉得齿音被削，可以关掉。
+     * 采集端降噪 + 自动增益 + 回声消除（**默认关**）。
+     * 理论上喧闹环境有用，但实测对小模型识别多为负收益（削齿音、把底噪拉高），
+     * 所以默认不碰麦克风原始信号；需要时在面板里手动开。
      */
     denoise: boolean;
+    /**
+     * 一次性迁移标记：把"旧的默认值（cloudFirst/denoise 都 true）"改回新默认。
+     * 老存档里这两个 true 是代码默认写进去的，不是用户选的，所以要主动覆盖一次；
+     * 迁移之后用户再手动改就永久尊重。见 loadSettings()。
+     */
+    prefsV?: number;
     /**
      * 麦克风权限开关（应用内，立即生效）。
      * 关掉后点 🎤 直接提示权限已关闭、不会去开麦克风；
@@ -266,8 +274,9 @@ const DEFAULTS: Settings = {
     speakerId: "",
   },
   asr: {
-    cloudFirst: true,
-    denoise: true,
+    cloudFirst: false,
+    denoise: false,
+    prefsV: 2,
     micAllowed: true,
   },
 };
@@ -300,6 +309,15 @@ export function composePersona(a: AssistantSettings): string {
   if (f.emoji?.trim()) lines.push(`喜欢用的表情/动作：${f.emoji.trim()}`);
   const free = (a.personaFree ?? "").trim();
   if (free) lines.push(free);
+  // 称呼放在**最后**：模型对末尾最敏感，自由人设里就算写了别的叫法也压得住。
+  // 用户要求「对用户的称呼不能随便就换」——所以这里是硬约束，且只有一个来源
+  // （设置里的「对用户的称呼」），没填就统一用「你」，不许自己发明昵称。
+  const nick = (a.nickname ?? "").trim();
+  lines.push(
+    nick
+      ? `对用户的称呼固定是「${nick}」：全程只用这一个称呼，不要换成别的叫法，也不要自创昵称。`
+      : `对用户的称呼没有指定：一律直接用「你」，不要自创昵称（主人/宝贝/亲爱的/小朋友之类都不要用）。`,
+  );
   return lines.join("\n");
 }
 
@@ -324,6 +342,13 @@ export function loadSettings(): Settings {
       tts: { ...DEFAULTS.tts, ...(parsed.tts ?? {}) },
       asr: { ...DEFAULTS.asr, ...(parsed.asr ?? {}) },
     };
+    // 一次性迁移：老存档的 cloudFirst/denoise=true 是旧代码默认值（不是用户选的），
+    // 而那套默认把识别从「系统识别」换成了「云端 + 采集端降噪」，实测让识别变差。
+    // 这里只在 prefsV 缺失（迁移前）时覆盖一次，之后用户手改成什么就尊重什么。
+    if ((parsed.asr?.prefsV ?? 0) < 2) {
+      s.asr = { ...s.asr, cloudFirst: false, denoise: false, prefsV: 2 };
+      try { localStorage.setItem(KEY, JSON.stringify({ ...parsed, asr: s.asr })); } catch { /* 忽略 */ }
+    }
     s.gameSound = s.gameSound !== false;
     s.gameSoundVolume = Math.max(0, Math.min(1, Number.isFinite(Number(s.gameSoundVolume)) ? Number(s.gameSoundVolume) : DEFAULTS.gameSoundVolume));
     s.gameMusic = s.gameMusic !== false;

@@ -59,6 +59,9 @@ let recognizer: SpeechRecognizer | null = null;
  * （用户按下任意键 = 想自己看一眼/改一改再发）。会话结束时清掉。
  */
 let voicePausedByKey = false;
+/** 最近一次真正发出去的文本 + 时刻：语音收尾迟到时用它挡掉重复发送 */
+let lastSentText = "";
+let lastSentAt = 0;
 let micBtn: HTMLButtonElement | null = null;
 
 /** 麦克风图标：细描边的胶囊 + 拾音弧 + 支架，24 网格便于缩放 */
@@ -111,16 +114,20 @@ function setInputValue(text: string): void {
 function keepInputBarOnScreen(): void {
   if (!inputBar || inputBar.classList.contains("hidden")) return;
   const vr = getVisibleRect();
-  // 先恢复"贴底"布局再测量：top 与 bottom 同时生效时，浏览器会把元素
-  // 拉满剩余高度（表现为一个很高的白色空盒子，交互区域也跟着变大）。
-  inputBar.style.top = "";
-  inputBar.style.bottom = "";
+  // 量之前**不能**把 top/bottom 一起清空：清空后 CSS 里的 `.as-inputbar{bottom:8px}`
+  // 会立刻接管，输入条跳到窗口最底下，而下面算出的 overflow 又是 0（贴底本身就不溢出），
+  // 于是直接 return —— 位置就永久留在窗口底部。表现就是「点开输入框，它跑去窗口最下面、
+  // 离模型一大截」。这里改成：有 top 就保住 top，只把 bottom 置成 auto（两个都设会被
+  // 浏览器拉成整屏高）；没有 top（还没定位过）就先按当前渲染位置换算成 top。
+  const curTop = Number.parseFloat(inputBar.style.top);
+  const startTop = Number.isFinite(curTop) ? curTop : inputBar.getBoundingClientRect().top;
+  inputBar.style.top = `${Math.round(startTop)}px`;
+  inputBar.style.bottom = "auto";
   const r = inputBar.getBoundingClientRect();
   const overflow = r.bottom - (vr.bottom - 8);
   if (overflow <= 0) return;
   const minTop = vr.top + 8;
-  inputBar.style.top = `${Math.round(Math.max(minTop, r.top - overflow))}px`;
-  // 只保留 top 定位：必须把 bottom 置成 auto，否则又会被拉伸成整屏高
+  inputBar.style.top = `${Math.round(Math.max(minTop, startTop - overflow))}px`;
   inputBar.style.bottom = "auto";
 }
 
@@ -576,6 +583,13 @@ function wireRecognizer(): SpeechRecognizer {
       input.placeholder = "问点什么…";
       void invoke("debug_mark", { msg: `[asr] onFinal len=${t.length} voicePaused=${voicePausedByKey} busy=${busy} barHidden=${!document.querySelector(".as-inputbar")}` }).catch(() => {});
       if (!t) return;
+      // 兜底去重：同一句话 8 秒内已经发过就不再发（比如用户手动点了发送、
+      // 识别收尾又迟到一次）。不清输入框、不弹提示，只留一条日志。
+      if (t === lastSentText && Date.now() - lastSentAt < 8000) {
+        void invoke("debug_mark", { msg: `[asr] 丢弃重复的语音结果（${t.length} 字）` }).catch(() => {});
+        setInputValue("");
+        return;
+      }
       // 按任意键暂停的那种：内容留在输入框给用户改，**不自动发送**
       if (voicePausedByKey) {
         voicePausedByKey = false;
@@ -619,7 +633,9 @@ function wireRecognizer(): SpeechRecognizer {
         toast("已暂停语音识别", "info");
         return;
       }
-      toast("没听到内容，再说一次？确认麦克风没静音", "warn");
+      // 「有权限但识别不了」最常见的三个原因是设备选错/音量 0/被占用，
+      // 光说"没听到内容"用户没法自查，这里直接把三条排查顺序说出来
+      toast("麦克风没收到声音：检查①系统默认输入设备选对②输入音量不为 0③没被会议/录音软件占用", "warn");
     },
     onError: (msg) => {
       input.placeholder = "问点什么…";
@@ -1114,18 +1130,27 @@ function buildChatContext(nickname: string, outputLang: string): string {
   const hour = now.getHours();
   const day = now.toLocaleDateString("zh-CN", { weekday: "long" });
   const parts: string[] = [];
+  // 称呼在聊天轮里也重申一遍（人设里已经有了，这里贴着这轮对话再说一次）：
+  // 只允许用设置里那一个称呼，不许随语境换着叫。
   if (nickname) {
     if (outputLang && outputLang !== "zh-cn") {
-      parts.push(`用户昵称：${nickname}（用${langNameOf(outputLang)}自然地称呼用户，不要翻译成中文）`);
+      parts.push(`用户昵称：${nickname}（用${langNameOf(outputLang)}称呼，不要翻译成中文，也不要换成别的叫法）`);
     } else {
-      parts.push(`对用户的称呼：${nickname}`);
+      parts.push(`对用户的称呼固定是「${nickname}」，这轮也只这么叫，不要换别的称呼`);
     }
+  } else {
+    parts.push("对用户的称呼没有指定：直接用「你」，不要自创昵称");
   }
   parts.push(`现在：${day}${hour}点`);
   return `[环境] ${parts.join("；")}`;
 }
 
 async function send(text: string) {
+  // 手动发送（回车 / 点「发送」）时如果麦克风还在听，直接取消这一轮：
+  // 否则几秒后识别收尾 → onFinal → 把这句**再发一次**。
+  // 实测：12:31 点发送把 interim 发了出去，2 秒后 final 回来又发了一遍，
+  // 于是 AI 回了一句「刚关过了呀，那页已经没了」。
+  if (recognizer?.isRecording()) recognizer.cancel();
   if (busy) return;
   const s = loadSettings();
   const ttsKey = await invoke<string>("get_tts_key").catch(() => "");
@@ -1173,6 +1198,9 @@ async function send(text: string) {
   const userContent = langReminder ? `${text}\n${langReminder}` : text;
   history.push({ role: "user", content: userContent });
   saveHistory();
+  // 记下"确实发出去了"的原文：语音收尾迟到时 onFinal 靠它去重
+  lastSentText = text.trim();
+  lastSentAt = Date.now();
   // 情感反馈：先分析用户消息（零 token），立即驱动角色表情/动作 + 心情
   const userEmo = classifyEmotion(text);
   reactNow(userEmo);
