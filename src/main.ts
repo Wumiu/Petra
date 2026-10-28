@@ -2756,7 +2756,6 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       { id: "idle-hint", label: "睡着啦，喊我起来吧", hint: true },
     ];
   }
-  const pluginMenus = pluginRuntime.getMenuItems();
   return [
     {
       id: "model",
@@ -3134,27 +3133,6 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       ],
     },
     {
-      id: "plugins",
-      label: "🧩 插件",
-      submenu: [
-        ...pluginMenus.map((item) => ({
-          id: `plugin:${item.pluginId}:${item.id}`,
-          label: item.label,
-          onPick: () => {
-            void pluginRuntime.runCommand(item.pluginId, item.id).catch((e) => {
-              toast(`插件命令失败：${e instanceof Error ? e.message : String(e)}`, "warn");
-            });
-          },
-        })),
-        ...(pluginMenus.length ? [{ id: "plugins-sep", separator: true }] : []),
-        {
-          id: "plugins-manage",
-          label: "插件管理",
-          onPick: () => void openControlPanel("plugins"),
-        },
-      ],
-    },
-    {
       id: "feedback",
       label: "反馈",
       onPick: () => openFeedbackInput(),
@@ -3233,7 +3211,7 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
  * 它们同时仍在控制面板里（日记页的开关 + 娱乐页的抽卡），右键只是快捷入口，
  * 所以从「设置」窗口的兜底列表里去掉不会丢功能。
  */
-const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant", "diary", "daily-card", "plugins"]);
+const COMPACT_MENU_KEEP = new Set(["interact", "tts-toggle", "minigames", "assistant", "diary", "daily-card"]);
 
 function buildCompactMenu(engine: BehaviorEngine): MenuItemSpec[] {
   const all = buildMenu(engine);
@@ -3948,6 +3926,11 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
       case "plugins-setting": {
         await pluginRuntime.updateSettings(String(p.id ?? ""), String(p.key ?? ""), p.value);
         toast("插件设置已保存");
+        break;
+      }
+      case "plugins-command": {
+        await pluginRuntime.runCommand(String(p.id ?? ""), String(p.commandId ?? ""));
+        toast("插件命令已执行");
         break;
       }
       case "plugins-remove": {

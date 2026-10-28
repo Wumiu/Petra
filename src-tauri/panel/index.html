@@ -1476,6 +1476,23 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       box.appendChild(ctl);
       card.appendChild(box);
 
+      // 插件自己声明的菜单命令也只在控制面板里出现；右键菜单不再挂插件入口。
+      if (Array.isArray(p.menus) && p.menus.length) {
+        const cmdRow = el("div", "row");
+        const cmdTxt = el("div", "rtext");
+        cmdTxt.appendChild(el("div", "rlabel", "插件命令"));
+        cmdTxt.appendChild(el("div", "rdesc", "点一下等于执行插件注册的菜单项"));
+        cmdRow.appendChild(cmdTxt);
+        const cmdCtl = el("div", "rctl");
+        p.menus.forEach((m) => {
+          const b = el("button", "btn btn-sm", m.label || m.id);
+          b.onclick = () => runAction("__data:plugins-command", { id: p.id, commandId: m.id }, m.label || m.id);
+          cmdCtl.appendChild(b);
+        });
+        cmdRow.appendChild(cmdCtl);
+        card.appendChild(cmdRow);
+      }
+
       (p.settings || []).forEach((f) => {
         const r = el("div", "row");
         const t = el("div", "rtext");
