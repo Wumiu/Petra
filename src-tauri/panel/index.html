@@ -649,6 +649,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       desc: "安装、启用或停用 Petra 插件；插件注册的工具会进入小助手的工具列表",
       cards: [
         { title: "已安装插件", desc: "只安装你信任的插件。插件运行在独立 Worker 里，但仍是本地代码。", type: "plugins" },
+        { title: "给 dsh 的说明", desc: "复制下面这段给 dsh，它就知道怎么给 Petra 写插件", type: "dsh-guide" },
       ],
     },
     {
@@ -1419,6 +1420,79 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 给用户复制给 dsh 的插件开发说明。保持成一段可直接执行的 prompt，不写空话。 */
+  function dshGuideText() {
+    return [
+      "你在为 Petra 桌宠写一个原生插件。",
+      "",
+      "请先读这些文件，理解现有格式：",
+      "- plugins/README.md",
+      "- plugins/petra-plugin-hello/petra-plugin.json",
+      "- plugins/petra-plugin-hello/index.js",
+      "- src/plugins/types.ts",
+      "",
+      " Petra 插件规则：",
+      "1. 插件目录：plugins/<plugin-id>/，manifest.id 必须和目录名一致。",
+      "2. 必需文件：petra-plugin.json + index.js，单文件 ESM，不要 npm 依赖。",
+      "3. manifest 字段：id/name/version/apiVersion(必须=1)/main/permissions/settings。",
+      "4. 入口导出 activate(pet) 和可选的 deactivate()。",
+      "5. 只用这些 host API：",
+      "   - pet.tools.register({name,description,parameters,execute})",
+      "   - pet.menu.add({id,label,run})",
+      "   - pet.settings.get() / await pet.settings.set(patch) / pet.settings.onChange(fn)",
+      "   - await pet.say(text, holdMs?)",
+      "   - await pet.notify(title, body)",
+      "   - pet.log(...args)",
+      "6. 工具名只能包含字母数字下划线短横线，且不能和 Petra 内置工具重名。",
+      "7. 权限按需声明：pet.tools / pet.say / pet.notify / pet.menu / pet.settings。",
+      "8. 不要访问 DOM，不要调用 Tauri invoke；插件运行在 Web Worker 里。",
+      "",
+      "用户需求：",
+      "<在这里写你要的功能，例如：给桌宠加一个每小时喝水提醒，设置里能调间隔>",
+      "",
+      "完成后请输出：",
+      "- 完整文件内容",
+      "- 安装步骤",
+      "- 自测步骤（怎么在控制面板启用、怎么触发、预期气泡/结果）",
+      "",
+      "安装方式：",
+      "把生成的整个目录复制到 Petra 控制面板 →「插件」→「打开插件目录」，然后在「插件」页点「全部重载」并启用。",
+    ].join("\n");
+  }
+
+  function dshGuideCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "给 dsh 的说明"));
+    card.appendChild(el("p", "cd", "这段是给 dsh 看的插件开发 prompt。复制后把最后的需求改成你想要的即可。"));
+    const text = dshGuideText();
+    const pre = el("pre", null, text);
+    pre.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--card-strong); color:var(--txt2); font-size:12px; line-height:1.65; max-height:420px; overflow:auto;";
+    card.appendChild(pre);
+    const row = el("div", "btn-row");
+    const copy = el("button", "btn btn-primary btn-sm", "复制给 dsh");
+    copy.onclick = async () => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        toast("已复制，粘贴给 dsh 即可");
+      } catch (e) {
+        toast("复制失败，请手动选中文本复制", "err");
+      }
+    };
+    row.appendChild(copy);
+    card.appendChild(row);
+    card.appendChild(el("p", "cd", "当前是「dsh 写代码 + 手动放插件目录 + 全部重载」；等 dsh-petra 桥做好后，才会变成 dsh 自动安装和重载。"));
+    return card;
+  }
+
   /** 插件页：列表、启停、重载、删除 + manifest 声明的简单设置表单 */
   function pluginsCard() {
     const card = el("div", "card wide");
@@ -1562,6 +1636,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
       if (cardSpec.type === "plugins") return grid.appendChild(pluginsCard());
+      if (cardSpec.type === "dsh-guide") return grid.appendChild(dshGuideCard());
       const card = el("div", "card");
       card.appendChild(el("h2", null, cardSpec.title));
       if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));

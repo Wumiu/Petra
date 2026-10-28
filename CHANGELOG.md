@@ -9,7 +9,7 @@
   - 插件运行在 **Web Worker**：单文件 ESM，入口导出 `activate(pet)` / `deactivate()`；插件不能直接碰 DOM 或 Tauri invoke，只能通过 `pet.tools.register`、`pet.menu.add`、`pet.settings`、`pet.say`、`pet.notify`、`pet.log` 这些白名单 API。manifest 声明 `permissions`，宿主逐项检查。
   - Rust 新增 `src-tauri/src/plugins.rs`：扫描 `app_data_dir/plugins`、校验 id/入口路径、读源码、安装内置示例、删除插件；路径穿越和越界读都挡在 Rust 侧。
   - 控制面板新增「插件」页：启用/停用、重载、删除、打开插件目录、安装示例插件；manifest 里的 `settings` 自动渲染成简单表单（string/number/boolean/select），改完热推给 Worker。
-  - 插件入口**只放在控制面板**：控制面板「插件」页列出插件命令、设置、启停/重载/删除；右键菜单不加入口，避免和现有精简菜单混在一起。
+  - 插件入口**只放在控制面板**：控制面板「插件」页列出插件命令、设置、启停/重载/删除；右键菜单不加入口，避免和现有精简菜单混在一起。插件页新增「给 dsh 的说明」卡片，把 `plugins/README.md` + 示例插件 + host API 规则压成一段可一键复制的开发 prompt，用户复制给 dsh 即可开始写插件。
   - 示例插件 `plugins/petra-plugin-hello`：一个 `hello_petra` 工具 + 一个「插件：打个招呼」菜单 + 两个设置项；真机 CDP 验证安装、Worker 加载、工具调用、菜单命令、设置热更新、停用/启用、删除/重装全链路。示例问候语修正为「我是 Petra 里的示例插件」（原来写反成「插件里的 Petra」），并对旧文案做一次就地迁移。
   - 新增 `npm run test:plugins`（manifest 校验、目录 id 一致性、路径穿越拒绝、动态工具规格注册/卸载）；`npm run build`、`cargo test --lib`（68）全绿。
 
