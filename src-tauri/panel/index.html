@@ -519,7 +519,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "人设与语言", desc: "人设将拼进每轮系统提示",
           fields: [
             { type: "note", text: "人设请在人设页签中填写" },
-            { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空让它自己决定" },
+            { path: "assistant.nickname", label: "对你的称呼", type: "text", placeholder: "留空则统一用「你」；填了就是固定称呼，不会随便换" },
             { path: "assistant.outputLanguage", label: "回复语言", type: "select", options: "languages" },
             { path: "assistant.greetInterval", label: "主动问候间隔", type: "number", min: 1, max: 1440, unit: "分钟" },
               { path: "assistant.inputIdleHideSec", label: "输入框空闲收起", type: "number", min: 0, max: 600, unit: "秒（0 = 不收起）" },

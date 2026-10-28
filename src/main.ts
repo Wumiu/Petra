@@ -5333,7 +5333,7 @@ async function toggleAssistantSettings() {
     // 对用户的称呼
     const nickname = document.createElement("input");
     nickname.className = "as-input";
-    nickname.placeholder = "对你的称呼，比如「主人」，留空由 AI 决定";
+    nickname.placeholder = "对你的称呼，比如「主人」；填了就是固定称呼，留空则统一用「你」";
     nickname.value = settings.assistant.nickname ?? "";
     mkRow("对用户的称呼", nickname);
 

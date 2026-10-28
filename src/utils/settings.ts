@@ -309,6 +309,15 @@ export function composePersona(a: AssistantSettings): string {
   if (f.emoji?.trim()) lines.push(`喜欢用的表情/动作：${f.emoji.trim()}`);
   const free = (a.personaFree ?? "").trim();
   if (free) lines.push(free);
+  // 称呼放在**最后**：模型对末尾最敏感，自由人设里就算写了别的叫法也压得住。
+  // 用户要求「对用户的称呼不能随便就换」——所以这里是硬约束，且只有一个来源
+  // （设置里的「对用户的称呼」），没填就统一用「你」，不许自己发明昵称。
+  const nick = (a.nickname ?? "").trim();
+  lines.push(
+    nick
+      ? `对用户的称呼固定是「${nick}」：全程只用这一个称呼，不要换成别的叫法，也不要自创昵称。`
+      : `对用户的称呼没有指定：一律直接用「你」，不要自创昵称（主人/宝贝/亲爱的/小朋友之类都不要用）。`,
+  );
   return lines.join("\n");
 }
 

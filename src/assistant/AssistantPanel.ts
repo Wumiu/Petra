@@ -1130,12 +1130,16 @@ function buildChatContext(nickname: string, outputLang: string): string {
   const hour = now.getHours();
   const day = now.toLocaleDateString("zh-CN", { weekday: "long" });
   const parts: string[] = [];
+  // 称呼在聊天轮里也重申一遍（人设里已经有了，这里贴着这轮对话再说一次）：
+  // 只允许用设置里那一个称呼，不许随语境换着叫。
   if (nickname) {
     if (outputLang && outputLang !== "zh-cn") {
-      parts.push(`用户昵称：${nickname}（用${langNameOf(outputLang)}自然地称呼用户，不要翻译成中文）`);
+      parts.push(`用户昵称：${nickname}（用${langNameOf(outputLang)}称呼，不要翻译成中文，也不要换成别的叫法）`);
     } else {
-      parts.push(`对用户的称呼：${nickname}`);
+      parts.push(`对用户的称呼固定是「${nickname}」，这轮也只这么叫，不要换别的称呼`);
     }
+  } else {
+    parts.push("对用户的称呼没有指定：直接用「你」，不要自创昵称");
   }
   parts.push(`现在：${day}${hour}点`);
   return `[环境] ${parts.join("；")}`;
