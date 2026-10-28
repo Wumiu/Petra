@@ -111,16 +111,20 @@ function setInputValue(text: string): void {
 function keepInputBarOnScreen(): void {
   if (!inputBar || inputBar.classList.contains("hidden")) return;
   const vr = getVisibleRect();
-  // 先恢复"贴底"布局再测量：top 与 bottom 同时生效时，浏览器会把元素
-  // 拉满剩余高度（表现为一个很高的白色空盒子，交互区域也跟着变大）。
-  inputBar.style.top = "";
-  inputBar.style.bottom = "";
+  // 量之前**不能**把 top/bottom 一起清空：清空后 CSS 里的 `.as-inputbar{bottom:8px}`
+  // 会立刻接管，输入条跳到窗口最底下，而下面算出的 overflow 又是 0（贴底本身就不溢出），
+  // 于是直接 return —— 位置就永久留在窗口底部。表现就是「点开输入框，它跑去窗口最下面、
+  // 离模型一大截」。这里改成：有 top 就保住 top，只把 bottom 置成 auto（两个都设会被
+  // 浏览器拉成整屏高）；没有 top（还没定位过）就先按当前渲染位置换算成 top。
+  const curTop = Number.parseFloat(inputBar.style.top);
+  const startTop = Number.isFinite(curTop) ? curTop : inputBar.getBoundingClientRect().top;
+  inputBar.style.top = `${Math.round(startTop)}px`;
+  inputBar.style.bottom = "auto";
   const r = inputBar.getBoundingClientRect();
   const overflow = r.bottom - (vr.bottom - 8);
   if (overflow <= 0) return;
   const minTop = vr.top + 8;
-  inputBar.style.top = `${Math.round(Math.max(minTop, r.top - overflow))}px`;
-  // 只保留 top 定位：必须把 bottom 置成 auto，否则又会被拉伸成整屏高
+  inputBar.style.top = `${Math.round(Math.max(minTop, startTop - overflow))}px`;
   inputBar.style.bottom = "auto";
 }
 
