@@ -461,6 +461,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           title: "行为", desc: "影响桌宠行为",
           fields: [
             { path: "activity", label: "活动频率", type: "select", options: [["low", "低（安静）"], ["mid", "中"], ["high", "高（活泼）"]], desc: "影响桌宠待机小动作和表情" },
+            { type: "actionSwitch", label: "窗口置顶", action: "topmost-toggle", stateKey: "topmost", desc: "关掉后桌宠会被其他窗口盖住；打开控制面板不会偷偷改回" },
             { path: "mouseTrack", label: "跟随鼠标", type: "switch", desc: "视线跟随光标" },
             { path: "idleMode", label: "待机模式", type: "switch", desc: "缩到任务栏睡觉" },
           ],
