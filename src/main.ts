@@ -124,6 +124,7 @@ import { OUTPUT_LANGUAGE_OPTIONS } from "./utils/outputLanguage";
 import { ACTIVITY_LABEL, nextActivity, type ActivityLevel } from "./utils/settings";
 import { astrobotOn } from "./bridges/astrobot";
 import { openAssistant, repositionAssistantBubbles } from "./assistant/AssistantPanel";
+import { pluginRuntime, configurePluginHost } from "./plugins/runtime";
 import { setLifecycle, triggerProactive, closeAssistant, clearBubbles, clearApiKeyCache, clearHistory, isAssistantBusy, sayPetLine, setModelRectProvider, fitBubbleHeights, rearmIdleTimer } from "./assistant/AssistantPanel";
 import { getSpeechRecognizer } from "./asr/SpeechRecognizer";
 import { repositionLyricBubble } from "./music/LyricBubble";
@@ -1359,6 +1360,49 @@ async function boot() {
   // 菜单开关在正式构建里也可见，提前在 boot 里按 dev 创建会让打包版"有开关无效果"。
   // 气泡按桌宠当前位置摆放（放它上方），别把桌宠挡住
   setModelRectProvider(getModelRect);
+  // 插件 Host：插件运行在 Worker 里，pet.say 等能力通过这个回调回到主窗口。
+  // 初始化失败不能拖垮桌宠启动；单个插件的错误保留在插件面板里显示。
+  configurePluginHost({
+    say: (text, holdMs) => sayPetLine(text, holdMs),
+  });
+  void pluginRuntime.init()
+    // 启动后先把插件状态推给本地 bridge，dsh 一上来就能 petra_list_plugins 看到已装插件
+    .then(() => pushPanelState())
+    .catch((e) => console.warn("插件初始化失败：", e));
+  // dsh / MCP 通过本地 bridge 发来的事件：说一句、发通知、重载插件。
+  void listen<{ text?: string; holdMs?: number }>("petra:say", (event) => {
+    const text = String(event.payload?.text ?? "").trim();
+    if (text) sayPetLine(text, Number(event.payload?.holdMs) || 6000);
+  });
+  void listen<{ text?: string; holdMs?: number }>("petra:speak", (event) => {
+    const text = String(event.payload?.text ?? "").trim();
+    if (!text) return;
+    const holdMs = Number(event.payload?.holdMs) || 6000;
+    sayPetLine(text, holdMs);
+    if (settings.tts.enabled) {
+      try {
+        ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+        ttsPlayer.pushDelta(text);
+        ttsPlayer.flush();
+      } catch (e) {
+        console.warn("petra:speak 语音失败", e);
+      }
+    }
+  });
+  void listen<{ title?: string; body?: string }>("petra:notify", (event) => {
+    void invoke("send_notification", {
+      title: String(event.payload?.title ?? "Petra"),
+      body: String(event.payload?.body ?? ""),
+    }).catch(() => {});
+  });
+  void listen("plugin:reload", () => {
+    void pluginRuntime.reloadAll()
+      .then(() => pushPanelState())
+      .catch((e) => console.warn("插件重载失败：", e));
+  });
+  void listen("panel:request-state", () => {
+    void pushPanelState().catch(() => {});
+  });
   if (import.meta.env.DEV) {
     // dev 调试钩子：CDP 里直接读角色包围盒/绿框状态，排查"气泡位置/绿框不对"时不用再临时改代码
     (window as any).__petraDebug = {
@@ -1376,6 +1420,9 @@ async function boot() {
       }),
       // 打开小助手输入框，便于验证空闲收起与关闭按钮
       openAssistantBar: () => void openAssistant(),
+      // 插件运行时：CDP 里核对 Worker 是否真的加载、工具/菜单是否注册
+      plugins: pluginRuntime,
+      pushPanelState: () => pushPanelState(),
       // 验证模型顶部的错误提示条（红/橙/黄），不用真把 API 弄坏
       popupError: (text: string) => showErrorPopup("error", text),
       popupWarn: (text: string) => showErrorPopup("warn", text),
@@ -3409,6 +3456,7 @@ function buildPanelMeta() {
       personaTest: panelPersonaTest,
       asrModel: panelAsrModel,
       asrTest: panelAsrTest,
+      plugins: pluginRuntime.getPanelPlugins(),
     },
     quick: [
       { id: "show-pet", label: "把桌宠叫到前面" },
@@ -3884,6 +3932,83 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(`拿到 ${panelAssistantModels.length} 个模型`);
         break;
       }
+      case "plugins-open-dir": {
+        const dir = await invoke<string>("plugin_dir");
+        await invoke("open_path", { path: dir });
+        toast("已打开插件目录");
+        break;
+      }
+      case "plugins-open-sdk": {
+        const dir = await invoke<string>("plugin_sdk_dir");
+        await invoke("open_path", { path: dir });
+        toast("已打开插件 SDK 目录");
+        break;
+      }
+      case "plugins-install-example": {
+        const msg = await invoke<string>("plugin_install_example");
+        await pluginRuntime.reloadAll();
+        toast(msg);
+        break;
+      }
+      case "plugins-install-dsh-bridge": {
+        const msg = await invoke<string>("plugin_install_dsh_bridge");
+        await pluginRuntime.reloadAll();
+        toast(msg);
+        break;
+      }
+      case "plugins-export-dsh-bridge": {
+        const dir = await invoke<string>("export_dsh_bridge");
+        await invoke("open_path", { path: dir });
+        toast("已导出 dsh 反向桥插件，安装说明就在目录里");
+        break;
+      }
+      case "plugins-test-dsh-bridge": {
+        const info = pluginRuntime.getPanelPlugins().find((p) => p.id === "petra-plugin-dsh-bridge");
+        if (!info) {
+          toast("先安装 dsh 桥插件", "warn");
+          return;
+        }
+        if (!info.loaded) {
+          toast(`dsh 桥插件未加载：${info.error || "请重载插件"}`, "warn");
+          return;
+        }
+        toast("正在测试 dsh 反向桥…");
+        const result = await pluginRuntime.executeTool("ask_dsh", { text: "Petra 反向桥测试" });
+        toast(result.slice(0, 160));
+        break;
+      }
+      case "plugins-reload-all": {
+        await pluginRuntime.reloadAll();
+        toast("插件已全部重新加载");
+        break;
+      }
+      case "plugins-reload": {
+        await pluginRuntime.reloadPlugin(String(p.id ?? ""));
+        toast("插件已重载");
+        break;
+      }
+      case "plugins-toggle": {
+        const id = String(p.id ?? "");
+        const enabled = !!p.enabled;
+        await pluginRuntime.setEnabled(id, enabled);
+        toast(enabled ? "插件已启用" : "插件已停用");
+        break;
+      }
+      case "plugins-setting": {
+        await pluginRuntime.updateSettings(String(p.id ?? ""), String(p.key ?? ""), p.value);
+        toast("插件设置已保存");
+        break;
+      }
+      case "plugins-command": {
+        await pluginRuntime.runCommand(String(p.id ?? ""), String(p.commandId ?? ""));
+        toast("插件命令已执行");
+        break;
+      }
+      case "plugins-remove": {
+        await pluginRuntime.removePlugin(String(p.id ?? ""));
+        toast("插件已删除");
+        break;
+      }
       default:
         toast(`未实现的面板动作：${kind}`, "warn");
         return;
@@ -4042,9 +4167,16 @@ function runPanelAction(id: string, payload?: unknown): void {
 }
 
 /** 右键菜单与托盘的统一入口：起服务 → 推设置 → 用默认浏览器打开 */
-async function openControlPanel(): Promise<void> {
+async function openControlPanel(section?: string): Promise<void> {
   try {
-    const url = await invoke<string>("panel_prepare");
+    let url = await invoke<string>("panel_prepare");
+    if (section) {
+      try {
+        const u = new URL(url);
+        u.searchParams.set("s", section);
+        url = u.toString();
+      } catch { /* URL 解析失败就按原地址打开 */ }
+    }
     await pushPanelState();
     panelEverOpened = true;
     await invoke("open_url", { url });

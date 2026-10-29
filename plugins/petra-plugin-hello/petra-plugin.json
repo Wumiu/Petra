@@ -1,0 +1,26 @@
+{
+  "id": "petra-plugin-hello",
+  "name": "Hello Petra",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "main": "index.js",
+  "description": "示例插件：给桌宠加一个「打个招呼」菜单和一个 hello_petra 工具。",
+  "author": "Petra",
+  "permissions": ["pet.tools", "pet.say", "pet.notify", "pet.menu", "pet.settings"],
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "key": "greeting",
+      "label": "问候语",
+      "type": "string",
+      "default": "你好呀，我是 Petra 里的示例插件。",
+      "description": "插件工具和菜单都会用这句话"
+    },
+    {
+      "key": "showMenu",
+      "label": "显示右键菜单",
+      "type": "boolean",
+      "default": true
+    }
+  ]
+}

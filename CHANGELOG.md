@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+- 新增** Petra 原生插件系统 MVP**（分支 `ks-kbl`）：小助手工具从硬编码走向可插拔。
+  - `ToolRegistry` 收口：内置工具仍由 `TOOL_SPECS` 提供，插件工具在运行时注册到同一张表，参数校验 / 结果截断 / 未知工具提示共用一套逻辑；`AssistantClient` 每轮请求动态拼接 `extraTools`，插件热重载后立即生效。
+  - 插件运行在 **Web Worker**：单文件 ESM，入口导出 `activate(pet)` / `deactivate()`；插件不能直接碰 DOM 或 Tauri invoke，只能通过 `pet.tools.register`、`pet.menu.add`、`pet.settings`、`pet.say`、`pet.notify`、`pet.log` 这些白名单 API。manifest 声明 `permissions`，宿主逐项检查。
+  - Rust 新增 `src-tauri/src/plugins.rs`：扫描 `app_data_dir/plugins`、校验 id/入口路径、读源码、安装内置示例、删除插件；路径穿越和越界读都挡在 Rust 侧。
+  - 控制面板新增「插件」页：启用/停用、重载、删除、打开插件目录、安装示例插件；manifest 里的 `settings` 自动渲染成简单表单（string/number/boolean/select），改完热推给 Worker。
+  - 插件入口**只放在控制面板**：控制面板「插件」页列出插件命令、设置、启停/重载/删除；右键菜单不加入口，避免和现有精简菜单混在一起。插件页新增「给 dsh 的说明」卡片，把 `plugins/README.md` + 示例插件 + host API 规则压成一段可一键复制的开发 prompt，用户复制给 dsh 即可开始写插件。
+  - **dsh MCP 接入**：应用启动即拉起本地 bridge，写 `app_data_dir/bridge.json`（端口/token/pluginDir/sdkDir/mcpUrl）；`POST /mcp` 支持 MCP Streamable HTTP 的 `initialize` / `tools/list` / `tools/call`，暴露 `petra_plugin_sdk`、`petra_plugin_dir`、`petra_list_plugins`、`petra_install_plugin`、`petra_reload_plugins`、`petra_say`、`petra_speak`（气泡 + TTS 朗读）、`petra_notify`。控制面板插件页新增「dsh MCP 接入」卡片，直接显示可复制的 `mcpServers` 配置。
+  - **反向桥（Petra → dsh）**：新增 `dsh-petra-bridge` 插件（dsh 侧 `/petra/ask`，找最近会话、`agent.followup` 发送、轮询 `turn/end` 收回复）和 Petra 侧 `petra-plugin-dsh-bridge`（`ask_dsh` 工具，把文字/链接转给 dsh 后播报）。控制面板新增「dsh 反向桥」卡片和「安装 dsh 桥插件」/「测试反向桥」/「导出 dsh 插件」按钮；卡片直接显示插件加载状态、当前 endpoint 和错误，测试按钮走真实的 `ask_dsh` 链路。`export_dsh_bridge` 把内置 `dsh-petra-bridge` 源码 + `安装说明.txt` 导出到桌面 `Petra-dsh-bridge/dsh-petra-bridge`，发布后不依赖仓库路径。控制面板「dsh 反向桥」卡片改成面向最终用户的 6 步说明（导出 → dsh 本地安装 → 重启开会话 → Petra 填地址 → 测试 → 用），不再让用户看 profile/bundle/MCP 等术语。Petra 侧用 mock 端点验证了 `ask_dsh` 请求与气泡输出，dsh 插件用 fake agent 验证了路由、会话选择与回复收集，新增 `npm run test:dsh-bridge`。
+  - **插件 SDK**：`plugin_sdk_dir` / `plugin_sdk_install` 把 README、`types.d.ts`、模板写到 `app_data_dir/plugin-sdk`；控制面板可一键打开，dsh 不需要 Petra 源码也能读到插件契约。
+  - **自动安装/重载闭环**：`petra_install_plugin` 接收 dsh 生成的本地目录，校验 manifest、限制 200 文件/20MB、拒绝符号链接，先复制到临时目录、成功后再原子替换旧插件，然后 emit `plugin:reload`；前端监听后重载 Worker 并把状态推回 bridge，`petra_list_plugins` 能拿到 `loaded/error/tools/menus`。MCP 使用落盘的稳定 `bridge-token`，重启后配置不用改。
+  - **真机验证**：MCP `initialize` / `tools/list` / `tools/call` 全通；`petra_say` 能让桌宠出气泡；`petra_install_plugin` 安装临时插件后 `petra_list_plugins` 返回 `loaded=true`，插件工具能执行；重启后同一 MCP URL/token 仍然可用；`petra_plugin_sdk` 返回 SDK 目录、README 和 types。
+  - 示例插件 `plugins/petra-plugin-hello`：一个 `hello_petra` 工具 + 一个「插件：打个招呼」菜单 + 两个设置项；真机 CDP 验证安装、Worker 加载、工具调用、菜单命令、设置热更新、停用/启用、删除/重装全链路。示例问候语修正为「我是 Petra 里的示例插件」（原来写反成「插件里的 Petra」），并对旧文案做一次就地迁移。
+  - 新增 `npm run test:plugins`（manifest 校验、目录 id 一致性、路径穿越拒绝、动态工具规格注册/卸载）；`npm run build`、`cargo test --lib`（68）全绿。
+
 - 修「定时问候的时间又不准」（用户报障）：**根因是问候锚点只存在内存里** —— `lastGreetAt` 初值为 0，每次刷新页面 / 重启应用都会归零，`sinceGreet` 变成天文数字，于是一分钟后就补一次问候。
   - 证据（当天日记事件流，`petra-diary-events-*` 里的 greeting 记录）：设置的是 20 分钟，12:02→12:23 是正常的 **21 分钟**；之后变成 6分44 / 3分12 / **1分36** / 6分15 / **2分09** / **1分26** …，而那段时间正是我用 CDP 反复 `location.reload()` 做验证的窗口。单独复现：刷新后 **65 秒**必出一条问候（已量到）。
   - 修法：锚点**落盘**（`localStorage['petra-last-greet-at']`，统一走 `markGreeted()`），重启/刷新不再重置节奏；顺带删掉那条永远命不中的"早晨首次"分支（锚点持久化后 `lastGreetAt===0` 几乎不可能，而且它在用户**离开**时也会触发 —— 会冲着空房间问候）。早上的问候由"隔夜超过间隔"和"从离开回到活跃"两条覆盖，两处的 prompt 里都带当前时间。

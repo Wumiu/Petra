@@ -154,6 +154,8 @@ body::after{
 .row .rctl input[type=text]{min-width:0; flex:1 1 120px; width:auto}
 .row .rctl .btn{flex:none}
 
+/* 插件页里的原生 checkbox：跟随品牌色，别用系统默认蓝 */
+input[type=checkbox]{accent-color:var(--brand); width:16px; height:16px; cursor:pointer}
 /* 开关 */
 .sw{position:relative; width:42px; height:24px; border-radius:999px; border:1px solid var(--line-strong);
   background:color-mix(in srgb, var(--txt3) 42%, transparent); cursor:pointer; transition:background .18s, border-color .18s; padding:0}
@@ -640,6 +642,16 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
           fields: [{ path: "fileDenyPaths", label: "", type: "lines", rows: 5, placeholder: "D:\\项目\\源码\n# 注释行" }],
         },
 
+      ],
+    },
+    {
+      id: "plugins", label: "插件", title: "插件",
+      desc: "安装、启用或停用 Petra 插件；插件注册的工具会进入小助手的工具列表",
+      cards: [
+        { title: "已安装插件", desc: "只安装你信任的插件。插件运行在独立 Worker 里，但仍是本地代码。", type: "plugins" },
+        { title: "dsh MCP 接入", desc: "把这段 MCP 配置给 dsh，dsh 就能直接安装/重载插件、让桌宠说话", type: "mcp" },
+        { title: "dsh 反向桥", desc: "让 Petra 把收到的视频链接转给 dsh 处理，再播报结果", type: "dsh-reverse" },
+        { title: "给 dsh 的说明", desc: "复制下面这段给 dsh，它就知道怎么给 Petra 写插件", type: "dsh-guide" },
       ],
     },
     {
@@ -1410,6 +1422,304 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** dsh MCP 接入：显示当前端口/token 拼出来的配置，一键复制。 */
+  function mcpCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "dsh MCP 接入"));
+    card.appendChild(el("p", "cd", "Petra 启动时会写 bridge.json；MCP URL 带本次启动的 token。把下面的配置加到 dsh 的 MCP 配置里即可。"));
+    const out = el("pre", null, "正在读取 bridge…");
+    out.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--card-strong); color:var(--txt2); font-size:12px; line-height:1.65; max-height:260px; overflow:auto;";
+    card.appendChild(out);
+    const row = el("div", "btn-row");
+    let configText = "";
+    const copy = el("button", "btn btn-primary btn-sm", "复制 MCP 配置");
+    copy.onclick = async () => {
+      if (!configText) { toast("还没读到 bridge 信息", "warn"); return; }
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(configText);
+        else {
+          const ta = document.createElement("textarea");
+          ta.value = configText; document.body.appendChild(ta); ta.select();
+          document.execCommand("copy"); ta.remove();
+        }
+        toast("已复制 MCP 配置");
+      } catch (_) { toast("复制失败，请手动选中复制", "err"); }
+    };
+    row.appendChild(copy);
+    const sdk = el("button", "btn btn-sm", "打开插件 SDK");
+    sdk.onclick = () => runAction("__data:plugins-open-sdk", "打开插件 SDK");
+    row.appendChild(sdk);
+    card.appendChild(row);
+    void (async () => {
+      try {
+        const data = await api("/api/bridge/info");
+        const b = data.bridge || {};
+        configText = JSON.stringify({ mcpServers: { petra: { url: b.mcpUrl || "" } } }, null, 2);
+        out.textContent = [
+          configText,
+          "",
+          `插件目录：${b.pluginDir || "(未知)"}`,
+          `SDK 目录：${b.sdkDir || "(未知)"}`,
+          `bridge 文件：${b.bridgeFile || "(未知)"}`,
+        ].join("\n");
+      } catch (e) {
+        out.textContent = "读取失败：" + (e.message || e);
+      }
+    })();
+    return card;
+  }
+
+  /** 反向桥：Petra 收链接 → dsh 处理 → Petra 播报。 */
+  function dshReverseCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "dsh 反向桥"));
+    card.appendChild(el("p", "cd", "让 Petra 把视频链接转给 dsh 处理，再把结果告诉你。按下面 6 步做即可。"));
+
+    const plugins = (state.meta.data || {}).plugins || [];
+    const bridge = plugins.find((p) => p.id === "petra-plugin-dsh-bridge");
+    const endpoint = bridge?.values?.endpoint || "（还没配置）";
+    const status = !bridge ? "未安装" : bridge.loaded ? "已加载" : (bridge.enabled ? "加载失败" : "已停用");
+    const statusBox = el("div", "rdesc");
+    statusBox.style.cssText = "line-height:1.8; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--card-strong);";
+    statusBox.textContent = [
+      `当前状态：${status}`,
+      `反向桥地址：${endpoint}`,
+      bridge?.error ? `错误：${bridge.error}` : "",
+    ].filter(Boolean).join("\n");
+    card.appendChild(statusBox);
+
+    const steps = el("div", "rdesc");
+    steps.style.cssText = "line-height:2; white-space:pre-wrap; margin-top:10px;";
+    steps.textContent = [
+      "1. 点下面的「导出 dsh 插件」。桌面会出现 Petra-dsh-bridge 文件夹。",
+      "2. 打开 dsh → 插件 → 本地安装，选桌面上的：",
+      "   Petra-dsh-bridge\\dsh-petra-bridge",
+      "   没有「本地安装」的话，把这个文件夹拖进 dsh，跟它说：把这个插件装上。",
+      "3. 重启 dsh，打开一个聊天。",
+      "4. 回 Petra，在 DSH Bridge 设置里填：",
+      "   http://127.0.0.1:3080/petra/ask",
+      "   （dsh 端口不一样就改成实际端口；token 和 session 一般不用填）",
+      "5. 点「测试反向桥」。看到 Petra 说话，就说明成功。",
+      "6. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
+      "",
+      "注意：dsh 问你「选工作区」时，选你的项目文件夹，不要选 Petra-dsh-bridge。",
+    ].join("\n");
+    card.appendChild(steps);
+
+    const row = el("div", "btn-row");
+    const install = el("button", "btn btn-primary btn-sm", "安装 dsh 桥插件");
+    install.onclick = () => runAction("__data:plugins-install-dsh-bridge", "安装 dsh 桥插件");
+    row.appendChild(install);
+    const test = el("button", "btn btn-sm", "测试反向桥");
+    test.onclick = () => runAction("__data:plugins-test-dsh-bridge", "测试反向桥");
+    row.appendChild(test);
+    const exportBtn = el("button", "btn btn-sm", "导出 dsh 插件");
+    exportBtn.onclick = () => runAction("__data:plugins-export-dsh-bridge", "导出 dsh 插件");
+    row.appendChild(exportBtn);
+    card.appendChild(row);
+
+    card.appendChild(el("p", "cd", "测试会通过 ask_dsh 发一条「Petra 反向桥测试」给 dsh；失败时把上面的错误原文发给 dsh，让它检查 /petra/ask 路由和会话。"));
+    return card;
+  }
+
+  /** 给用户复制给 dsh 的插件开发说明。保持成一段可直接执行的 prompt，不写空话。 */
+  function dshGuideText() {
+    return [
+      "你在为 Petra 桌宠写一个原生插件。",
+      "",
+      "如果没有 Petra 源码：先调用 MCP 工具 petra_plugin_sdk，",
+      "或读 Petra 控制面板「打开插件 SDK」得到的 README.md / types.d.ts / template/。",
+      "如果有源码，也可以读：",
+      "- plugins/README.md",
+      "- plugins/petra-plugin-hello/petra-plugin.json",
+      "- plugins/petra-plugin-hello/index.js",
+      "- src/plugins/types.ts",
+      "",
+      " Petra 插件规则：",
+      "1. 插件目录：plugins/<plugin-id>/，manifest.id 必须和目录名一致。",
+      "2. 必需文件：petra-plugin.json + index.js，单文件 ESM，不要 npm 依赖。",
+      "3. manifest 字段：id/name/version/apiVersion(必须=1)/main/permissions/settings。",
+      "4. 入口导出 activate(pet) 和可选的 deactivate()。",
+      "5. 只用这些 host API：",
+      "   - pet.tools.register({name,description,parameters,execute})",
+      "   - pet.menu.add({id,label,run})",
+      "   - pet.settings.get() / await pet.settings.set(patch) / pet.settings.onChange(fn)",
+      "   - await pet.say(text, holdMs?)",
+      "   - await pet.notify(title, body)",
+      "   - pet.log(...args)",
+      "6. 工具名只能包含字母数字下划线短横线，且不能和 Petra 内置工具重名。",
+      "7. 权限按需声明：pet.tools / pet.say / pet.notify / pet.menu / pet.settings。",
+      "8. 不要访问 DOM，不要调用 Tauri invoke；插件运行在 Web Worker 里。",
+      "",
+      "用户需求：",
+      "<在这里写你要的功能，例如：给桌宠加一个每小时喝水提醒，设置里能调间隔>",
+      "",
+      "完成后请输出：",
+      "- 完整文件内容",
+      "- 安装步骤",
+      "- 自测步骤（怎么在控制面板启用、怎么触发、预期气泡/结果）",
+      "",
+      "安装方式：",
+      "A. 如果配置了 Petra MCP：调用 petra_install_plugin（sourceDir=插件目录绝对路径），",
+      "   再调用 petra_reload_plugins，最后 petra_list_plugins 确认 loaded=true。",
+      "B. 如果没有 MCP：把生成的整个目录复制到 Petra 控制面板 →「插件」→「打开插件目录」，",
+      "   然后在「插件」页点「全部重载」并启用。",
+    ].join("\n");
+  }
+
+  function dshGuideCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "给 dsh 的说明"));
+    card.appendChild(el("p", "cd", "这段是给 dsh 看的插件开发 prompt。复制后把最后的需求改成你想要的即可。"));
+    const text = dshGuideText();
+    const pre = el("pre", null, text);
+    pre.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--card-strong); color:var(--txt2); font-size:12px; line-height:1.65; max-height:420px; overflow:auto;";
+    card.appendChild(pre);
+    const row = el("div", "btn-row");
+    const copy = el("button", "btn btn-primary btn-sm", "复制给 dsh");
+    copy.onclick = async () => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+        toast("已复制，粘贴给 dsh 即可");
+      } catch (e) {
+        toast("复制失败，请手动选中文本复制", "err");
+      }
+    };
+    row.appendChild(copy);
+    card.appendChild(row);
+    card.appendChild(el("p", "cd", "当前是「dsh 写代码 + 手动放插件目录 + 全部重载」；等 dsh-petra 桥做好后，才会变成 dsh 自动安装和重载。"));
+    return card;
+  }
+
+  /** 插件页：列表、启停、重载、删除 + manifest 声明的简单设置表单 */
+  function pluginsCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "插件"));
+    card.appendChild(el("p", "cd", "插件是本地 JS，拥有 manifest 里声明的能力；只安装你信任的插件。"));
+
+    const row = el("div", "btn-row");
+    const mkBtn = (label, id, payload) => {
+      const b = el("button", "btn btn-sm", label);
+      b.onclick = () => runAction(id, payload, label);
+      row.appendChild(b);
+    };
+    mkBtn("打开插件目录", "__data:plugins-open-dir");
+    mkBtn("安装示例插件", "__data:plugins-install-example");
+    mkBtn("安装 dsh 桥插件", "__data:plugins-install-dsh-bridge");
+    mkBtn("全部重载", "__data:plugins-reload-all");
+    card.appendChild(row);
+
+    const list = (state.meta.data || {}).plugins || [];
+    if (!list.length) {
+      card.appendChild(el("div", "empty", "还没有安装插件。把插件目录放进插件目录后点「全部重载」，或先点「安装示例插件」。"));
+      return card;
+    }
+
+    list.forEach((p) => {
+      const box = el("div", "row");
+      box.style.alignItems = "flex-start";
+      const txt = el("div", "rtext");
+      txt.appendChild(el("div", "rlabel", `${p.name} v${p.version}`));
+      const status = p.loaded ? "已加载" : (p.enabled ? "加载失败" : "已停用");
+      txt.appendChild(el("div", "rdesc", `${p.id} · ${status}`));
+      if (p.description) txt.appendChild(el("div", "rdesc", p.description));
+      if (p.error) txt.appendChild(el("div", "rdesc", "⚠️ " + p.error));
+      if (Array.isArray(p.tools) && p.tools.length) {
+        txt.appendChild(el("div", "rdesc", "工具：" + p.tools.map((t) => t.name).join("、")));
+      }
+      if (Array.isArray(p.permissions) && p.permissions.length) {
+        txt.appendChild(el("div", "rdesc", "权限：" + p.permissions.join("、")));
+      }
+      box.appendChild(txt);
+
+      const ctl = el("div", "rctl");
+      const toggle = el("button", "btn btn-sm", p.enabled ? "停用" : "启用");
+      toggle.onclick = () => runAction("__data:plugins-toggle", { id: p.id, enabled: !p.enabled }, p.enabled ? "停用" : "启用");
+      ctl.appendChild(toggle);
+      const reload = el("button", "btn btn-sm", "重载");
+      reload.onclick = () => runAction("__data:plugins-reload", { id: p.id }, "重载");
+      ctl.appendChild(reload);
+      const del = el("button", "btn btn-sm", "删除");
+      del.onclick = () => {
+        if (confirm(`删除插件「${p.name}」？插件目录会被移除，不可恢复。`)) {
+          runAction("__data:plugins-remove", { id: p.id }, "删除插件");
+        }
+      };
+      ctl.appendChild(del);
+      box.appendChild(ctl);
+      card.appendChild(box);
+
+      // 插件自己声明的菜单命令也只在控制面板里出现；右键菜单不再挂插件入口。
+      if (Array.isArray(p.menus) && p.menus.length) {
+        const cmdRow = el("div", "row");
+        const cmdTxt = el("div", "rtext");
+        cmdTxt.appendChild(el("div", "rlabel", "插件命令"));
+        cmdTxt.appendChild(el("div", "rdesc", "点一下等于执行插件注册的菜单项"));
+        cmdRow.appendChild(cmdTxt);
+        const cmdCtl = el("div", "rctl");
+        p.menus.forEach((m) => {
+          const b = el("button", "btn btn-sm", m.label || m.id);
+          b.onclick = () => runAction("__data:plugins-command", { id: p.id, commandId: m.id }, m.label || m.id);
+          cmdCtl.appendChild(b);
+        });
+        cmdRow.appendChild(cmdCtl);
+        card.appendChild(cmdRow);
+      }
+
+      (p.settings || []).forEach((f) => {
+        const r = el("div", "row");
+        const t = el("div", "rtext");
+        t.appendChild(el("div", "rlabel", f.label || f.key));
+        if (f.description) t.appendChild(el("div", "rdesc", f.description));
+        r.appendChild(t);
+        const c = el("div", "rctl");
+        let input;
+        if (f.type === "boolean") {
+          input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = !!p.values[f.key];
+          input.onchange = () => runAction("__data:plugins-setting", { id: p.id, key: f.key, value: !!input.checked }, "保存插件设置");
+        } else if (f.type === "select") {
+          input = document.createElement("select");
+          (f.options || []).forEach(([value, label]) => {
+            const opt = document.createElement("option");
+            opt.value = value;
+            opt.textContent = label;
+            input.appendChild(opt);
+          });
+          input.value = String(p.values[f.key] ?? "");
+          input.onchange = () => runAction("__data:plugins-setting", { id: p.id, key: f.key, value: input.value }, "保存插件设置");
+        } else {
+          input = document.createElement("input");
+          input.type = f.type === "number" ? "number" : "text";
+          if (f.placeholder) input.placeholder = f.placeholder;
+          if (f.min != null) input.min = String(f.min);
+          if (f.max != null) input.max = String(f.max);
+          if (f.step != null) input.step = String(f.step);
+          input.value = String(p.values[f.key] ?? "");
+          input.onchange = () => runAction("__data:plugins-setting", {
+            id: p.id,
+            key: f.key,
+            value: f.type === "number" ? Number(input.value) : input.value,
+          }, "保存插件设置");
+        }
+        c.appendChild(input);
+        r.appendChild(c);
+        card.appendChild(r);
+      });
+    });
+    return card;
+  }
+
   function renderSection() {
     const sec = SECTIONS.find((s) => s.id === state.section) || SECTIONS[0];
     const page = $("#page");
@@ -1433,6 +1743,10 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "quick") return grid.appendChild(quickCard());
       if (cardSpec.type === "actions-all") return grid.appendChild(actionsAllCard());
       if (cardSpec.type === "selfcheck") return grid.appendChild(selfCheckCard());
+      if (cardSpec.type === "plugins") return grid.appendChild(pluginsCard());
+      if (cardSpec.type === "dsh-guide") return grid.appendChild(dshGuideCard());
+      if (cardSpec.type === "mcp") return grid.appendChild(mcpCard());
+      if (cardSpec.type === "dsh-reverse") return grid.appendChild(dshReverseCard());
       const card = el("div", "card");
       card.appendChild(el("h2", null, cardSpec.title));
       if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));

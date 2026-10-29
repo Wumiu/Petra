@@ -1,0 +1,18 @@
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "main": "index.js",
+  "description": "一个 Petra 示例插件",
+  "permissions": ["pet.tools", "pet.say", "pet.menu", "pet.settings"],
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "key": "greeting",
+      "label": "问候语",
+      "type": "string",
+      "default": "你好呀，我是 Petra 里的插件。"
+    }
+  ]
+}

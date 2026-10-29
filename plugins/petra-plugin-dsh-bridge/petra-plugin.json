@@ -1,0 +1,34 @@
+{
+  "id": "petra-plugin-dsh-bridge",
+  "name": "DSH Bridge",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "main": "index.js",
+  "description": "把 Petra 收到的文字或视频链接转给 dsh 会话处理，再把结果说出来。",
+  "author": "Petra",
+  "permissions": ["pet.tools", "pet.say", "pet.notify", "pet.settings"],
+  "enabledByDefault": true,
+  "settings": [
+    {
+      "key": "endpoint",
+      "label": "dsh 反向桥地址",
+      "type": "string",
+      "default": "http://127.0.0.1:3080/petra/ask",
+      "description": "dsh-petra-bridge 插件暴露的本地地址"
+    },
+    {
+      "key": "token",
+      "label": "反向桥 token",
+      "type": "string",
+      "default": "",
+      "description": "与 dsh-petra-bridge 配置里的 token 一致；没设就留空"
+    },
+    {
+      "key": "sessionId",
+      "label": "指定 dsh 会话 ID",
+      "type": "string",
+      "default": "",
+      "description": "留空则让 dsh 选最近的会话"
+    }
+  ]
+}

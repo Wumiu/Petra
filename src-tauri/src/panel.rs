@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// 面板页面（单文件，随二进制一起内嵌；改完页面要重新编译 Rust）
 const PANEL_HTML: &str = include_str!("../panel/index.html");
@@ -31,6 +31,8 @@ const PREFERRED_PORT: u16 = 47188;
 struct Panel {
     port: u16,
     token: String,
+    /// 给 dsh / MCP 用的稳定 token（面板网页 token 每次启动随机，MCP 配置不能每次都改）
+    bridge_token: String,
     /// WebView 最近一次推上来的完整设置（面板读取的就是这份）
     settings: Mutex<Value>,
     /// 面板要渲染的元数据：版本、模型列表、动作清单等
@@ -55,10 +57,318 @@ fn make_token() -> String {
     format!("{:016x}", h)
 }
 
+/// dsh / MCP 用的稳定 token：首次生成后落盘，重启继续用，这样 MCP 配置不用每次改。
+fn load_or_create_bridge_token(app: &AppHandle) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建应用数据目录失败：{e}"))?;
+    let path = dir.join("bridge-token");
+    if let Ok(raw) = std::fs::read_to_string(&path) {
+        let token = raw.trim().to_string();
+        if token.len() >= 16 {
+            return Ok(token);
+        }
+    }
+    let token = make_token();
+    std::fs::write(&path, &token).map_err(|e| format!("写入 bridge-token 失败：{e}"))?;
+    Ok(token)
+}
+
+/// 把 dsh / MCP 需要的本地接入信息写到 app_data_dir/bridge.json。
+/// 这样 dsh 不需要猜端口，也不需要把 token 硬编码进插件。
+fn write_bridge_file(app: &AppHandle, port: u16, bridge_token: &str) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建应用数据目录失败：{e}"))?;
+    let plugin_dir = crate::plugins::plugin_dir(app.clone()).unwrap_or_default();
+    let sdk_dir = crate::plugins::plugin_sdk_dir(app.clone()).unwrap_or_default();
+    let info = json!({
+        "name": "Petra",
+        "version": env!("CARGO_PKG_VERSION"),
+        "url": format!("http://127.0.0.1:{port}"),
+        "mcpUrl": format!("http://127.0.0.1:{port}/mcp?t={bridge_token}"),
+        "token": bridge_token,
+        "pluginDir": plugin_dir,
+        "sdkDir": sdk_dir,
+        "bridgeFile": dir.join("bridge.json").to_string_lossy().to_string(),
+    });
+    std::fs::write(
+        dir.join("bridge.json"),
+        serde_json::to_string_pretty(&info).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("写入 bridge.json 失败：{e}"))?;
+    Ok(())
+}
+
+fn bridge_plugins(panel: &Panel) -> Value {
+    let meta = panel.meta.lock().unwrap().clone();
+    meta.pointer("/data/plugins")
+        .cloned()
+        .unwrap_or_else(|| json!([]))
+}
+
+fn bridge_info(app: &AppHandle) -> Value {
+    let plugin_dir = crate::plugins::plugin_dir(app.clone()).unwrap_or_default();
+    let sdk_dir = crate::plugins::plugin_sdk_dir(app.clone()).unwrap_or_default();
+    json!({
+        "name": "Petra",
+        "version": env!("CARGO_PKG_VERSION"),
+        "pluginDir": plugin_dir,
+        "sdkDir": sdk_dir,
+    })
+}
+
+/// MCP / HTTP bridge 共用的实际动作。返回 JSON，文本内容由调用方决定怎么包装。
+fn bridge_call(app: &AppHandle, tool: &str, args: &Value) -> Result<Value, String> {
+    match tool {
+        "petra_bridge_info" => Ok(bridge_info(app)),
+        "petra_plugin_dir" => Ok(json!({
+            "pluginDir": crate::plugins::plugin_dir(app.clone())?,
+            "sdkDir": crate::plugins::plugin_sdk_dir(app.clone())?,
+        })),
+        "petra_plugin_sdk" => {
+            let sdk_dir = crate::plugins::plugin_sdk_dir(app.clone())?;
+            let dir = std::path::Path::new(&sdk_dir);
+            let readme = std::fs::read_to_string(dir.join("README.md")).unwrap_or_default();
+            let types = std::fs::read_to_string(dir.join("types.d.ts")).unwrap_or_default();
+            Ok(json!({ "sdkDir": sdk_dir, "readme": readme, "types": types }))
+        }
+        "petra_list_plugins" => {
+            // 让前端把最新插件状态推给 panel.meta，避免 dsh 在启动早期读到空列表。
+            let _ = app.emit("panel:request-state", json!({}));
+            std::thread::sleep(Duration::from_millis(150));
+            let plugins = PANEL
+                .get()
+                .map(|p| bridge_plugins(p.as_ref()))
+                .unwrap_or_else(|| json!([]));
+            Ok(json!({ "plugins": plugins }))
+        }
+        "petra_install_plugin" => {
+            let source = args
+                .get("sourceDir")
+                .or_else(|| args.get("source_dir"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if source.is_empty() {
+                return Err("缺少 sourceDir（dsh 生成的插件目录绝对路径）".into());
+            }
+            let id = crate::plugins::install_from_dir(app, source)?;
+            let _ = app.emit("plugin:reload", json!({ "id": id }));
+            // 等前端 Worker 完成一轮加载，再把最新状态一起返回，dsh 少一次往返。
+            std::thread::sleep(Duration::from_millis(500));
+            let plugins = PANEL
+                .get()
+                .map(|p| bridge_plugins(p.as_ref()))
+                .unwrap_or_else(|| json!([]));
+            Ok(json!({
+                "ok": true,
+                "id": id,
+                "plugins": plugins,
+                "message": "插件已安装并完成一轮热重载。",
+            }))
+        }
+        "petra_reload_plugins" => {
+            let _ = app.emit("plugin:reload", json!({ "id": null }));
+            std::thread::sleep(Duration::from_millis(500));
+            let plugins = PANEL
+                .get()
+                .map(|p| bridge_plugins(p.as_ref()))
+                .unwrap_or_else(|| json!([]));
+            Ok(json!({
+                "ok": true,
+                "plugins": plugins,
+                "message": "插件已重新加载。",
+            }))
+        }
+        "petra_say" => {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if text.is_empty() {
+                return Err("缺少 text".into());
+            }
+            let hold_ms = args
+                .get("holdMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(6000)
+                .clamp(1000, 60_000);
+            let _ = app.emit("petra:say", json!({ "text": text, "holdMs": hold_ms }));
+            Ok(json!({ "ok": true, "text": text }))
+        }
+        "petra_speak" => {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if text.is_empty() {
+                return Err("缺少 text".into());
+            }
+            let hold_ms = args
+                .get("holdMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(6000)
+                .clamp(1000, 60_000);
+            let voice = PANEL
+                .get()
+                .map(|p| {
+                    p.settings
+                        .lock()
+                        .unwrap()
+                        .pointer("/tts/enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let _ = app.emit("petra:speak", json!({ "text": text, "holdMs": hold_ms }));
+            Ok(json!({ "ok": true, "text": text, "voice": voice }))
+        }
+        "petra_notify" => {
+            let title = args.get("title").and_then(Value::as_str).unwrap_or("Petra");
+            let body = args.get("body").and_then(Value::as_str).unwrap_or("");
+            let _ = app.emit("petra:notify", json!({ "title": title, "body": body }));
+            Ok(json!({ "ok": true }))
+        }
+        other => Err(format!("未知的 Petra 工具：{other}")),
+    }
+}
+
+fn mcp_tools() -> Value {
+    json!([
+        {
+            "name": "petra_plugin_sdk",
+            "description": "读取 Petra 插件 SDK：README、类型声明和模板。给 dsh 写插件前先调用。",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "petra_plugin_dir",
+            "description": "返回 Petra 插件目录和 SDK 目录的绝对路径。",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "petra_list_plugins",
+            "description": "列出已安装插件、启用/加载状态、错误、工具和设置。",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "petra_install_plugin",
+            "description": "从本地目录安装/更新 Petra 插件并请求热重载。sourceDir 必须是包含 petra-plugin.json 的绝对路径。",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "sourceDir": { "type": "string", "description": "插件目录绝对路径" } },
+                "required": ["sourceDir"]
+            }
+        },
+        {
+            "name": "petra_reload_plugins",
+            "description": "请求 Petra 重新加载全部插件。",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "petra_say",
+            "description": "让 Petra 用气泡说一句话（零 token，不调模型；不出声）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" },
+                    "holdMs": { "type": "number" }
+                },
+                "required": ["text"]
+            }
+        },
+        {
+            "name": "petra_speak",
+            "description": "让 Petra 显示气泡并走语音朗读（需要 Petra 设置里开启语音输出）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" },
+                    "holdMs": { "type": "number" }
+                },
+                "required": ["text"]
+            }
+        },
+        {
+            "name": "petra_notify",
+            "description": "让 Petra 发一条系统通知。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string" }
+                },
+                "required": ["title", "body"]
+            }
+        },
+        {
+            "name": "petra_bridge_info",
+            "description": "返回 Petra bridge / 插件目录 / SDK 目录信息。",
+            "inputSchema": { "type": "object", "properties": {} }
+        }
+    ])
+}
+
+fn handle_mcp(stream: &mut TcpStream, body: &str, app: &AppHandle) -> std::io::Result<()> {
+    let req: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = req.get("id").cloned();
+    if id.is_none() {
+        // notifications/initialized 等通知没有 id，按 JSON-RPC 规范只回 202。
+        return respond(stream, 202, "application/json; charset=utf-8", b"", false);
+    }
+    let result: Result<Value, String> = match method {
+        "initialize" => {
+            let pv = req
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("2025-06-18");
+            Ok(json!({
+                "protocolVersion": pv,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "petra", "version": env!("CARGO_PKG_VERSION") }
+            }))
+        }
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": mcp_tools() })),
+        "resources/list" => Ok(json!({ "resources": [] })),
+        "prompts/list" => Ok(json!({ "prompts": [] })),
+        "tools/call" => {
+            let name = req
+                .pointer("/params/name")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let args = req
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            match bridge_call(app, name, &args) {
+                Ok(v) => Ok(json!({
+                    "content": [{ "type": "text", "text": v.to_string() }],
+                    "isError": false
+                })),
+                Err(e) => Ok(json!({
+                    "content": [{ "type": "text", "text": format!("Petra 工具调用失败：{e}") }],
+                    "isError": true
+                })),
+            }
+        }
+        other => Err(format!("未知的 MCP 方法：{other}")),
+    };
+    let payload = match result {
+        Ok(v) => json!({ "jsonrpc": "2.0", "id": id, "result": v }),
+        Err(e) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32601, "message": e }
+        }),
+    };
+    json_resp(stream, 200, payload)
+}
+
 /// 启动（或复用）面板服务，返回浏览器要打开的完整 URL。
 pub fn ensure_started(app: &AppHandle) -> Result<String, String> {
     let _ = APP.set(app.clone());
     if let Some(p) = PANEL.get() {
+        let _ = write_bridge_file(app, p.port, &p.bridge_token);
         return Ok(format!("http://127.0.0.1:{}/#t={}", p.port, p.token));
     }
 
@@ -70,9 +380,11 @@ pub fn ensure_started(app: &AppHandle) -> Result<String, String> {
         .map_err(|e| format!("取端口失败：{e}"))?
         .port();
 
+    let bridge_token = load_or_create_bridge_token(app)?;
     let panel = Arc::new(Panel {
         port,
         token: make_token(),
+        bridge_token,
         settings: Mutex::new(json!({})),
         meta: Mutex::new(json!({})),
         seq: Mutex::new(0),
@@ -83,6 +395,9 @@ pub fn ensure_started(app: &AppHandle) -> Result<String, String> {
             return Ok(format!("http://127.0.0.1:{}/#t={}", p.port, p.token));
         }
     }
+
+    // 把接入信息落盘：dsh / MCP 通过 app_data_dir/bridge.json 找到当前端口与 token。
+    let _ = write_bridge_file(app, port, &panel.bridge_token);
 
     // 告诉前端「服务起来了，该把当前设置推上来了」。
     // 注意时序：setup 里（开机自启的调试路径）发这条时页面还没注册监听，会丢；
@@ -169,7 +484,7 @@ fn handle_conn(mut stream: TcpStream, panel: &Panel) -> std::io::Result<()> {
         .cloned()
         .or_else(|| query.get("t").cloned())
         .unwrap_or_default();
-    if given != panel.token {
+    if given != panel.token && given != panel.bridge_token {
         return respond(
             &mut stream,
             401,
@@ -238,6 +553,80 @@ fn handle_conn(mut stream: TcpStream, panel: &Panel) -> std::io::Result<()> {
             let _ = app.emit("panel:model-imported", json!({ "name": file_name }));
             json_resp(&mut stream, 200, json!({"ok": true, "name": file_name}))
         }
+        ("GET", "/api/bridge/info") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            match app.path().app_data_dir() {
+                Ok(dir) => match std::fs::read_to_string(dir.join("bridge.json")) {
+                    Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+                        Ok(v) => json_resp(&mut stream, 200, json!({"ok": true, "bridge": v})),
+                        Err(e) => json_resp(&mut stream, 500, json!({"ok": false, "error": e.to_string()})),
+                    },
+                    Err(e) => json_resp(&mut stream, 500, json!({"ok": false, "error": e.to_string()})),
+                },
+                Err(e) => json_resp(&mut stream, 500, json!({"ok": false, "error": e.to_string()})),
+            }
+        }
+        ("GET", "/api/bridge/plugins") => {
+            let plugins = PANEL
+                .get()
+                .map(|p| bridge_plugins(p.as_ref()))
+                .unwrap_or_else(|| json!([]));
+            json_resp(&mut stream, 200, json!({"ok": true, "plugins": plugins}))
+        }
+        ("POST", "/api/bridge/plugin/install") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            match bridge_call(app, "petra_install_plugin", &parsed) {
+                Ok(v) => json_resp(&mut stream, 200, json!({"ok": true, "result": v})),
+                Err(e) => json_resp(&mut stream, 400, json!({"ok": false, "error": e})),
+            }
+        }
+        ("POST", "/api/bridge/plugin/reload") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            match bridge_call(app, "petra_reload_plugins", &json!({})) {
+                Ok(v) => json_resp(&mut stream, 200, json!({"ok": true, "result": v})),
+                Err(e) => json_resp(&mut stream, 400, json!({"ok": false, "error": e})),
+            }
+        }
+        ("POST", "/api/bridge/say") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            match bridge_call(app, "petra_say", &parsed) {
+                Ok(v) => json_resp(&mut stream, 200, json!({"ok": true, "result": v})),
+                Err(e) => json_resp(&mut stream, 400, json!({"ok": false, "error": e})),
+            }
+        }
+        ("POST", "/api/bridge/notify") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            match bridge_call(app, "petra_notify", &parsed) {
+                Ok(v) => json_resp(&mut stream, 200, json!({"ok": true, "result": v})),
+                Err(e) => json_resp(&mut stream, 400, json!({"ok": false, "error": e})),
+            }
+        }
+        ("POST", "/mcp") => {
+            let Some(app) = APP.get() else {
+                return json_resp(&mut stream, 500, json!({"ok": false, "error": "桌宠已退出"}));
+            };
+            handle_mcp(&mut stream, &body, app)
+        }
+        ("GET", "/mcp") => respond(
+            &mut stream,
+            405,
+            "application/json; charset=utf-8",
+            br#"{"ok":false,"error":"MCP streamable HTTP: use POST /mcp"}"#,
+            false,
+        ),
         ("POST", "/api/action") => {
             let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             let Some(id) = parsed.get("id").and_then(|v| v.as_str()).map(str::to_string) else {
@@ -274,10 +663,12 @@ fn respond(
 ) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         _ => "OK",
     };
     let mut head = format!(
