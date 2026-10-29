@@ -1474,23 +1474,44 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const card = el("div", "card wide");
     card.appendChild(el("h2", null, "dsh 反向桥"));
     card.appendChild(el("p", "cd", "MCP 是 dsh → Petra；这个反向桥是 Petra → dsh。适合『把视频链接发给 dsh 看看』。"));
+
+    const plugins = (state.meta.data || {}).plugins || [];
+    const bridge = plugins.find((p) => p.id === "petra-plugin-dsh-bridge");
+    const endpoint = bridge?.values?.endpoint || "（还没配置）";
+    const status = !bridge ? "未安装" : bridge.loaded ? "已加载" : (bridge.enabled ? "加载失败" : "已停用");
+    const statusBox = el("div", "rdesc");
+    statusBox.style.cssText = "line-height:1.8; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--card-strong);";
+    statusBox.textContent = [
+      `Petra 侧插件：${status}`,
+      `反向桥地址：${endpoint}`,
+      bridge?.error ? `错误：${bridge.error}` : "",
+    ].filter(Boolean).join("\n");
+    card.appendChild(statusBox);
+
     const steps = el("div", "rdesc");
-    steps.style.cssText = "line-height:1.9; white-space:pre-wrap;";
+    steps.style.cssText = "line-height:2; white-space:pre-wrap; margin-top:10px;";
     steps.textContent = [
-      "1. 在 dsh 侧安装仓库里的 dsh-petra-bridge 插件，并启用 /petra/ask。",
-      "2. 在 Petra 插件页点「安装 dsh 桥插件」。",
-      "3. 打开 DSH Bridge 插件设置，填：",
-      "   反向桥地址：http://127.0.0.1:3080/petra/ask（按 dsh 实际端口改）",
+      "1. dsh 侧安装 dsh-petra-bridge（在仓库的 dsh-petra-bridge/ 目录），重启 dsh。",
+      "2. 在 dsh 里打开一个会话；没有会话会返回 409。",
+      "3. Petra 点「安装 dsh 桥插件」，然后在下方设置里填：",
+      "   地址：http://127.0.0.1:3080/petra/ask（按 dsh 实际端口改）",
       "   token：与 dsh-petra-bridge 配置一致；没设就留空",
-      "   session ID：可选，留空让 dsh 选最近会话",
-      "4. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
+      "   session ID：可留空，让 dsh 选最近会话",
+      "4. 先点「测试反向桥」，看到回复再使用。",
+      "5. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
     ].join("\n");
     card.appendChild(steps);
+
     const row = el("div", "btn-row");
     const install = el("button", "btn btn-primary btn-sm", "安装 dsh 桥插件");
     install.onclick = () => runAction("__data:plugins-install-dsh-bridge", "安装 dsh 桥插件");
     row.appendChild(install);
+    const test = el("button", "btn btn-sm", "测试反向桥");
+    test.onclick = () => runAction("__data:plugins-test-dsh-bridge", "测试反向桥");
+    row.appendChild(test);
     card.appendChild(row);
+
+    card.appendChild(el("p", "cd", "测试会通过 ask_dsh 发一条「Petra 反向桥测试」给 dsh；失败时把上面的错误原文发给 dsh，让它检查 /petra/ask 路由和会话。"));
     return card;
   }
 

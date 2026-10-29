@@ -3956,6 +3956,21 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(msg);
         break;
       }
+      case "plugins-test-dsh-bridge": {
+        const info = pluginRuntime.getPanelPlugins().find((p) => p.id === "petra-plugin-dsh-bridge");
+        if (!info) {
+          toast("先安装 dsh 桥插件", "warn");
+          return;
+        }
+        if (!info.loaded) {
+          toast(`dsh 桥插件未加载：${info.error || "请重载插件"}`, "warn");
+          return;
+        }
+        toast("正在测试 dsh 反向桥…");
+        const result = await pluginRuntime.executeTool("ask_dsh", { text: "Petra 反向桥测试" });
+        toast(result.slice(0, 160));
+        break;
+      }
       case "plugins-reload-all": {
         await pluginRuntime.reloadAll();
         toast("插件已全部重新加载");
