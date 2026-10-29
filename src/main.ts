@@ -491,10 +491,18 @@ function updateModelBounds(bounds?: { left: number; top: number; right: number; 
   engine.lastBoundsOnScreen = { left: l, top: t, right: l + w, bottom: t + h };
 }
 
-/** 检查鼠标事件是否在模型区域内（绿框内），不是则忽略 */
+/** 模型可点范围比绿框四周多出的像素：边缘留一点余量，移动中的宠物更容易抓到 */
+const PET_HIT_PADDING = 18;
+
+/** 检查鼠标事件是否在模型可点区域内（绿框 + 18px 余量），不是则忽略 */
 function isInsideModel(e: { clientX: number; clientY: number }): boolean {
   const r = getModelRect();
-  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  return (
+    e.clientX >= r.left - PET_HIT_PADDING &&
+    e.clientX <= r.right + PET_HIT_PADDING &&
+    e.clientY >= r.top - PET_HIT_PADDING &&
+    e.clientY <= r.bottom + PET_HIT_PADDING
+  );
 }
 
 /** 获取模型在窗口中的矩形（不依赖 DOM，始终可用） */
@@ -2214,6 +2222,7 @@ function collectInteractionRegions(): PhysicalInteractiveRegion[] {
     scale,
     clientPhysicalWidth,
     clientPhysicalHeight,
+    PET_HIT_PADDING,
   );
   if (petRegion) regions.push(petRegion);
 
@@ -3187,19 +3196,25 @@ function buildMenu(engine: BehaviorEngine, opts?: { ignoreIdle?: boolean }): Men
       onPick: () => void invoke("open_url", { url: "http://petra.xin/" }),
     },
     {
+      id: "topmost",
+      label: "置顶",
+      state: topmostCache ? "开" : "关",
+      onPick: () => {
+        const next = !topmostCache;
+        void invoke("set_topmost", { on: next, persist: true }).then(() => {
+          topmostCache = next;
+          panelTopmost = next;
+          toast(next ? "已置顶" : "已取消置顶");
+          schedulePanelSync();
+        });
+      },
+    },
+    {
       id: "hide",
       label: "隐藏",
-      state: topmostCache ? "取消置顶" : "置顶",
       onPick: () => {
         void invoke("hide_pet");
         toast("已隐藏，托盘或 Alt+P 唤出");
-      },
-      onStatePick: () => {
-        const next = !topmostCache;
-        void invoke("set_topmost", { on: next }).then(() => {
-          topmostCache = next;
-          toast(next ? "已置顶" : "已取消置顶");
-        });
       },
     },
     {
@@ -3351,6 +3366,8 @@ let panelAsrModel = "";
 let panelPersonaTest: { text: string; at: string } | null = null;
 /** 面板「识别自检」的结果 */
 let panelAsrTest: { text: string; at: string; model: string } | null = null;
+/** 面板当前显示的置顶状态（由 is_topmost 实时刷新） */
+let panelTopmost = false;
 
 /** 把三类 Key 的「有没有」状态同步给面板（只回布尔，绝不把 Key 本身推过去） */
 async function refreshPanelKeys(): Promise<void> {
@@ -3400,6 +3417,7 @@ let appVersion = "";
 async function pushPanelState(): Promise<void> {
   await refreshPanelModels();
   await refreshPanelKeys();
+  panelTopmost = await invoke<boolean>("is_topmost").catch(() => false);
   try {
     await invoke("panel_push_settings", {
       settings: JSON.stringify({ ...loadSettings(), boundsPadding: currentBoundsPadding() }),
@@ -3432,6 +3450,7 @@ function buildPanelMeta() {
     ui: {
       modelBounds: debugModelBoundsVisible,
       debugBorder: debugBorderVisible,
+      topmost: panelTopmost,
     },
     presets: {
       list: settings.assistant.presets ?? [],
@@ -3665,7 +3684,7 @@ const PANEL_FIELD_LABELS: Record<string, string> = {
 async function ensurePetVisible(): Promise<void> {
   try {
     await invoke("show_pet");
-    await invoke("set_topmost", { on: true });
+    await invoke("set_topmost", { on: true, persist: false });
     if (settings.idleMode) return;
     const win = getCurrentWindow();
     const pos = await win.outerPosition(); // 物理像素
@@ -4070,6 +4089,19 @@ async function handlePanelModelAction(id: string): Promise<void> {
 /** 控制面板里点了一个功能按钮：找到右键菜单里同一个 id 并执行 */
 function runPanelAction(id: string, payload?: unknown): void {
   if (!engine || !id) return;
+  // 置顶是运行时窗口状态，不是菜单叶子；单独处理，避免面板去找不存在的 topmost 菜单 id
+  if (id === "topmost-toggle") {
+    const next = !panelTopmost;
+    void invoke("set_topmost", { on: next, persist: true })
+      .then(() => {
+        panelTopmost = next;
+        topmostCache = next;
+        toast(next ? "已置顶" : "已取消置顶");
+        return pushPanelState();
+      })
+      .catch((e) => toast(`置顶切换失败：${e instanceof Error ? e.message : String(e)}`, "warn"));
+    return;
+  }
   // 面板里「填表提交」类动作：把值带回桌宠这边执行（Key 只在本地进程间传，不经网络）
   if (id.startsWith("__key:")) {
     void handlePanelKeyAction(id.slice(6), payload);

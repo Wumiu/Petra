@@ -39,6 +39,9 @@ const ACTIVITY_LEVELS: Record<"low" | "mid" | "high", ActivityParams> = {
  * - 结束漫游后小憩，再挑新目标
  * - 目标点经 set_pet_target 发给 Rust mover 线程原生平滑移动（60fps）
  */
+/** 光标落在模型附近时暂停漫游：给用户留出抓取时间，不再“刚要点到就跑” */
+const PET_HOVER_PAD = 80;
+
 export class BehaviorEngine {
   private pos: XY;
   private cursor: XY = { x: 0, y: 0 };
@@ -53,6 +56,7 @@ export class BehaviorEngine {
   private actParams: ActivityParams = ACTIVITY_LEVELS.mid;
   private activityLevel: "low" | "mid" | "high" = "mid";
   private tracking = false;
+  private hoverFrozen = false;
   private cursorSpeed = 0; // 鼠标移动速度 px/s（按 120ms 轮询间隔真实计算）
   private vel: XY = { x: 0, y: 0 }; // 上一帧速度（供碰撞反弹用）
   // 逗猫棒（追鼠标）
@@ -361,6 +365,22 @@ export class BehaviorEngine {
     }
   }
 
+  /** 光标是否在模型（+余量）内；坐标都用窗口本地逻辑像素 */
+  private cursorOnPet(): boolean {
+    const b = this.charBoundsCache;
+    if (!b) return false;
+    // charBoundsCache 是模型原始包围盒；窗口出屏时模型会靠 modelOffset 反向补偿，
+    // 判断 hover 必须把这层偏移减掉，否则贴边时“看起来在宠物身上”却判不到。
+    const x = this.cursorRel.x + this.win / 2 - this.modelOffset.x;
+    const y = this.cursorRel.y + this.win / 2 - this.modelOffset.y;
+    return (
+      x >= b.left - PET_HOVER_PAD &&
+      x <= b.right + PET_HOVER_PAD &&
+      y >= b.top - PET_HOVER_PAD &&
+      y <= b.bottom + PET_HOVER_PAD
+    );
+  }
+
   update(now: number, dt: number) {
     // 光标/工作区由 pollCursor()/pollArea() 独立定时器更新，热路径不做 IPC
 
@@ -389,6 +409,24 @@ export class BehaviorEngine {
       this.target = null;
       return;
     }
+
+    // 光标已经落在宠物身上：立即停住，让用户能稳定按下拖动。
+    // 注意要在“逃跑”判定之前，否则鼠标一靠近就触发 relDist<165 逃跑，
+    // 表现就是“怎么点都点不到/刚碰到就溜走”。
+    if (!this.tracking && this.cursorOnPet()) {
+      // 只在“刚进入宠物区域”时清一次 Rust 目标，避免每帧 IPC 把拖动前的点击吃掉
+      if (!this.hoverFrozen) {
+        this.hoverFrozen = true;
+        this.fleeUntil = 0;
+        this.target = null;
+        this.clearTarget();
+      }
+      this.vx = 0;
+      this.bob = 0;
+      this.suspendUntil = now + 500;
+      return;
+    }
+    this.hoverFrozen = false;
 
     // 用户拖拽中：不漫游、不避鼠标
     if (now < this.suspendUntil) {

@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+- 控制面板「外观 → 行为」新增**窗口置顶开关**，并修掉置顶被面板偷偷覆盖的 bug：
+  - `set_topmost` 增加 `persist: Option<bool>`；`ensurePetVisible()`（打开控制面板/把桌宠叫到前面）传 `persist:false`，只临时抬到前面，不再把用户手动「取消置顶」永久写回。
+  - 面板置顶开关走 `topmost-toggle`，只改运行时状态并同步 `panelTopmost`；右键菜单把原来的「隐藏」行拆成「置顶」和「隐藏」两行，避免点错整只消失。
+  - 真机验证：面板开/关置顶 → `is_topmost` 与 `window-state.json` 同步；`persist:false` 临时置顶后 `window-state.json` 仍保持 false。
+- 拖动/点击抓取优化：模型可点区域四周增加 18px 余量；光标进入模型附近 80px 时暂停漫游/逃跑（不再“刚要点到就跑”），并且只在刚进入时清一次 Rust 移动目标，避免 hover 每帧 IPC。新增 `npm run test:hover`。
+
 - 新增** Petra 原生插件系统 MVP**（分支 `ks-kbl`）：小助手工具从硬编码走向可插拔。
   - `ToolRegistry` 收口：内置工具仍由 `TOOL_SPECS` 提供，插件工具在运行时注册到同一张表，参数校验 / 结果截断 / 未知工具提示共用一套逻辑；`AssistantClient` 每轮请求动态拼接 `extraTools`，插件热重载后立即生效。
   - 插件运行在 **Web Worker**：单文件 ESM，入口导出 `activate(pet)` / `deactivate()`；插件不能直接碰 DOM 或 Tauri invoke，只能通过 `pet.tools.register`、`pet.menu.add`、`pet.settings`、`pet.say`、`pet.notify`、`pet.log` 这些白名单 API。manifest 声明 `permissions`，宿主逐项检查。

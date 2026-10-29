@@ -1100,16 +1100,23 @@ fn topmost_from_json(raw: &str) -> Option<bool> {
 }
 
 #[tauri::command]
-fn set_topmost(app: AppHandle, state: State<'_, TopmostState>, on: bool) -> bool {
+fn set_topmost(
+    app: AppHandle,
+    state: State<'_, TopmostState>,
+    on: bool,
+    persist: Option<bool>,
+) -> bool {
     if let Some(win) = app.get_webview_window("main") {
         // 同步 Tauri 内部标志，避免后续其它窗口操作覆盖
         let _ = win.set_always_on_top(on);
         // 直接 Win32 立即生效
         screen::set_topmost(&win, on);
         state.enabled.store(on, Ordering::SeqCst);
-        // 落盘：以前只存在内存里，重启必然回到配置里的 alwaysOnTop=true，
-        // 于是「取消置顶」每次重开都失效。这里记住用户的选择，setup 里读回来。
-        save_topmost_pref(&app, on);
+        // persist=false：只是「打开面板时临时抬到前面」，不能覆盖用户手动取消置顶的选择。
+        // 不传 persist 的旧调用默认持久化，保持兼容。
+        if persist.unwrap_or(true) {
+            save_topmost_pref(&app, on);
+        }
         return true;
     }
     false
