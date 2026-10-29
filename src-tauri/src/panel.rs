@@ -198,6 +198,30 @@ fn bridge_call(app: &AppHandle, tool: &str, args: &Value) -> Result<Value, Strin
             let _ = app.emit("petra:say", json!({ "text": text, "holdMs": hold_ms }));
             Ok(json!({ "ok": true, "text": text }))
         }
+        "petra_speak" => {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("").trim();
+            if text.is_empty() {
+                return Err("缺少 text".into());
+            }
+            let hold_ms = args
+                .get("holdMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(6000)
+                .clamp(1000, 60_000);
+            let voice = PANEL
+                .get()
+                .map(|p| {
+                    p.settings
+                        .lock()
+                        .unwrap()
+                        .pointer("/tts/enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let _ = app.emit("petra:speak", json!({ "text": text, "holdMs": hold_ms }));
+            Ok(json!({ "ok": true, "text": text, "voice": voice }))
+        }
         "petra_notify" => {
             let title = args.get("title").and_then(Value::as_str).unwrap_or("Petra");
             let body = args.get("body").and_then(Value::as_str).unwrap_or("");
@@ -241,7 +265,19 @@ fn mcp_tools() -> Value {
         },
         {
             "name": "petra_say",
-            "description": "让 Petra 用气泡说一句话（零 token，不调模型）。",
+            "description": "让 Petra 用气泡说一句话（零 token，不调模型；不出声）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string" },
+                    "holdMs": { "type": "number" }
+                },
+                "required": ["text"]
+            }
+        },
+        {
+            "name": "petra_speak",
+            "description": "让 Petra 显示气泡并走语音朗读（需要 Petra 设置里开启语音输出）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -1374,6 +1374,21 @@ async function boot() {
     const text = String(event.payload?.text ?? "").trim();
     if (text) sayPetLine(text, Number(event.payload?.holdMs) || 6000);
   });
+  void listen<{ text?: string; holdMs?: number }>("petra:speak", (event) => {
+    const text = String(event.payload?.text ?? "").trim();
+    if (!text) return;
+    const holdMs = Number(event.payload?.holdMs) || 6000;
+    sayPetLine(text, holdMs);
+    if (settings.tts.enabled) {
+      try {
+        ttsPlayer.setConfig(true, ttsApiKey, settings.tts.speakerId, settings.assistant.outputLanguage ?? "");
+        ttsPlayer.pushDelta(text);
+        ttsPlayer.flush();
+      } catch (e) {
+        console.warn("petra:speak 语音失败", e);
+      }
+    }
+  });
   void listen<{ title?: string; body?: string }>("petra:notify", (event) => {
     void invoke("send_notification", {
       title: String(event.payload?.title ?? "Petra"),

@@ -89,7 +89,8 @@ export function deactivate() {
 Petra 控制面板 →「插件」页提供：
 
 - **「dsh MCP 接入」**：显示可复制的 `mcpServers` 配置，dsh 可直接调用
-  `petra_plugin_sdk`、`petra_install_plugin`、`petra_reload_plugins`、`petra_list_plugins`。
+  `petra_plugin_sdk`、`petra_install_plugin`、`petra_reload_plugins`、`petra_list_plugins`、
+  `petra_say`（只出气泡）、`petra_speak`（气泡 + 语音朗读）。
 - **「给 dsh 的说明」**：一段可直接复制给 dsh 的插件开发 prompt。
 - **「打开插件 SDK」**：把 `README.md`、`types.d.ts`、`template/` 落到
   `%APPDATA%\com.wumiu.petra\plugin-sdk`，没有源码也能让 dsh 读到契约。
