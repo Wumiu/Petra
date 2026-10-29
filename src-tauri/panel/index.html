@@ -1473,7 +1473,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   function dshReverseCard() {
     const card = el("div", "card wide");
     card.appendChild(el("h2", null, "dsh 反向桥"));
-    card.appendChild(el("p", "cd", "MCP 是 dsh → Petra；这个反向桥是 Petra → dsh。适合『把视频链接发给 dsh 看看』。"));
+    card.appendChild(el("p", "cd", "让 Petra 把视频链接转给 dsh 处理，再把结果告诉你。按下面 6 步做即可。"));
 
     const plugins = (state.meta.data || {}).plugins || [];
     const bridge = plugins.find((p) => p.id === "petra-plugin-dsh-bridge");
@@ -1482,7 +1482,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const statusBox = el("div", "rdesc");
     statusBox.style.cssText = "line-height:1.8; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--card-strong);";
     statusBox.textContent = [
-      `Petra 侧插件：${status}`,
+      `当前状态：${status}`,
       `反向桥地址：${endpoint}`,
       bridge?.error ? `错误：${bridge.error}` : "",
     ].filter(Boolean).join("\n");
@@ -1491,14 +1491,18 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const steps = el("div", "rdesc");
     steps.style.cssText = "line-height:2; white-space:pre-wrap; margin-top:10px;";
     steps.textContent = [
-      "1. dsh 侧安装 dsh-petra-bridge（在仓库的 dsh-petra-bridge/ 目录），重启 dsh。",
-      "2. 在 dsh 里打开一个会话；没有会话会返回 409。",
-      "3. Petra 点「安装 dsh 桥插件」，然后在下方设置里填：",
-      "   地址：http://127.0.0.1:3080/petra/ask（按 dsh 实际端口改）",
-      "   token：与 dsh-petra-bridge 配置一致；没设就留空",
-      "   session ID：可留空，让 dsh 选最近会话",
-      "4. 先点「测试反向桥」，看到回复再使用。",
-      "5. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
+      "1. 点下面的「导出 dsh 插件」。桌面会出现 Petra-dsh-bridge 文件夹。",
+      "2. 打开 dsh → 插件 → 本地安装，选桌面上的：",
+      "   Petra-dsh-bridge\\dsh-petra-bridge",
+      "   没有「本地安装」的话，把这个文件夹拖进 dsh，跟它说：把这个插件装上。",
+      "3. 重启 dsh，打开一个聊天。",
+      "4. 回 Petra，在 DSH Bridge 设置里填：",
+      "   http://127.0.0.1:3080/petra/ask",
+      "   （dsh 端口不一样就改成实际端口；token 和 session 一般不用填）",
+      "5. 点「测试反向桥」。看到 Petra 说话，就说明成功。",
+      "6. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
+      "",
+      "注意：dsh 问你「选工作区」时，选你的项目文件夹，不要选 Petra-dsh-bridge。",
     ].join("\n");
     card.appendChild(steps);
 
