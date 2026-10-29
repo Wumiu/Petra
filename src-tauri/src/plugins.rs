@@ -266,6 +266,49 @@ pub fn plugin_sdk_dir(app: AppHandle) -> Result<String, String> {
     plugin_sdk_install(app)
 }
 
+/// 把内置的 dsh-petra-bridge 插件导出到桌面，方便随安装包分发。
+/// 不依赖仓库路径，也不要求用户能找到 Petra 源码。
+#[tauri::command]
+pub fn export_dsh_bridge(app: AppHandle) -> Result<String, String> {
+    let base = app
+        .path()
+        .desktop_dir()
+        .or_else(|_| app.path().app_data_dir().map(|d| d.join("exports")))
+        .map_err(|e| format!("无法定位导出目录：{e}"))?;
+    let dir = base.join("Petra-dsh-bridge").join("dsh-petra-bridge");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
+
+    std::fs::write(
+        dir.join("package.json"),
+        include_str!("../../dsh-petra-bridge/package.json"),
+    )
+    .map_err(|e| format!("写入 package.json 失败：{e}"))?;
+    std::fs::write(
+        dir.join("cordis.patch.yml"),
+        include_str!("../../dsh-petra-bridge/cordis.patch.yml"),
+    )
+    .map_err(|e| format!("写入 cordis.patch.yml 失败：{e}"))?;
+    std::fs::write(
+        dir.join("index.js"),
+        include_str!("../../dsh-petra-bridge/index.js"),
+    )
+    .map_err(|e| format!("写入 index.js 失败：{e}"))?;
+    std::fs::write(
+        dir.join("README.md"),
+        include_str!("../../dsh-petra-bridge/README.md"),
+    )
+    .map_err(|e| format!("写入 README.md 失败：{e}"))?;
+
+    let install_note = format!(
+        "Petra dsh 反向桥插件\n\n导出目录：\n{dir}\n\n安装到 dsh：\n1. 关闭 dsh。\n2. 在 dsh profile 目录执行：\n   pnpm add \"file:{dir}\"\n3. 把 \"dsh-petra-bridge\" 加入该 profile 的 package.json 的 dsh.profile.bundles。\n4. 重启 dsh，并先在 dsh 里打开一个会话。\n5. 回 Petra 控制面板 →「插件」→ DSH Bridge 设置：\n   - 反向桥地址：http://127.0.0.1:3080/petra/ask（按实际端口改）\n   - token：与 dsh-petra-bridge 配置一致\n   - session ID：可留空\n6. 点「测试反向桥」确认。\n",
+        dir = dir.display()
+    );
+    std::fs::write(dir.join("安装说明.txt"), install_note)
+        .map_err(|e| format!("写入安装说明失败：{e}"))?;
+
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// 安装内置示例插件（Hello Petra）。已存在时不覆盖，避免把用户改过的示例冲掉。
 #[tauri::command]
 pub fn plugin_install_example(app: AppHandle) -> Result<String, String> {

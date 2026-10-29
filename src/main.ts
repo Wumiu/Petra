@@ -3956,6 +3956,12 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(msg);
         break;
       }
+      case "plugins-export-dsh-bridge": {
+        const dir = await invoke<string>("export_dsh_bridge");
+        await invoke("open_path", { path: dir });
+        toast("已导出 dsh 反向桥插件，安装说明就在目录里");
+        break;
+      }
       case "plugins-test-dsh-bridge": {
         const info = pluginRuntime.getPanelPlugins().find((p) => p.id === "petra-plugin-dsh-bridge");
         if (!info) {

@@ -102,7 +102,7 @@ Petra 控制面板 →「插件」页提供：
 
 1. dsh 侧安装仓库里的 `dsh-petra-bridge`，启用 `/petra/ask`。
 2. Petra 控制面板 →「插件」→「安装 dsh 桥插件」。
-3. 打开 DSH Bridge 插件设置，填 dsh 地址与 token。
+3. 打开 DSH Bridge 插件设置，填 dsh 地址与 token；没有仓库时点「导出 dsh 插件」，把桌面上的 `Petra-dsh-bridge/dsh-petra-bridge` 给 dsh 安装。
 4. 对 Petra 说「把这个视频链接发给 dsh 看看」。
 
 Petra 会调 `ask_dsh`，dsh 用它的视频插件处理，回复再回到 Petra 播报。

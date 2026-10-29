@@ -1509,6 +1509,9 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const test = el("button", "btn btn-sm", "测试反向桥");
     test.onclick = () => runAction("__data:plugins-test-dsh-bridge", "测试反向桥");
     row.appendChild(test);
+    const exportBtn = el("button", "btn btn-sm", "导出 dsh 插件");
+    exportBtn.onclick = () => runAction("__data:plugins-export-dsh-bridge", "导出 dsh 插件");
+    row.appendChild(exportBtn);
     card.appendChild(row);
 
     card.appendChild(el("p", "cd", "测试会通过 ask_dsh 发一条「Petra 反向桥测试」给 dsh；失败时把上面的错误原文发给 dsh，让它检查 /petra/ask 路由和会话。"));

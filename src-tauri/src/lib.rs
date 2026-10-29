@@ -5667,7 +5667,7 @@ pub fn run() {
             capture_screen,
             plugins::plugin_dir, plugins::plugin_list, plugins::plugin_read_source,
             plugins::plugin_install_example, plugins::plugin_install_dsh_bridge, plugins::plugin_delete,
-            plugins::plugin_sdk_install, plugins::plugin_sdk_dir,
+            plugins::plugin_sdk_install, plugins::plugin_sdk_dir, plugins::export_dsh_bridge,
             panel::panel_prepare, panel::panel_push_settings, panel::panel_url, panel::panel_running,
         ])
         .setup(|app| {
