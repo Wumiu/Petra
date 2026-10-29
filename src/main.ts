@@ -491,10 +491,18 @@ function updateModelBounds(bounds?: { left: number; top: number; right: number; 
   engine.lastBoundsOnScreen = { left: l, top: t, right: l + w, bottom: t + h };
 }
 
-/** 检查鼠标事件是否在模型区域内（绿框内），不是则忽略 */
+/** 模型可点范围比绿框四周多出的像素：边缘留一点余量，移动中的宠物更容易抓到 */
+const PET_HIT_PADDING = 18;
+
+/** 检查鼠标事件是否在模型可点区域内（绿框 + 18px 余量），不是则忽略 */
 function isInsideModel(e: { clientX: number; clientY: number }): boolean {
   const r = getModelRect();
-  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  return (
+    e.clientX >= r.left - PET_HIT_PADDING &&
+    e.clientX <= r.right + PET_HIT_PADDING &&
+    e.clientY >= r.top - PET_HIT_PADDING &&
+    e.clientY <= r.bottom + PET_HIT_PADDING
+  );
 }
 
 /** 获取模型在窗口中的矩形（不依赖 DOM，始终可用） */
@@ -2214,6 +2222,7 @@ function collectInteractionRegions(): PhysicalInteractiveRegion[] {
     scale,
     clientPhysicalWidth,
     clientPhysicalHeight,
+    PET_HIT_PADDING,
   );
   if (petRegion) regions.push(petRegion);
 
