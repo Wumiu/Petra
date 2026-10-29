@@ -650,6 +650,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       cards: [
         { title: "已安装插件", desc: "只安装你信任的插件。插件运行在独立 Worker 里，但仍是本地代码。", type: "plugins" },
         { title: "dsh MCP 接入", desc: "把这段 MCP 配置给 dsh，dsh 就能直接安装/重载插件、让桌宠说话", type: "mcp" },
+        { title: "dsh 反向桥", desc: "让 Petra 把收到的视频链接转给 dsh 处理，再播报结果", type: "dsh-reverse" },
         { title: "给 dsh 的说明", desc: "复制下面这段给 dsh，它就知道怎么给 Petra 写插件", type: "dsh-guide" },
       ],
     },
@@ -1468,6 +1469,31 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return card;
   }
 
+  /** 反向桥：Petra 收链接 → dsh 处理 → Petra 播报。 */
+  function dshReverseCard() {
+    const card = el("div", "card wide");
+    card.appendChild(el("h2", null, "dsh 反向桥"));
+    card.appendChild(el("p", "cd", "MCP 是 dsh → Petra；这个反向桥是 Petra → dsh。适合『把视频链接发给 dsh 看看』。"));
+    const steps = el("div", "rdesc");
+    steps.style.cssText = "line-height:1.9; white-space:pre-wrap;";
+    steps.textContent = [
+      "1. 在 dsh 侧安装仓库里的 dsh-petra-bridge 插件，并启用 /petra/ask。",
+      "2. 在 Petra 插件页点「安装 dsh 桥插件」。",
+      "3. 打开 DSH Bridge 插件设置，填：",
+      "   反向桥地址：http://127.0.0.1:3080/petra/ask（按 dsh 实际端口改）",
+      "   token：与 dsh-petra-bridge 配置一致；没设就留空",
+      "   session ID：可选，留空让 dsh 选最近会话",
+      "4. 对 Petra 说：把这个视频链接发给 dsh 看看 https://...",
+    ].join("\n");
+    card.appendChild(steps);
+    const row = el("div", "btn-row");
+    const install = el("button", "btn btn-primary btn-sm", "安装 dsh 桥插件");
+    install.onclick = () => runAction("__data:plugins-install-dsh-bridge", "安装 dsh 桥插件");
+    row.appendChild(install);
+    card.appendChild(row);
+    return card;
+  }
+
   /** 给用户复制给 dsh 的插件开发说明。保持成一段可直接执行的 prompt，不写空话。 */
   function dshGuideText() {
     return [
@@ -1560,6 +1586,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     };
     mkBtn("打开插件目录", "__data:plugins-open-dir");
     mkBtn("安装示例插件", "__data:plugins-install-example");
+    mkBtn("安装 dsh 桥插件", "__data:plugins-install-dsh-bridge");
     mkBtn("全部重载", "__data:plugins-reload-all");
     card.appendChild(row);
 
@@ -1691,6 +1718,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
       if (cardSpec.type === "plugins") return grid.appendChild(pluginsCard());
       if (cardSpec.type === "dsh-guide") return grid.appendChild(dshGuideCard());
       if (cardSpec.type === "mcp") return grid.appendChild(mcpCard());
+      if (cardSpec.type === "dsh-reverse") return grid.appendChild(dshReverseCard());
       const card = el("div", "card");
       card.appendChild(el("h2", null, cardSpec.title));
       if (cardSpec.desc) card.appendChild(el("p", "cd", cardSpec.desc));

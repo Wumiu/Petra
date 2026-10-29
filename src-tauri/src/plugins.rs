@@ -290,6 +290,35 @@ pub fn plugin_install_example(app: AppHandle) -> Result<String, String> {
     Ok("示例插件已安装，可在「插件」页启用".into())
 }
 
+/// 安装内置的 dsh 反向桥插件（Petra 侧）。
+#[tauri::command]
+pub fn plugin_install_dsh_bridge(app: AppHandle) -> Result<String, String> {
+    let root = plugins_root(&app)?;
+    let id = "petra-plugin-dsh-bridge";
+    let dir = root.join(id);
+    let manifest = dir.join("petra-plugin.json");
+    if manifest.is_file() {
+        return Ok("dsh 反向桥插件已经存在（未覆盖你改过的文件）".into());
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 dsh 桥插件目录失败：{e}"))?;
+    fs::write(
+        &manifest,
+        include_str!("../../plugins/petra-plugin-dsh-bridge/petra-plugin.json"),
+    )
+    .map_err(|e| format!("写入 dsh 桥 manifest 失败：{e}"))?;
+    fs::write(
+        dir.join("index.js"),
+        include_str!("../../plugins/petra-plugin-dsh-bridge/index.js"),
+    )
+    .map_err(|e| format!("写入 dsh 桥入口失败：{e}"))?;
+    fs::write(
+        dir.join("README.md"),
+        include_str!("../../plugins/petra-plugin-dsh-bridge/README.md"),
+    )
+    .map_err(|e| format!("写入 dsh 桥 README 失败：{e}"))?;
+    Ok("dsh 反向桥插件已安装；去插件设置里填 dsh 地址/token".into())
+}
+
 /// 删除一个插件包。只接受合法 id，且只删 plugins_root 下对应目录。
 #[tauri::command]
 pub fn plugin_delete(app: AppHandle, id: String) -> Result<(), String> {

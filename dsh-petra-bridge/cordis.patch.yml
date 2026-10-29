@@ -1,0 +1,6 @@
+- insert:
+    - id: dsh-petra-bridge
+      name: dsh-petra-bridge
+      config:
+        # 可选：设置后 Petra 请求必须带 x-petra-token
+        token: ""

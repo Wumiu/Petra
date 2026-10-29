@@ -3950,6 +3950,12 @@ async function handlePanelDataAction(kind: string, payload: unknown): Promise<vo
         toast(msg);
         break;
       }
+      case "plugins-install-dsh-bridge": {
+        const msg = await invoke<string>("plugin_install_dsh_bridge");
+        await pluginRuntime.reloadAll();
+        toast(msg);
+        break;
+      }
       case "plugins-reload-all": {
         await pluginRuntime.reloadAll();
         toast("插件已全部重新加载");

@@ -94,3 +94,15 @@ Petra 控制面板 →「插件」页提供：
 - **「给 dsh 的说明」**：一段可直接复制给 dsh 的插件开发 prompt。
 - **「打开插件 SDK」**：把 `README.md`、`types.d.ts`、`template/` 落到
   `%APPDATA%\com.wumiu.petra\plugin-sdk`，没有源码也能让 dsh 读到契约。
+
+
+## 反向桥：Petra → dsh
+
+如果想让 Petra 把用户给的视频链接转给 dsh 处理：
+
+1. dsh 侧安装仓库里的 `dsh-petra-bridge`，启用 `/petra/ask`。
+2. Petra 控制面板 →「插件」→「安装 dsh 桥插件」。
+3. 打开 DSH Bridge 插件设置，填 dsh 地址与 token。
+4. 对 Petra 说「把这个视频链接发给 dsh 看看」。
+
+Petra 会调 `ask_dsh`，dsh 用它的视频插件处理，回复再回到 Petra 播报。
