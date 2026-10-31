@@ -3372,7 +3372,7 @@ fn url_encode(s: &str) -> String {
 #[cfg(windows)]
 const LYRICS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-$UA = 'Petra/0.2.4 (+https://github.com/Wumiu/Petra)'
+$UA = 'Petra/0.2.4 (+https://github.com/ks-kbl/petra)'
 $BR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 $OUT = '@OUT@'
 $ART = [System.Uri]::UnescapeDataString('@ARTIST_ENC@')
@@ -3765,7 +3765,7 @@ async fn fetch_lyrics(
     const UA: &str = concat!(
         "Petra/",
         env!("CARGO_PKG_VERSION"),
-        " (+https://github.com/Wumiu/Petra)"
+        " (+https://github.com/ks-kbl/petra)"
     );
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
