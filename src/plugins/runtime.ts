@@ -15,9 +15,10 @@ const ENABLED_KEY = "petra-plugin-enabled";
 const SETTINGS_KEY_PREFIX = "petra-plugin-settings:";
 const INIT_TIMEOUT_MS = 12_000;
 const CALL_TIMEOUT_MS = 20_000;
-const MAX_TOOL_TIMEOUT_MS = 600_000;
+// 上限放到 1 小时：dsh 分析长视频可能要半小时，工具自己声明即可
+const MAX_TOOL_TIMEOUT_MS = 3_600_000;
 
-/** 插件工具自报的超时时间：夹在 1s~10min，非法值当作未指定（回落到默认 20s） */
+/** 插件工具自报的超时时间：夹在 1s~60min，非法值当作未指定（回落到默认 20s） */
 function clampToolTimeout(value: unknown): number | undefined {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return undefined;
