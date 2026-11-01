@@ -23,7 +23,7 @@ async function askDsh(args) {
     throw new Error("反向桥地址必须以 http:// 或 https:// 开头");
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 130_000);
+  const timer = setTimeout(() => controller.abort(), 310_000);
   try {
     const res = await fetch(endpoint, {
       method: "POST",
@@ -65,6 +65,8 @@ export async function activate(pet) {
       },
       required: ["text"],
     },
+    // dsh 那边看视频/长思考可能远超 20 秒（桥内 fetch 自己限 310s，dsh 侧轮询上限 300s），这里必须一起放宽
+    timeoutMs: 330_000,
     async execute(args) {
       const reply = await askDsh(args);
       await pet.say(reply, 9000);

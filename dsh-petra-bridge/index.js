@@ -16,7 +16,8 @@ export const inject = ["webServer"];
 
 const ROUTE = "/petra/ask";
 const MAX_BODY = 256 * 1024;
-const TURN_TIMEOUT_MS = 120_000;
+// dsh 分析视频/长思考可能要好几分钟，20s 太短、2min 也不够
+const TURN_TIMEOUT_MS = 300_000;
 
 function sendJson(res, status, body) {
   const text = JSON.stringify(body);

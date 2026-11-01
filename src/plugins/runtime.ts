@@ -15,6 +15,14 @@ const ENABLED_KEY = "petra-plugin-enabled";
 const SETTINGS_KEY_PREFIX = "petra-plugin-settings:";
 const INIT_TIMEOUT_MS = 12_000;
 const CALL_TIMEOUT_MS = 20_000;
+const MAX_TOOL_TIMEOUT_MS = 600_000;
+
+/** 插件工具自报的超时时间：夹在 1s~10min，非法值当作未指定（回落到默认 20s） */
+function clampToolTimeout(value: unknown): number | undefined {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(Math.max(Math.round(n), 1_000), MAX_TOOL_TIMEOUT_MS);
+}
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -145,7 +153,8 @@ const pet = {
           name,
           description: String(tool.description || ""),
           parameters: tool.parameters || { type: "object", properties: {} },
-          maxResultChars: Number(tool.maxResultChars) || undefined
+          maxResultChars: Number(tool.maxResultChars) || undefined,
+          timeoutMs: Number(tool.timeoutMs) || undefined
         }
       });
       return () => {
@@ -400,6 +409,7 @@ function handleWorkerMessage(record: PluginRecord, message: Record<string, unkno
       description: String(raw?.description ?? ""),
       parameters: (raw?.parameters as Record<string, unknown>) ?? { type: "object", properties: {} },
       maxResultChars: Number(raw?.maxResultChars) || undefined,
+      timeoutMs: clampToolTimeout(raw?.timeoutMs),
     });
     return;
   }
@@ -453,7 +463,7 @@ function callWorker(record: PluginRecord, message: Record<string, unknown>, time
     const id = record.nextCallId++;
     const timer = window.setTimeout(() => {
       record.pending.delete(id);
-      reject(new Error(`插件调用超时（${timeoutMs}ms）`));
+      reject(new Error(`插件调用超时（${Math.round(timeoutMs / 1000)} 秒）`));
     }, timeoutMs);
     record.pending.set(id, { resolve, reject, timer });
     postToWorker(record, { ...message, id });
@@ -636,7 +646,8 @@ export const pluginRuntime = {
     const record = owner ? records.get(owner) : undefined;
     if (!record) return `插件工具不存在：${name}`;
     try {
-      const value = await callWorker(record, { type: "exec-tool", name, args });
+      const tool = record.tools.get(name);
+      const value = await callWorker(record, { type: "exec-tool", name, args }, tool?.timeoutMs ?? CALL_TIMEOUT_MS);
       const text = typeof value === "string" ? value : safeJson(value);
       return text;
     } catch (error) {
