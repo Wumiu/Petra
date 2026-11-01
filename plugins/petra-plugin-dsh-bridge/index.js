@@ -17,6 +17,18 @@ function endpointOf() {
   return String(config.endpoint || DEFAULT_ENDPOINT).trim();
 }
 
+/** 长任务进度提示：2 分钟后先安慰一句，之后每 5 分钟再说一次，直到调用结束 */
+function startProgressNotice(say) {
+  let timer = setTimeout(() => {
+    say("我还在看，稍等…");
+    timer = setInterval(() => say("还在处理，快好了…"), 300_000);
+  }, 120_000);
+  return () => {
+    clearTimeout(timer);
+    clearInterval(timer);
+  };
+}
+
 async function askDsh(args) {
   const endpoint = endpointOf();
   if (!/^https?:\/\//i.test(endpoint)) {
@@ -68,9 +80,20 @@ export async function activate(pet) {
     // dsh 那边看视频/长思考可能远超 20 秒（桥内 fetch 自己限 29:50，dsh 侧轮询上限 29:40），这里必须一起放宽
     timeoutMs: 1_800_000,
     async execute(args) {
-      const reply = await askDsh(args);
-      await pet.say(reply, 9000);
-      return reply;
+      const stop = startProgressNotice((text) => {
+        try {
+          void pet.say(text, 6000);
+        } catch (_) {
+          /* 气泡失败不影响主流程 */
+        }
+      });
+      try {
+        const reply = await askDsh(args);
+        await pet.say(reply, 9000);
+        return reply;
+      } finally {
+        stop();
+      }
     },
   });
 
