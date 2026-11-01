@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> **本仓库已迁移，不再更新。**
+>
+> 新仓库地址：**https://github.com/ks-kbl/petra**
+>
+> 后续所有新版本、更新公告与问题反馈都在新仓库进行；本仓库仅作为历史存档保留，不再接收新提交。
+> 如果这里看到的是旧代码，请前往新仓库克隆。
+
 <p align="center">
   <img src="assets/petra-logo.png" width="180" alt="Petra Logo" />
 </p>
