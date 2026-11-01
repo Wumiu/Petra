@@ -11,6 +11,7 @@ mod audio;
 mod audio;
 
 mod plugins;
+mod websearch;
 
 #[cfg(windows)]
 mod launch;
@@ -5664,6 +5665,7 @@ pub fn run() {
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,
             set_volume, send_notification, get_weather, fetch_lyrics,
+            websearch::web_search,
             list_installed_apps, open_path, lock_screen,
             save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,

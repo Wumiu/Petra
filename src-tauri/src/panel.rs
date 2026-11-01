@@ -756,6 +756,8 @@ mod tests {
         Arc::new(Panel {
             port: 0,
             token: token.to_string(),
+            // 测试里不需要真实 bridge token，面板路由的鉴权都用 token 字段
+            bridge_token: "test-bridge".to_string(),
             settings: Mutex::new(json!({"modelScale": 1.0, "tts": {"enabled": false}})),
             meta: Mutex::new(json!({"version": "test"})),
             seq: Mutex::new(0),
