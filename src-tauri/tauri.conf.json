@@ -39,7 +39,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg2Q0Y1QzY5QUQ0RjZDMTkKUldRWmJFK3RhVnpQaGhNOHhnY2hiRWJ5VWVEQ09Bcnp1RjF4VmZrYjQybjZUaFZpY2lOZ2R2bzYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzRTIwMTI3QzY1RDQ2QjIKUldTeVJsM0dKd0hpa3gza1JQdWRnVURZaWxIWTF1aUg1OTU3dkptZUVRQ1YyV1FSUU4vVDgwbkIK",
       "endpoints": [
         "https://github.com/ks-kbl/petra/releases/latest/download/latest.json"
       ],
