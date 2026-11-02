@@ -299,6 +299,64 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   .savebar{left:12px; right:12px; transform:translate(0, 140%)}
   .savebar.show{transform:translate(0, 0)}
 }
+
+/* ===================== 教程弹窗 ===================== */
+.tut-entry{display:flex; gap:8px; flex-wrap:wrap}
+.tut-btn{
+  border:1px dashed var(--line-strong); background:var(--brand-soft); color:var(--brand);
+  border-radius:999px; padding:7px 14px; font-size:13px; cursor:pointer;
+  transition:.18s ease; font-family:inherit;
+}
+.tut-btn:hover{background:var(--brand); color:#fff; border-color:transparent; transform:translateY(-1px)}
+.tut-btn::before{
+  content:"?"; display:inline-flex; align-items:center; justify-content:center;
+  width:15px; height:15px; margin-right:6px; border-radius:50%;
+  background:var(--brand); color:#fff; font-size:11px; line-height:1; vertical-align:1px;
+}
+.tut-btn:hover::before{background:#fff; color:var(--brand)}
+.tut-mask{
+  position:fixed; inset:0; background:rgba(16,12,32,.5); backdrop-filter:blur(3px);
+  display:flex; align-items:center; justify-content:center; padding:24px; z-index:9999;
+  animation:tutFade .16s ease;
+}
+@keyframes tutFade{from{opacity:0}to{opacity:1}}
+.tut-box{
+  width:min(560px,100%); max-height:82vh; display:flex; flex-direction:column;
+  background:var(--card-strong); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:var(--shadow); overflow:hidden; animation:tutUp .2s ease;
+}
+@keyframes tutUp{from{transform:translateY(10px); opacity:0}to{transform:none; opacity:1}}
+.tut-head{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:16px 18px; border-bottom:1px solid var(--line);
+}
+.tut-head b{font-size:16px}
+.tut-x{
+  border:none; background:transparent; color:var(--txt3); font-size:22px; line-height:1;
+  cursor:pointer; padding:2px 6px; border-radius:8px;
+}
+.tut-x:hover{background:var(--brand-soft); color:var(--brand)}
+.tut-body{padding:6px 18px 4px; overflow:auto}
+.tut-step{display:flex; gap:12px; padding:12px 0; border-bottom:1px dashed var(--line)}
+.tut-step:last-child{border-bottom:none}
+.tut-n{
+  flex:0 0 22px; height:22px; border-radius:50%; background:var(--brand); color:#fff;
+  font-size:12px; display:flex; align-items:center; justify-content:center; margin-top:1px;
+}
+.tut-step b{display:block; font-size:13.5px; margin-bottom:2px}
+.tut-step p{margin:0; color:var(--txt2); font-size:12.8px; line-height:1.6}
+.tut-step code{
+  background:var(--brand-soft); color:var(--brand); padding:1px 5px; border-radius:5px;
+  font-size:12px;
+}
+.tut-tip{
+  margin:10px 0 14px; padding:10px 12px; border-radius:10px;
+  background:var(--brand-soft); color:var(--txt2); font-size:12.5px; line-height:1.65;
+}
+.tut-foot{
+  padding:12px 18px; border-top:1px solid var(--line); text-align:center;
+  color:var(--brand); font-size:13px; letter-spacing:.3px;
+}
 </style>
 </head>
 <body>
@@ -507,6 +565,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "API设置", desc: "供应商、模型、端点、Key，通过预设分组保存",
           fields: [
+            { type: "tutorial", kind: "model", label: "不会填？点我看模型教程" },
             { path: "assistant.enabled", label: "启用小助手", type: "switch" },
             { path: "assistant.provider", label: "供应商", type: "select", options: "providers" },
             { path: "assistant.model", label: "模型", type: "text", placeholder: "留空则使用供应商默认模型" },
@@ -576,6 +635,7 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "语音朗读", desc: "Key保存在本地，填写时面板不显示，填写后覆盖原设置",
           fields: [
+            { type: "tutorial", kind: "voice", label: "音色怎么配？点我看教程" },
             { path: "tts.enabled", label: "开启朗读", type: "switch" },
             { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
             { type: "secret", key: "tts", label: "语音朗读 Key", desc: "填写时面板不显示，填写后覆盖原设置" },
@@ -786,7 +846,90 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     return lines.join("\n");
   }
 
+
+  /** 教程内容：模型 / 音色两条，文案尽量口语，最后统一带上三联道谢 */
+  const TUTORIALS = {
+    model: {
+      title: "怎么把模型配好？",
+      steps: [
+        { h: "先去拿一个 API Key", p: "打开你选的供应商（比如 DeepSeek、硅基流动），注册后在控制台里找到「API Key / 密钥」，新建一个复制出来。它是 sk- 开头的一长串。" },
+        { h: "供应商 + 端点选对", p: "本页「供应商」选你注册的那家，端点会自动填好；只有用第三方中转才需要自己改端点地址。" },
+        { h: "模型名不用背", p: "点「获取模型列表」，拉到结果后点其中一个芯片就填进去了；填不了就照供应商文档里那个模型 id 手打。" },
+        { h: "把 Key 填进来保存", p: "粘到「API Key」那一栏，面板不会回显明文，填完即生效。然后去人设页点「用人设试演」发一句，能回话就通了。" },
+      ],
+      tip: "常见报错：<code>401</code> = Key 错或没余额；<code>404 / model not found</code> = 模型名不对；一直转圈 = 端点/网络问题，先确认能打开供应商官网。",
+    },
+    voice: {
+      title: "怎么把音色调好？",
+      steps: [
+        { h: "开通语音合成", p: "音色是火山引擎（豆包语音）的，去控制台开通「语音合成」服务，试听用的额度很小，正常用不完。" },
+        { h: "拿对那把 Key", p: "复制的是语音服务的 <code>X-Api-Key</code>，不是方舟（Ark）的 key，两个不通用 —— 填错了会一直报未开通。" },
+        { h: "音色 ID 填 speaker", p: "在音色列表里复制那一长串 id（形如 <code>S_xxxxxxx</code>）填到「音色 ID」；留空就用默认音色。" },
+        { h: "试听一句", p: "点下面「试听一句」，能听到声音就说明通了。没声音先去控制台看这个音色有没有开通。" },
+      ],
+      tip: "提示：换音色只影响朗读，不影响小助手说话的内容；音色 ID 每天有免费合成额度，别拿它当音乐播放器循环放。",
+    },
+  };
+
+  /** 打开教程弹窗（纯 DOM，不依赖任何库） */
+  function openTutorial(kind) {
+    const data = TUTORIALS[kind];
+    if (!data) return;
+    const mask = el("div", "tut-mask");
+    const box = el("div", "tut-box");
+
+    const head = el("div", "tut-head");
+    head.appendChild(el("b", null, data.title));
+    const close = el("button", "tut-x", "×");
+    close.onclick = () => mask.remove();
+    head.appendChild(close);
+
+    const body = el("div", "tut-body");
+    data.steps.forEach((st, i) => {
+      const row = el("div", "tut-step");
+      row.appendChild(el("span", "tut-n", String(i + 1)));
+      const txt = el("div");
+      txt.appendChild(el("b", null, st.h));
+      const p = el("p");
+      p.innerHTML = st.p;
+      txt.appendChild(p);
+      row.appendChild(txt);
+      body.appendChild(row);
+    });
+    if (data.tip) {
+      const tip = el("div", "tut-tip");
+      tip.innerHTML = data.tip;
+      body.appendChild(tip);
+    }
+
+    box.appendChild(head);
+    box.appendChild(body);
+    box.appendChild(el("div", "tut-foot", "看完啦？记得三联喵，谢谢喵～"));
+    mask.appendChild(box);
+    mask.addEventListener("click", (ev) => {
+      if (ev.target === mask) mask.remove();
+    });
+    document.addEventListener(
+      "keydown",
+      function esc(ev) {
+        if (ev.key === "Escape") {
+          mask.remove();
+          document.removeEventListener("keydown", esc);
+        }
+      },
+      { once: true }
+    );
+    document.body.appendChild(mask);
+  }
+
   function fieldNode(spec) {
+    if (spec.type === "tutorial") {
+      const wrap = el("div", "tut-entry");
+      const btn = el("button", "tut-btn", spec.label || "📖 不会填？点我看教程");
+      btn.onclick = () => openTutorial(spec.kind);
+      wrap.appendChild(btn);
+      return wrap;
+    }
     if (spec.type === "note") {
       // text 可以是函数：渲染时才求值，能读到已经推上来的 meta
       return el("div", "rdesc", typeof spec.text === "function" ? spec.text() : spec.text);
