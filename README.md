@@ -1,3 +1,26 @@
+> [!IMPORTANT]
+> ## ⚠️ 本仓库已停止更新
+>
+> **0.3.6 之后的所有版本都只在新仓库发布，本仓库不再接收任何更新、Issue 或 PR。**
+>
+> 新仓库地址：**https://github.com/ks-kbl/petra**
+>
+> ### 普通用户请看这里
+>
+> 1. 到新仓库的 [Releases 页面](https://github.com/ks-kbl/petra/releases) 下载最新版安装包
+> 2. 已经装过 **0.3.6** 的：不用做任何事，之后启动时会自动从新仓库检查更新
+> 3. 还停在 0.3.6 以前的版本：请先手动下载安装 0.3.6（或更新的版本），否则收不到后续更新
+>
+> ### 开发者请看这里
+>
+> ```bash
+> git clone https://github.com/ks-kbl/petra.git
+> cd petra
+> ```
+>
+> 本仓库仅作历史存档保留（代码、提交记录、旧版本安装包都还在），请勿在此提交新的改动；
+> 开发流程、Issue 与 PR 请一律前往新仓库。
+
 <p align="center">
   <img src="assets/petra-logo.png" width="180" alt="Petra Logo" />
 </p>
