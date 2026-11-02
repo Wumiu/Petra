@@ -357,6 +357,16 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   padding:12px 18px; border-top:1px solid var(--line); text-align:center;
   color:var(--brand); font-size:13px; letter-spacing:.3px;
 }
+
+.vid-btn{
+  display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+  border:1px solid transparent; background:linear-gradient(135deg,var(--brand),var(--brand2));
+  color:#fff; border-radius:999px; padding:8px 15px; font-size:13px; font-weight:500;
+  transition:.18s ease; box-shadow:0 6px 16px rgba(124,92,255,.22);
+}
+.vid-btn:hover{transform:translateY(-1px); box-shadow:0 9px 22px rgba(124,92,255,.32)}
+.vid-btn::before{content:"▶"; font-size:11px; line-height:1}
+.vid-note{margin:8px 2px 0; color:var(--txt3); font-size:12px}
 </style>
 </head>
 <body>
@@ -635,7 +645,8 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
         {
           title: "语音朗读", desc: "Key保存在本地，填写时面板不显示，填写后覆盖原设置",
           fields: [
-            { type: "tutorial", kind: "voice", label: "音色怎么配？点我看教程" },
+            { type: "video", label: "看视频：怎么配置音色", url: "https://www.bilibili.com/video/BV1jsH464EMV/?vd_source=3209f4bd9932af82549a8ed8b43e4e99" },
+            { type: "tutorial", kind: "voice", label: "或者看文字版教程" },
             { path: "tts.enabled", label: "开启朗读", type: "switch" },
             { path: "tts.speakerId", label: "音色 ID", type: "text", placeholder: "留空用默认音色" },
             { type: "secret", key: "tts", label: "语音朗读 Key", desc: "填写时面板不显示，填写后覆盖原设置" },
@@ -923,6 +934,21 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
   }
 
   function fieldNode(spec) {
+    if (spec.type === "video") {
+      const wrap = el("div", "tut-entry");
+      const a = document.createElement("a");
+      a.className = "vid-btn";
+      a.href = spec.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = spec.label || "看视频教程";
+      wrap.appendChild(a);
+      if (spec.note) {
+        const n = el("div", "vid-note", spec.note);
+        wrap.appendChild(n);
+      }
+      return wrap;
+    }
     if (spec.type === "tutorial") {
       const wrap = el("div", "tut-entry");
       const btn = el("button", "tut-btn", spec.label || "📖 不会填？点我看教程");
@@ -1421,6 +1447,18 @@ code{font-family:ui-monospace,Consolas,monospace; font-size:12px; background:var
     const curName = (cur.name || "").replace(/\.psd$/i, "") || (cur.type === "live2d" ? "标准 Live2D 模型" : "—");
 
     card.appendChild(el("p", "cd", `当前：${curName}${cur.type === "import" ? "（已导入）" : cur.type === "manifest" ? "（内置）" : ""}，导入 .psd 会直接换成新模型；边界补偿按模型保存，切回时恢复`));
+
+    // 视频教程：PSD 导入与模型配置
+    const vidRow = el("div", "tut-entry");
+    const vid = document.createElement("a");
+    vid.className = "vid-btn";
+    vid.href = "https://www.bilibili.com/video/BV1AFxs66ETS/";
+    vid.target = "_blank";
+    vid.rel = "noopener noreferrer";
+    vid.textContent = "看视频：怎么导入和配置 PSD 模型";
+    vidRow.appendChild(vid);
+    card.appendChild(vidRow);
+    card.appendChild(el("div", "vid-note", "三分钟看完，导入 PSD、调大小和边界都在里面"));
 
     // 切换
     const row = el("div", "row");
