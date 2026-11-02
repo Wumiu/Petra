@@ -11,6 +11,7 @@ mod audio;
 mod audio;
 
 mod plugins;
+mod websearch;
 
 #[cfg(windows)]
 mod launch;
@@ -3372,7 +3373,7 @@ fn url_encode(s: &str) -> String {
 #[cfg(windows)]
 const LYRICS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-$UA = 'Petra/0.2.4 (+https://github.com/Wumiu/Petra)'
+$UA = 'Petra/0.2.4 (+https://github.com/ks-kbl/petra)'
 $BR = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 $OUT = '@OUT@'
 $ART = [System.Uri]::UnescapeDataString('@ARTIST_ENC@')
@@ -3765,7 +3766,7 @@ async fn fetch_lyrics(
     const UA: &str = concat!(
         "Petra/",
         env!("CARGO_PKG_VERSION"),
-        " (+https://github.com/Wumiu/Petra)"
+        " (+https://github.com/ks-kbl/petra)"
     );
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
@@ -5664,6 +5665,7 @@ pub fn run() {
             get_autostart, set_autostart, sync_interaction_regions,
             set_interacting, set_menu_open, set_window_pos_size,
             set_volume, send_notification, get_weather, fetch_lyrics,
+            websearch::web_search,
             list_installed_apps, open_path, lock_screen,
             save_chat_history, load_chat_history,
             schedule_shutdown, cancel_shutdown,

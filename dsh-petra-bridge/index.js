@@ -16,7 +16,8 @@ export const inject = ["webServer"];
 
 const ROUTE = "/petra/ask";
 const MAX_BODY = 256 * 1024;
-const TURN_TIMEOUT_MS = 120_000;
+// dsh 分析长视频可能要跑很久；给到 29:40，外层 Petra 工具超时 30:00
+const TURN_TIMEOUT_MS = 1_780_000;
 
 function sendJson(res, status, body) {
   const text = JSON.stringify(body);

@@ -1626,13 +1626,27 @@ async function handleToolCalls(calls: ToolCall[], loading: HTMLElement, budget: 
       await invokeTool(tc, "cancel_shutdown");
     }
     if (tc.name === "search_web") {
-      const query = String(tc.args.query || "");
-      const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-      try {
-        await invoke("open_url", { url });
-        history.push({ role: "tool", tool_call_id: tc.id, content: `已打开浏览器搜索：${query}` });
-      } catch (e) {
-        history.push({ role: "tool", tool_call_id: tc.id, content: `打开失败：${e}` });
+      const query = String(tc.args.query || "").trim();
+      if (!query) {
+        history.push({ role: "tool", tool_call_id: tc.id, content: "搜索词是空的，请带上 query 再调用一次。" });
+      } else {
+        try {
+          const hits = await invoke<{ title: string; url: string; snippet: string }[]>("web_search", {
+            query,
+            limit: 5,
+          });
+          const text = (hits || [])
+            .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${h.snippet}`)
+            .join("\n");
+          history.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: text ? `搜索「${query}」的结果：\n${text}` : `搜索「${query}」没有结果`,
+          });
+        } catch (e) {
+          // 搜索失败要让模型知道，它可以换个关键词再试或直接说查不到，别让用户等成"卡住"
+          history.push({ role: "tool", tool_call_id: tc.id, content: `搜索失败：${e}` });
+        }
       }
     }
     if (tc.name === "open_url") {

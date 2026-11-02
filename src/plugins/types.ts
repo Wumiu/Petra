@@ -47,6 +47,8 @@ export interface PluginToolDefinition {
   description: string;
   parameters: Record<string, unknown>;
   maxResultChars?: number;
+  /** 单次调用允许的最长毫秒数；不填用默认 20s。长耗时工具（如转给 dsh 分析视频）要显式声明 */
+  timeoutMs?: number;
 }
 
 export interface PluginMenuDefinition {
