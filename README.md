@@ -26,10 +26,10 @@ Petra 是一个 Windows 桌面桌宠：一个会漫游、躲避鼠标、视线�
 
 普通用户无需安装任何开发环境，直接下载使用：
 
-1. 前往 [Releases 页面](https://github.com/Wumiu/Petra/releases)，下载最新的 `Petra_*_x64.zip`
-2. 解压，运行其中的 `Petra_*_x64-setup.exe` 完成安装
-3. 启动后右键桌宠可打开菜单，调节各项功能
-4. （可选）右键 → 小助手设置，填入自己的 AI API Key 即可使用 AI 对话功能；不填写也可以作为普通桌宠使用
+1. 前往 [Releases 页面](https://github.com/ks-kbl/petra/releases)，下载最新的 `Petra_*_x64-setup.exe`（中文版选文件名带 `zh-CN` 的那个）
+2. 双击运行，按提示完成安装
+3. 启动后右键桌宠打开菜单，菜单底部「⚙️ 控制面板」会在浏览器里打开设置页（也可从托盘图标打开），所有参数都在那里改、改完立刻生效
+4. （可选）在控制面板「小助手 → API 设置」填入自己的 AI API Key 即可使用 AI 对话功能；不填写也可以作为普通桌宠使用
 
 ### macOS（实验性，暂无正式发布）
 
@@ -83,8 +83,8 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 
 - 拖入分层 PSD，自动装配生成 2.5D 角色（自动眨眼、发丝物理、表情）
 - 支持标准 Live2D 模型（model3.json）
-- 内置多个角色（deepseek、Elaina ），可在「模型设置」中一键切换
-- 右键「模型设置」可导入、切换或删除已导入的 PSD 模型
+- 内置多个角色（deepseek、Elaina），可在控制面板「外观 → 模型」一键切换
+- 控制面板「外观 → 模型」可导入、切换或删除已导入的 PSD 模型（拖 .psd 到桌宠窗口也能直接导入）
 - 鼠标视线追踪：模型看向鼠标位置（带死区与平滑）
 
 **桌宠行为**
@@ -102,7 +102,7 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 - 拖文件到桌宠身上 → 送进回收站
 - 托盘图标，或 Alt+P 隐藏 / 唤出
 - 开机自启
-- 检查更新（启动自动检查 + 右键菜单手动检查）
+- 检查更新（启动自动检查 + 控制面板「关于」页手动检查）
 
 **跟随音乐（未完善）**
 
@@ -123,14 +123,14 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 **换模型**
 
 1. **拖入 PSD**：把分层 PSD 文件直接拖到桌宠身上 → 自动装配并即时换皮（存应用数据目录，持久化）
-2. **右键菜单 → 模型设置**：「＋ 导入 PSD 模型」选择文件，也可在此面板切换内置 / 已导入模型
+2. **控制面板 → 外观 → 模型**：「＋ 导入 PSD 模型」选择文件，也可在此处切换内置 / 已导入模型；卡片顶部有视频教程
 3. **打包默认模型**：PSD 放 `public/models/`，编辑 `public/models/manifest.json`：
 
 ```json
 { "type": "psd", "file": "deepseek.psd", "files": ["deepseek.psd", "Elaina.psd"] }
 ```
 - `file`：默认加载的模型
-- `files`：所有内置模型列表，用户可在「模型设置」中切换
+- `files`：所有内置模型列表，用户可在控制面板「外观 → 模型」切换
 
 标准 Live2D 模型（model3.json）仍支持，manifest 改为 `{ "active": "model" }`。使用标准 Live2D 模式需先放入官方 Cubism Core runtime（`live2dcubismcore.min.js`，Live2D 官网下载，见其许可）到 `public/vendor/`，并在 `index.html` 的 `<head>` 中以 `<script>` 引入。
 
@@ -160,11 +160,12 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 - **流式对话**：点击桌宠弹出输入框，回复逐字输出
 - **软件启动**：说「打开网易云」等，调用 `launch_application` 按应用名解析并启动（别名 + 开始菜单快捷方式 + ShellExecute），不依赖 AI 猜路径
 - **关网页**：说「把 B站那个页面关了」，调用 `close_web_page`，经 UI Automation 找到对应标签页并点它自己的关闭按钮 —— 只关这一个标签页，不会把整个浏览器窗口带走，也不需要把浏览器切到前台（不打断你打字）。标题/地址栏匹配到多个时会先反问是哪一个，Linux 版如实不支持
-- **文件能力（agent 式）**：说「在桌面建个文件夹叫笔记」「帮我看看那份 txt 写了什么」「把这里改成那样」，调用 `create_entry` / `read_text_file` / `edit_text_file` / `write_text_file` / `list_directory`。**边界画在 Rust 侧**：只能读写 桌面 / 文档 / 下载 之内（其余位置一律拒绝并如实回报），`.git` 与 AppData、`.ssh` 等敏感目录永远不碰，可执行/脚本类文件不许新建；改文件前自动备份成 `xxx.petra-bak`，写入前弹「允许 / 拒绝」（可勾「以后不再确认」）；可在「小助手设置 → 文件禁止目录」里再拉黑若干目录（例如项目源码目录）
+- **文件能力（agent 式）**：说「在桌面建个文件夹叫笔记」「帮我看看那份 txt 写了什么」「把这里改成那样」，调用 `create_entry` / `read_text_file` / `edit_text_file` / `write_text_file` / `list_directory`。**边界画在 Rust 侧**：只能读写 桌面 / 文档 / 下载 之内（其余位置一律拒绝并如实回报），`.git` 与 AppData、`.ssh` 等敏感目录永远不碰，可执行/脚本类文件不许新建；改文件前自动备份成 `xxx.petra-bak`，写入前弹「允许 / 拒绝」（可勾「以后不再确认」）；可在控制面板「权限」页的文件禁止目录里再拉黑若干目录（例如项目源码目录）
 - **Shell 能力**：必要时调用 `run_shell`，执行前弹出确认气泡（可勾选「免确认 shell」），危险命令与链式命令（`& | > <`）一律拦截，15 秒超时终止
+- **联网搜索**：说「查一下最新的 xx」，调用 `search_web` 直接抓取真实网页的标题 / 链接 / 摘要交给模型；对时效性信息（新闻、版本号、价格、近期事件）模型会主动去查，不再凭记忆编造
 - **长期记忆**：AI 自动归档用户偏好，也可说「记住 xx」
 - **主动问候**：每 20 分钟识别当前前台窗口，结合上下文自然打招呼
-- **人格设定**：右键 → 小助手设置 →「人格设定」
+- **人格设定**：控制面板「人设」页
 
 **AI 配置**
 
@@ -177,13 +178,13 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 
 ## 开发者运行
 
-> 普通用户请直接去 [Releases](https://github.com/Wumiu/Petra/releases) 下载安装包，无需源码。
+> 普通用户请直接去 [Releases](https://github.com/ks-kbl/petra/releases) 下载安装包，无需源码。
 
 环境要求：Windows 10/11、Node.js 18+、Rust（stable）、WebView2 Runtime。
 
 ```bash
-git clone https://github.com/Wumiu/Petra.git
-cd pet
+git clone https://github.com/ks-kbl/petra.git
+cd petra
 npm install
 npm run tauri dev      # 开发
 npm run tauri build    # 打包
@@ -199,22 +200,33 @@ src/                        # 前端（Vite + TypeScript + Pixi.js）
 │  └─ psd/                  # Anime2.5DRig 运行时（GL 网格 / 变形 / 物理 / 裁剪）
 ├─ autonomous/              # 行为系统（漫游 / 追踪 / 待机 / 活动频率）
 ├─ assistant/               # AI 小助手（流式对话 / 工具调用 / 记忆 / 主动问候）
-├─ audio/                   # 音频分析（音乐驱动动画）
-├─ features/trash/          # 拖拽进回收站
-├─ bridges/                 # Astrobot 外部指令桥接
-└─ ui/ utils/               # 菜单 / 提示 / 工具函数
+├─ asr/  tts/               # 语音输入与语音合成
+├─ music/                   # 歌词跟随（播放器识别 / LRC 解析 / 时间轴微调）
+├─ games/riichi/            # 立直麻将小游戏
+├─ features/                # 日记 / 抽卡 / 天气 / 整点报时 / 公告
+├─ plugins/                 # 插件运行时（Web Worker 宿主）+ 示例与 SDK
+├─ updater/                 # 自动更新
+├─ ui/                      # 菜单 / 面板 / 提示 / 浮层定位
+└─ utils/                   # 设置、通用工具
 
 src-tauri/                  # 后端（Tauri 2 + Rust）
 ├─ src/
-│  ├─ lib.rs                # 命令注册 / Shell 校验 / 反馈 / DPAPI
-│  ├─ launch.rs             # 应用名解析与启动
-│  ├─ screen.rs             # 窗口 / 光标 / 工作区
-│  ├─ audio.rs              # WASAPI 回环捕获
-│  └─ trash.rs              # 回收站操作
+│  ├─ lib.rs                # 命令注册 / 窗口 / 音频 / 语音 / 反馈
+│  ├─ panel.rs              # 控制面板（127.0.0.1:47188）+ 本地 MCP / bridge
+│  ├─ websearch.rs          # 内置联网搜索（抓取并解析搜索结果）
+│  ├─ files.rs              # 文件读写沙箱
+│  ├─ launch*.rs            # 应用名解析与启动
+│  ├─ screen*.rs            # 窗口 / 光标 / 工作区
+│  ├─ capture*.rs           # 截图与屏幕分析
+│  ├─ audio*.rs             # WASAPI 回环捕获
+│  └─ media*.rs             # 媒体控制（SMTC）
 ├─ icons/                   # 应用与托盘图标
-└─ tauri.conf.json          # 窗口 / 打包配置
+├─ panel/index.html         # 控制面板前端（单文件，含卡片与视频教程入口）
+└─ tauri.conf.json          # 窗口 / 打包 / updater 配置
 
-scripts/                    # 辅助脚本
+plugins/                    # 插件示例 + SDK（petra-plugin-dsh-bridge 等）
+dsh-petra-bridge/           # dsh 侧反向桥插件
+scripts/                    # 辅助脚本（含 check-release-guard.mjs 发布守门）
 public/models/              # 默认角色资源 + manifest.json
 ```
 

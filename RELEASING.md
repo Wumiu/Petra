@@ -93,7 +93,7 @@ src-tauri/target/release/bundle/msi/Petra_<版本>_x64_en-US.msi.sig    # update
   "platforms": {
     "windows-x86_64": {
       "signature": "<从 .sig 文件读取的内容>",
-      "url": "https://github.com/Wumiu/Petra/releases/latest/download/Petra_0.1.x_x64-setup.exe"
+      "url": "https://github.com/ks-kbl/petra/releases/latest/download/Petra_0.1.x_x64-setup.exe"
     }
   }
 }
@@ -169,7 +169,7 @@ prerelease = false
    - `release/latest.json`（已入库，Release 附件可不重复传）
 4. 将 Release 设为 **Latest**（非 prerelease）
 
-> updater 检查的 URL 是 `https://github.com/Wumiu/Petra/releases/latest/download/latest.json`，
+> updater 检查的 URL 是 `https://github.com/ks-kbl/petra/releases/latest/download/latest.json`，
 > 指向 Release 附件的 `latest.json`。
 
 ---

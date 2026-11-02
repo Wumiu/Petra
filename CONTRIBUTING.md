@@ -7,8 +7,8 @@
 Windows 10/11、Node.js 18+、Rust（stable）、WebView2 Runtime。
 
 ```bash
-git clone https://github.com/Wumiu/Petra.git
-cd Petra
+git clone https://github.com/ks-kbl/petra.git
+cd petra
 npm install
 npm run tauri dev      # 开发
 ```
