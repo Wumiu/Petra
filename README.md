@@ -116,7 +116,7 @@ mac 上有两处会弹系统权限，都是**用到才弹、拒绝了也不影�
 
 **推荐流程**
 
-准备一张想要的角色正面视图，前往 https://huggingface.co/spaces/24yearsold/see-through-demo 一键拆分成psd，体验次数有限，也可以本地部署其see-through拆分。
+准备一张想要的角色正面视图，前往 https://modelscope.cn/studios/ljsabc/See-Through/ 一键拆分成psd，体验次数有限，也可以本地部署其see-through拆分。
 再前往https://852wa.github.io/Anime2.5DRig/ 导入生成的psd看看效果，若有缺陷，则需使用软件修改图层（在线编辑网站：https://www.photopea.com/）
 若效果不错，则可直接导入桌宠中替换。
 
@@ -256,7 +256,7 @@ window.__ASTROBOT__.emit({ type: "speak" | "emote" | "gesture" | "move" | "react
 内置并借鉴了以下开源项目，特此致谢：
 
 - **Anime2.5DRig**（自动 PSD 装配 / 2.5D 运行时，内置 `src/vendor/anime2dr/`）：MIT License，作者 [852wa (hakoniwa)](https://github.com/852wa)，源码 <https://github.com/852wa/Anime2.5DRig>。许可证全文见 `src/vendor/anime2dr/LICENSE`。
-- **See-through**（单图拆分层层 PSD 的技术方案与在线 Demo）：学术项目 [shitagaki-lab/see-through](https://github.com/shitagaki-lab/see-through)，在线 Demo <https://huggingface.co/spaces/24yearsold/see-through-demo>（大陆用户也可用魔搭 ModelScope 版本）。
+- **See-through**（单图拆分层层 PSD 的技术方案与在线 Demo）：学术项目 [shitagaki-lab/see-through](https://github.com/shitagaki-lab/see-through)，在线 Demo <https://modelscope.cn/studios/ljsabc/See-Through/>（国内可直接访问）。
 - **ag-psd**（PSD 解析）：MIT License。
 
 ## 免责声明
